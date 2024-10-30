@@ -1,0 +1,15 @@
+[package]
+name = "clam"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.91"
+bstr = "1.10.0"
+clap = { version = "4.5.20", features = ["derive"] }
+csv = "1.3.0"
+fnv = "1.0.7"
+log = "0.4.22"
+noodles = { version = "0.84.0", features = ["core", "vcf", "bgzf", "bed"] }
+noodles-bgzf = { version = "0.33.0", features = ["libdeflate"] }
+serde = { version = "1.0.214", features = ["derive"] }
