@@ -1,83 +1,33 @@
 use clap::{Parser, Subcommand, ArgGroup};
 use camino::Utf8PathBuf;
 
-#[derive(Debug, Parser)]
-#[command(name = "clam")]
-#[command(about = "Callable Loci and More")]
-pub struct Cli {
-    #[command(subcommand)]
-    pub command: Commands,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum Commands {
-    /// Loci calculation subcommand with detailed depth-based arguments
-    Loci(LociArgs),
-
-    /// Stat calculation subcommand
-    Stat {
-        /// Path to input file
-        file: String,
-    },
-}
 
 #[derive(Parser, Debug, Clone)]
-#[command(author, version, about = "Calculates callable sites from depth statistics.")]
-#[command(
-    group(
-        ArgGroup::new("input")
-            .required(true)
-            .args(&["infile"])
-    ),
-    group(
-        ArgGroup::new("output")
-            .required(true)
-            .args(&["outfile"])
-    ),
-    group(
-        ArgGroup::new("thresholds")
-            .args(&["threshold_file"])
-            .conflicts_with("min_depth")
-            .conflicts_with("max_depth")
-    ),
-    group(
-        ArgGroup::new("populations")
-            .args(&["population_file"])
-            .conflicts_with("nopops")
-    ),
-    group(
-        ArgGroup::new("nopops")
-            .args(&["depth_proportion", "mean_depth_min", "mean_depth_max"])
-            .conflicts_with("populations")
-            .multiple(true)
-    ),
-    group(
-        ArgGroup::new("exclude_group")
-            .args(&["exclude", "exclude_file"])
-            .multiple(false)
-    )
-)]
+#[command(author, version, about = "Calculate callable sites from depth statistics.")]
+
 pub struct LociArgs {
     /// Path to input D4 file
+    #[arg(required(true))]
     pub infile: Utf8PathBuf,
-    /// Path to output file. Extensions allowed: .bed or .d4; .bed is mutually exclusive with -p
+    /// Path to output file. Extensions allowed: {".bed", ".d4"}. ".bed" is mutually exclusive with --populations
+    #[arg(required(true))]
     pub outfile: Utf8PathBuf,
     /// Minimum depth to consider site callable per individual
-    #[arg(short = 'm', long = "min-depth", default_value_t = 0.0)]
+    #[arg(short = 'm', long = "min-depth", default_value_t = 0.0, conflicts_with("threshold_file"))]
     pub min_depth: f64,
     /// Maximum depth to consider site callable per individual
-    #[arg(short = 'M', long = "max-depth", default_value_t = f64::INFINITY)]
+    #[arg(short = 'M', long = "max-depth", default_value_t = f64::INFINITY, conflicts_with("threshold_file"))]
     pub max_depth: f64,
     /// Proportion of samples passing thresholds at site to consider callable
-    #[arg(short = 'd', long = "depth-proportion", default_value_t = 1.0)]
+    #[arg(short = 'd', long = "depth-proportion", default_value_t = 1.0, conflicts_with("population_file"))]
     pub depth_proportion: f64,
     /// Minimum mean depth across all samples at site to consider callable
-    #[arg(short = 'u', long = "min-mean-depth", default_value_t = 0.0)]
+    #[arg(short = 'u', long = "min-mean-depth", default_value_t = 0.0, conflicts_with("population_file"))]
     pub mean_depth_min: f64,
     /// Maximum mean depth across all samples at site to consider callable
-    #[arg(short = 'U', long = "max-mean-depth", default_value_t = f64::INFINITY)]
+    #[arg(short = 'U', long = "max-mean-depth", default_value_t = f64::INFINITY, conflicts_with("population_file"))]
     pub mean_depth_max: f64,
-    /// Output number of individuals callable at site. EXPERIMENTAL v0.1.0
+    /// Output number of individuals callable at site.
     #[arg(short = 'c', long = "output-counts", default_value_t = false)]
     pub output_counts: bool,
     /// Number of threads to use
@@ -90,9 +40,9 @@ pub struct LociArgs {
     #[arg(long = "thresholds-file")]
     pub threshold_file: Option<Utf8PathBuf>,
     /// Comma separated list of chromosomes to exclude
-    #[arg(short = 'x', value_delimiter = ',', num_args = 1..)]
+    #[arg(short = 'x', value_delimiter = ',', num_args = 1.., conflicts_with("exclude_file"))]
     pub exclude: Option<Vec<String>>,
     /// Path to file with chromosomes to exclude, one per line
-    #[arg(long = "exclude-file")]
+    #[arg(long = "exclude-file", conflicts_with("exclude"))]
     pub exclude_file: Option<Utf8PathBuf>,
 }

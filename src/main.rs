@@ -3,15 +3,18 @@ mod loci;
 mod utils;
 use std::{fs::File, path::PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Ok, Result};
 use clap::{Arg, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "clam")]
+#[command(name = "clam",)]
 #[command(about = "Callable Loci and More")]
+#[command(version)]
 struct Cli {
+    
     #[command(subcommand)]
     command: Commands,
+    
 }
 
 #[derive(Debug, Subcommand)]
@@ -19,13 +22,19 @@ enum Commands {
     Loci(cli::LociArgs),
 
     Stat { file: String },
+    
+    #[command(hide = true)]
+    Mkdocs,
 }
-
 fn main() -> Result<()> {
     env_logger::init();
     let args = Cli::parse();
-
+    
     match args.command {
+        Commands::Mkdocs => {
+            clap_markdown::print_help_markdown::<Cli>();
+        return Ok(());
+        }
         Commands::Loci(loci_args) => {
             let _thread_pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(loci_args.threads)
