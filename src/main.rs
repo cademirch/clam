@@ -3,9 +3,8 @@ mod loci;
 mod utils;
 use std::{fs::File, path::PathBuf};
 
-
 use anyhow::{bail, Result};
-use clap::{Parser, Subcommand, Arg};
+use clap::{Arg, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(name = "clam")]
@@ -28,7 +27,9 @@ fn main() -> Result<()> {
 
     match args.command {
         Commands::Loci(loci_args) => {
-            let _thread_pool = rayon::ThreadPoolBuilder::new().num_threads(loci_args.threads).build_global()?;
+            let _thread_pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(loci_args.threads)
+                .build_global()?;
             let thresholds = if let Some(threshold_file) = &loci_args.threshold_file {
                 let chrom_thresholds = loci::read_threshold_file(threshold_file)?;
                 loci::Thresholds::PerChromosome(chrom_thresholds)
@@ -73,9 +74,7 @@ fn main() -> Result<()> {
                     let population_map =
                         utils::PopulationMapping::from_path(loci_args.population_file.unwrap())?;
                     let mut temp_file_paths = Vec::with_capacity(population_map.num_populations);
-                    for (_, samples) in
-                        population_map.pop_idx_to_sample_names.iter().enumerate()
-                    {
+                    for (_, samples) in population_map.pop_idx_to_sample_names.iter().enumerate() {
                         let res = loci::d4_bgzf::run_bgzf_tasks(
                             loci_args.infile.to_path_buf(),
                             loci_args.threads,
@@ -88,8 +87,12 @@ fn main() -> Result<()> {
                         let fp = loci::write_d4::<PathBuf>(res, chroms.clone(), None)?;
                         temp_file_paths.push(fp);
                     }
-                    
-                    loci::merge_d4_files(loci_args.outfile.to_path_buf().into_std_path_buf(), temp_file_paths, population_map.get_popname_refs())?;
+
+                    loci::merge_d4_files(
+                        loci_args.outfile.to_path_buf().into_std_path_buf(),
+                        temp_file_paths,
+                        population_map.get_popname_refs(),
+                    )?;
                 } else {
                     let res = loci::d4_bgzf::run_bgzf_tasks(
                         loci_args.infile.to_path_buf(),
@@ -104,7 +107,75 @@ fn main() -> Result<()> {
                     if bed_out {
                         loci::write_bed(loci_args.outfile, res, loci_args.output_counts)?;
                     } else {
-                        loci::write_d4::<PathBuf>(res, chroms.clone(), Some(loci_args.outfile.into_std_path_buf()))?;
+                        loci::write_d4::<PathBuf>(
+                            res,
+                            chroms.clone(),
+                            Some(loci_args.outfile.into_std_path_buf()),
+                        )?;
+                    }
+                }
+            } else {
+                let rdr: d4::D4TrackReader = d4::D4TrackReader::open_first_track(
+                    loci_args.infile.clone().into_std_path_buf(),
+                )?;
+                let chrom_regions = loci::prepare_chrom_regions(
+                    rdr.chrom_regions(),
+                    thresholds,
+                    Some(&exclude_chrs?),
+                )?;
+                let chroms: Vec<d4::Chrom> = chrom_regions
+                    .clone()
+                    .into_iter()
+                    .map(|r| d4::Chrom {
+                        name: r.chr.to_string(),
+                        size: r.end.try_into().unwrap(),
+                    })
+                    .collect();
+                drop(rdr);
+                if populations {
+                    let population_map =
+                        utils::PopulationMapping::from_path(loci_args.population_file.unwrap())?;
+                    let mut temp_file_paths = Vec::with_capacity(population_map.num_populations);
+
+                    for (_, samples) in population_map.pop_idx_to_sample_names.iter().enumerate() {
+                        let sample_refs: Vec<&str> = samples.iter().map(|s| s.as_str()).collect();
+                        let tracks = loci::d4_tasks::prepare_tracks_from_file(
+                            loci_args.infile.clone(),
+                            Some(sample_refs),
+                        )?;
+                        let res = loci::d4_tasks::run_tasks_on_tracks(
+                            tracks,
+                            chrom_regions.clone(),
+                            (loci_args.mean_depth_min, loci_args.mean_depth_max),
+                            loci_args.depth_proportion,
+                            loci_args.output_counts,
+                        )?;
+                        let fp = loci::write_d4::<PathBuf>(res, chroms.clone(), None)?;
+                        temp_file_paths.push(fp);
+                    }
+                    loci::merge_d4_files(
+                        loci_args.outfile.to_path_buf().into_std_path_buf(),
+                        temp_file_paths,
+                        population_map.get_popname_refs(),
+                    )?;
+                } else {
+                    let tracks =
+                        loci::d4_tasks::prepare_tracks_from_file(loci_args.infile.clone(), None)?;
+                    let res = loci::d4_tasks::run_tasks_on_tracks(
+                        tracks,
+                        chrom_regions.clone(),
+                        (loci_args.mean_depth_min, loci_args.mean_depth_max),
+                        loci_args.depth_proportion,
+                        loci_args.output_counts,
+                    )?;
+                    if bed_out {
+                        loci::write_bed(loci_args.outfile, res, loci_args.output_counts)?;
+                    } else {
+                        loci::write_d4::<PathBuf>(
+                            res,
+                            chroms.clone(),
+                            Some(loci_args.outfile.into_std_path_buf()),
+                        )?;
                     }
                 }
             }

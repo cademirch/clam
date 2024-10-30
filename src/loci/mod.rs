@@ -332,26 +332,29 @@ mod tests {
         let output_counts = true; // Default setting, adjust if needed
         let exclude_chrs: Option<HashSet<String>> = None; // No chromosomes to exclude by default
 
-        let (task_output, chroms) = d4_tasks::run_tasks_on_tracks(
+        let rdr: d4::D4TrackReader = d4::D4TrackReader::open_first_track(d4_file_path)?;
+        let chrom_regions =
+            super::prepare_chrom_regions(rdr.chrom_regions(), thresholds, exclude_chrs.as_ref())?;
+        let chroms: Vec<d4::Chrom> = chrom_regions
+            .clone()
+            .into_iter()
+            .map(|r| d4::Chrom {
+                name: r.chr.to_string(),
+                size: r.end.try_into().unwrap(),
+            })
+            .collect();
+        drop(rdr);
+
+        let task_output = d4_tasks::run_tasks_on_tracks(
             tracks,
-            thresholds,
+            chrom_regions,
             mean_thresholds,
             depth_proportion,
             output_counts,
-            exclude_chrs,
         )?;
-        let regions: Vec<(String, u32, Vec<CallableRegion>)> = task_output
-            .into_iter()
-            .map(|entry| {
-                let chrom = entry.chrom.to_string(); // Get the chromosome name
-                let begin = entry.begin; // Get the starting position
-                let output = entry.output.clone(); // Clone `output` to get a Vec<CallableRegion>
-                (chrom, begin, output) // Convert to the desired tuple structure
-            })
-            .collect();
 
         debug!("Writing d4 file...");
-        let output_path = write_d4::<PathBuf>(regions, chroms, None)?;
+        let output_path = write_d4::<PathBuf>(task_output, chroms, None)?;
 
         assert!(
             std::fs::metadata(output_path.to_path_buf()).is_ok(),

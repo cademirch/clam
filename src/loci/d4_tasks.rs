@@ -1,5 +1,5 @@
 
-use crate::loci::{CallableRegion, add_filters_to_chroms, Thresholds};
+use super::{CallableRegion, add_filters_to_chroms, Thresholds, ChromRegion};
 use anyhow::{bail, Context, Ok, Result};
 use d4::{
     ptab::PTablePartitionWriter,
@@ -205,61 +205,25 @@ pub fn prepare_tracks_from_file<P: AsRef<Path>>(
 
 pub fn run_tasks_on_tracks(
     tracks: Vec<D4TrackReader>,
-    thresholds: Thresholds,
+    regions: Vec<ChromRegion>,
     mean_thresholds: (f64, f64),
     depth_proportion: f64,
     output_counts: bool,
-    exclude_chrs: Option<HashSet<String>>,
-) -> Result<((TaskOutputVec<Vec<CallableRegion>>, Vec<Chrom>))> {
+) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
     trace!("Successfully opened D4 file with {} tracks", tracks.len());
 
     let num_tracks = tracks.len();
     let mut reader = D4MatrixReader::new(tracks).unwrap();
-    let chrom_regions = reader.chrom_regions();
-    let chroms = chrom_regions
-        .clone()
-        .into_iter()
-        .map(|(name, _start, size)| Chrom {
-            name: name.to_string(),
-            size: size.try_into().unwrap(),
-        })
-        .collect();
-
-    trace!("Chromosome regions found: {:?}", chrom_regions);
-
-    let chrom_filters = match thresholds {
-        Thresholds::Fixed(thresh) => chrom_regions
-            .into_iter()
-            .map(|(chr, start, end)| (chr.to_string(), start, end, thresh.0, thresh.1))
-            .collect::<Vec<_>>(),
-        Thresholds::PerChromosome(ref filter_map) => {
-            let chroms_with_filters = add_filters_to_chroms(
-                chrom_regions
-                    .iter()
-                    .map(|(chr, start, end)| (*chr, *start, *end))
-                    .collect(),
-                filter_map.clone(),
-            )?;
-            chroms_with_filters
-        }
-    };
+    
 
     let mut tasks = vec![];
 
-    for (chr, begin, end, min_filter, max_filter) in chrom_filters {
-        // Skip the chromosome if it is in the exclude_chrs set
-        if let Some(ref exclude_set) = exclude_chrs {
-            if exclude_set.contains(chr.as_str()) {
-                trace!("Skipping chromosome: {}", chr);
-                continue;
-            }
-        }
-
+    for region in regions {
         tasks.push(TaskParent {
-            chrom: chr,
-            begin,
-            end,
-            per_sample_thresholds: (min_filter, max_filter),
+            chrom: region.chr.clone(),
+            begin: region.begin,
+            end: region.end,
+            per_sample_thresholds: (region.min_filter, region.max_filter),
             mean_thresholds,
             depth_proportion,
             num_tracks,
@@ -271,7 +235,15 @@ pub fn run_tasks_on_tracks(
     let result = reader.run_tasks(tasks)?;
     let duration = start.elapsed();
     info!("Ran D4 tasks in {:?}", duration);
-    Ok((result, chroms))
+    let formatted_result: Vec<(String, u32, Vec<CallableRegion>)> = result
+        .into_iter()
+        .map(|task| {
+            let chrom_name = task.chrom.to_string(); // Get the chromosome name from TaskOutput
+            let callable_regions = task.output.to_owned(); // Get the CallableRegion Vec from TaskOutput
+            (chrom_name, 0, callable_regions) // Use 0 as the placeholder start position
+        })
+        .collect();
+    Ok(formatted_result)
 }
 
 #[cfg(test)]
