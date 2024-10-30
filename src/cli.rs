@@ -35,13 +35,10 @@ pub enum Commands {
             .args(&["outfile"])
     ),
     group(
-        ArgGroup::new("global_thresholds")
-            .args(&["min_depth", "max_depth"])
-    ),
-    group(
-        ArgGroup::new("threshold_file")
+        ArgGroup::new("thresholds")
             .args(&["threshold_file"])
-            .conflicts_with("global_thresholds")
+            .conflicts_with("min_depth")
+            .conflicts_with("max_depth")
     ),
     group(
         ArgGroup::new("populations")
@@ -51,12 +48,13 @@ pub enum Commands {
     group(
         ArgGroup::new("nopops")
             .args(&["depth_proportion", "mean_depth_min", "mean_depth_max"])
+            .conflicts_with("populations")
+            .multiple(true)
     ),
     group(
         ArgGroup::new("exclude_group")
-        .args(&["exclude", "exclude-file"])
-        .required(false)
-        .multiple(false)
+            .args(&["exclude", "exclude_file"])
+            .multiple(false)
     )
 )]
 pub struct LociArgs {
@@ -89,7 +87,7 @@ pub struct LociArgs {
     #[arg(short = 'p', long = "population-file")]
     pub population_file: Option<Utf8PathBuf>,
     /// Path to file that defines per-chromosome individual level thresholds. Tab separated: chrom, min, max
-    #[arg(short = 't', long = "thresholds-file")]
+    #[arg(long = "thresholds-file")]
     pub threshold_file: Option<Utf8PathBuf>,
     /// Comma separated list of chromosomes to exclude
     #[arg(short = 'x', value_delimiter = ',', num_args = 1..)]

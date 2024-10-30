@@ -1,0 +1,1 @@
+/target/release/bamsim --num-bams 3 --num-chrs 1 --chr-length 10000 --min-depth 3 --mex-depth 20 --min-mean-depth 5 --proportion 0.66 --outdir tests

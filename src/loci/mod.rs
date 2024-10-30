@@ -321,7 +321,7 @@ mod tests {
         debug!("Starting run and write test...");
         // Step 1: Load the D4 file and read tracks
         let d4_file_path = "tests/data/merged.d4"; // Path to your D4 file
-        let samples = vec!["simulated_1", "simulated_2"];
+        let samples = vec!["0.per", "2.per"];
 
         let tracks = d4_tasks::prepare_tracks_from_file(d4_file_path, Some(samples.clone()))?;
         // number of tracks should be same as number of samples specified

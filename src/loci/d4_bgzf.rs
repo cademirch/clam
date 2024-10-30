@@ -290,7 +290,7 @@ impl BgzfD4MatrixReader {
             // Collect values for each view at the current position in parallel
             let pos = begin + pos_index as u32;
             let values: Vec<u32> = cached_values.iter().map(|v| v[pos_index]).collect();
-
+            trace!("chrom: {}, pos: {}, vals: {:?}", chrom, pos, values);
             // Calculate mean of values at this position
             let mean = values.iter().map(|&v| v as f64).sum::<f64>() / values.len() as f64;
             // trace!("Got values at pos {}", pos);
@@ -304,7 +304,7 @@ impl BgzfD4MatrixReader {
                 .count() as u32;
 
             let meets_site_thresholds =
-                mean >= per_site_thresholds.0 && mean <= per_site_thresholds.1;
+                mean > per_site_thresholds.0 && mean < per_site_thresholds.1;
             let meets_proportion = (count as f64) / (values.len() as f64) >= min_proportion;
 
             if meets_site_thresholds && meets_proportion {
