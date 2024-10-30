@@ -13,12 +13,12 @@ const CHUNK_SIZE: u32 = 10_000_000;
 pub fn run_bgzf_tasks<P: AsRef<Path>>(
     d4_file: P,
     threads: usize,
-    samples: Vec<String>,
+    samples: Option<Vec<String>>,
     regions: Vec<ChromRegion>,
     mean_thresholds: (f64, f64),
     depth_proportion: f64,
     output_counts: bool,
-) -> Result<()> {
+) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
     let (region_sender, region_receiver): (
         Sender<(String, u32, u32, f64, f64)>,
         Receiver<(String, u32, u32, f64, f64)>,
@@ -62,8 +62,14 @@ pub fn run_bgzf_tasks<P: AsRef<Path>>(
             let d4_file = d4_file.as_ref().to_path_buf();
             let samples = samples.clone();
             thread::spawn(move || {
-                let samples: Vec<&str> = samples.iter().map(|s| s.as_str()).collect();
-                let mut matrix_rdr = BgzfD4MatrixReader::from_path(d4_file, Some(samples))
+                let track_names = samples.as_ref().map(|sample_names| {
+                    sample_names
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<&str>>()
+                });
+
+                let mut matrix_rdr = BgzfD4MatrixReader::from_path(d4_file, track_names)
                     .expect("Failed to create BgzfD4MatrixReader");
                 let tid = thread::current().id();
 
@@ -130,8 +136,43 @@ pub fn run_bgzf_tasks<P: AsRef<Path>>(
     }
     for regions in callable_map.values_mut() {
         regions.sort_by_key(|region| region.begin);
+
+        let mut merged_regions = Vec::new();
+        let mut current_region: Option<CallableRegion> = None;
+
+        for region in regions.drain(..) {
+            if let Some(mut r) = current_region.take() {
+                // Check if the current region is contiguous with the next
+                if r.end == region.begin && r.count == region.count {
+                    // Extend the current region
+                    r.end = region.end;
+                    current_region = Some(r);
+                } else {
+                    // Push the previous region and start a new one
+                    merged_regions.push(r);
+                    current_region = Some(region);
+                }
+            } else {
+                // Start with the first region
+                current_region = Some(region);
+            }
+        }
+        // Push the final region
+        if let Some(r) = current_region {
+            merged_regions.push(r);
+        }
+
+        // Replace the old regions with merged regions
+        *regions = merged_regions;
     }
-    Ok(())
+
+    // Convert the merged map into the desired Vec format for BED output
+    let regions: Vec<(String, u32, Vec<CallableRegion>)> = callable_map
+        .into_iter()
+        .map(|(chrom, callable_regions)| (chrom, 0, callable_regions)) // Use 0 as `begin` for each chromosome
+        .collect();
+
+    Ok(regions)
 }
 
 pub struct BgzfD4MatrixReader {

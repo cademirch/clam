@@ -32,7 +32,7 @@ pub enum Commands {
     group(
         ArgGroup::new("output")
             .required(true)
-            .args(&["outprefix"])
+            .args(&["outfile"])
     ),
     group(
         ArgGroup::new("global_thresholds")
@@ -62,8 +62,8 @@ pub enum Commands {
 pub struct LociArgs {
     /// Path to input D4 file
     pub infile: Utf8PathBuf,
-    /// Prefix for output
-    pub outprefix: Utf8PathBuf,
+    /// Path to output file. Extensions allowed: .bed or .d4; .bed is mutually exclusive with -p
+    pub outfile: Utf8PathBuf,
     /// Minimum depth to consider site callable per individual
     #[arg(short = 'm', long = "min-depth", default_value_t = 0.0)]
     pub min_depth: f64,

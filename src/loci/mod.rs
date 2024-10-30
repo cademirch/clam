@@ -7,12 +7,13 @@ use d4::{
     D4FileBuilder, D4FileMerger, D4FileWriter, Dictionary,
 };
 use log::{debug, warn};
-use std::collections::HashMap;
-use std::path::Path;
-
 use serde::Deserialize;
-use std::collections::{HashSet, hash_map::Entry};
+use std::collections::HashMap;
+use std::collections::{hash_map::Entry, HashSet};
 use std::fs::File;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use tempfile::NamedTempFile;
 
 #[derive(Clone)]
 pub enum Thresholds {
@@ -77,13 +78,21 @@ pub fn merge_d4_files<P: AsRef<Path>>(outpath: P, input: Vec<P>, names: Vec<&str
     Ok(())
 }
 
-pub fn write_as_d4_from_task_output<P: AsRef<Path>>(
-    task_output: TaskOutputVec<Vec<CallableRegion>>,
+pub fn write_d4<P: AsRef<Path>>(
+    regions: Vec<(String, u32, Vec<CallableRegion>)>, // Generic input structure
     chroms: Vec<Chrom>,
-    output_path: P,
-) -> Result<()> {
+    output_path: Option<P>,
+) -> Result<PathBuf> {
     // Initialize the D4 file writer
-    let mut builder = D4FileBuilder::new(output_path);
+
+    let output_path: PathBuf = if let Some(output_path) = output_path {
+        output_path.as_ref().to_path_buf() // Convert P to PathBuf
+    } else {
+        let temp_file = NamedTempFile::new()?;
+        temp_file.into_temp_path().to_path_buf() // Convert NamedTempFile path to PathBuf
+    };
+
+    let mut builder = D4FileBuilder::new(output_path.to_path_buf());
     builder.append_chrom(chroms.into_iter());
     builder.set_denominator(1.0); // Set denominator (you can adjust as needed)
     builder.set_dictionary(Dictionary::new_simple_range_dict(0, 1)?); // Set dictionary for encoding
@@ -100,15 +109,12 @@ pub fn write_as_d4_from_task_output<P: AsRef<Path>>(
         );
     }
 
-    // Iterate through the task output, which contains chromosomes and callable regions
-    for r in task_output.into_iter() {
-        let chrom = r.chrom; // Chromosome name
-        let begin = r.begin; // Starting position of the chromosome or region
-
+    // Process each tuple in `regions`, which contains a chromosome, starting position, and callable regions
+    for (chrom, begin, callable_regions) in regions {
         let mut current_partition = 0; // Track the current partition
 
         // Process each CallableRegion
-        for region in r.output.into_iter() {
+        for region in callable_regions.into_iter() {
             let start = region.begin + begin;
             let end = region.end + begin;
 
@@ -164,6 +170,39 @@ pub fn write_as_d4_from_task_output<P: AsRef<Path>>(
     }
 
     debug!("D4 file writing complete."); // Final debug output
+    Ok(output_path)
+}
+
+pub fn write_bed<P: AsRef<Path>>(
+    output_path: P,
+    regions: Vec<(String, u32, Vec<CallableRegion>)>,
+    output_counts: bool,
+) -> Result<()> {
+    let mut file = File::create(output_path)?;
+
+    for (chrom, begin, callable_regions) in regions {
+        for region in callable_regions.into_iter() {
+            if output_counts {
+                writeln!(
+                    file,
+                    "{}\t{}\t{}\t{}",
+                    chrom,
+                    region.begin + begin,
+                    region.end + begin,
+                    region.count
+                )?;
+            } else {
+                writeln!(
+                    file,
+                    "{}\t{}\t{}",
+                    chrom,
+                    region.begin + begin,
+                    region.end + begin
+                )?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -301,13 +340,21 @@ mod tests {
             output_counts,
             exclude_chrs,
         )?;
+        let regions: Vec<(String, u32, Vec<CallableRegion>)> = task_output
+            .into_iter()
+            .map(|entry| {
+                let chrom = entry.chrom.to_string(); // Get the chromosome name
+                let begin = entry.begin; // Get the starting position
+                let output = entry.output.clone(); // Clone `output` to get a Vec<CallableRegion>
+                (chrom, begin, output) // Convert to the desired tuple structure
+            })
+            .collect();
 
-        let output_path = "tests/data/output.d4";
         debug!("Writing d4 file...");
-        write_as_d4_from_task_output(task_output, chroms, &output_path)?;
+        let output_path = write_d4::<PathBuf>(regions, chroms, None)?;
 
         assert!(
-            std::fs::metadata(output_path).is_ok(),
+            std::fs::metadata(output_path.to_path_buf()).is_ok(),
             "Output D4 file should be created"
         );
 
