@@ -1,7 +1,6 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use fnv::FnvHashMap;
 use log::warn;
-use noodles::vcf::header::record;
 use noodles::{bed, core::Region};
 use serde::Deserialize;
 use std::collections::{hash_map::Entry, HashMap};
