@@ -18,3 +18,4 @@ rayon = "1.10.0"
 tempfile = "3.13.0"
 env_logger = "0.11.5"
 camino = "1.1.9"
+crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }

@@ -3,9 +3,11 @@ use fnv::FnvHashMap;
 use log::warn;
 use noodles::{bed, core::Region};
 use serde::Deserialize;
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::fs::File;
 use std::path::Path;
+use camino::Utf8PathBuf;
+use std::io::{BufReader, BufRead};
 
 #[derive(Debug, Clone)]
 pub struct PopulationMapping {
@@ -80,51 +82,26 @@ impl PopulationMapping {
     }
 }
 
-#[derive(Clone)]
-pub enum Thresholds {
-    Fixed((f64, f64)),                          // For single threshold tuple
-    PerChromosome(HashMap<String, (f64, f64)>), // For chromosome-specific thresholds
-}
-
-#[derive(Debug, Deserialize)]
-struct ThresholdRecord {
-    chrom: String,
-    min: f64,
-    max: f64,
-}
-
-pub fn read_threshold_file<P: AsRef<Path>>(
-    threshold_file: P,
-) -> Result<HashMap<String, (f64, f64)>> {
-    let file = File::open(&threshold_file).expect(&format!(
-        "Failed to open population file: {}",
-        threshold_file.as_ref().display()
-    ));
-    let mut reader = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
-    let mut filter_map: HashMap<String, (f64, f64)> = HashMap::new();
-
-    for result in reader.deserialize() {
-        let record: ThresholdRecord = result?;
-
-        match filter_map.entry(record.chrom) {
-            Entry::Vacant(entry) => {
-                entry.insert((record.min, record.max));
-            }
-            Entry::Occupied(mut entry) => {
-                warn!(
-                    "Duplicate chromosome in thresholds file! {} already exists with min: {}, max: {}. Overwriting with new values min: {}, max: {}.",
-                    entry.key(),
-                    entry.get().0,
-                    entry.get().1,
-                    record.min,
-                    record.max
-                );
-                entry.insert((record.min, record.max));
-            }
-        }
+pub fn get_exclude_chromosomes(
+    exclude: &Option<Vec<String>>,
+    exclude_file: &Option<Utf8PathBuf>,
+) -> Result<HashSet<String>> {
+    if let Some(file_path) = exclude_file {
+        // Read chromosomes from the file and collect them into a HashSet
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+        let exclude_set: HashSet<String> = reader
+            .lines()
+            .filter_map(Result::ok) // Ignore any lines that fail to read
+            .collect();
+        Ok(exclude_set)
+    } else if let Some(chromosomes) = exclude {
+        // Convert Vec<String> to HashSet<String> directly
+        Ok(chromosomes.iter().cloned().collect())
+    } else {
+        // If neither option is provided, return an empty HashSet
+        Ok(HashSet::new())
     }
-
-    Ok(filter_map)
 }
 
 pub fn read_bed_regions<P: AsRef<Path>>(bed_file: P) -> Result<HashMap<String, Vec<Region>>> {
