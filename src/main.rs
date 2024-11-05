@@ -1,10 +1,9 @@
-mod cli;
 mod loci;
 mod utils;
-use std::{fs::File, path::PathBuf};
 
+use std::path::PathBuf;
 use anyhow::{bail, Ok, Result};
-use clap::{Arg, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(name = "clam")]
@@ -17,7 +16,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    Loci(cli::LociArgs),
+    Loci(loci::LociArgs),
 
     Stat {
         file: String,
