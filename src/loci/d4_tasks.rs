@@ -161,16 +161,16 @@ impl<T: Iterator<Item = i32> + ExactSizeIterator> Task<T> for TaskParent {
 
 pub fn prepare_tracks_from_file<P: AsRef<Path>>(
     d4_file_path: P,
-    samples: Option<Vec<&str>>,
+    samples: Option<Vec<String>>,
 ) -> Result<Vec<D4TrackReader>> {
     let tracks = if let Some(samples) = samples {
-        let mut found: Vec<&str> = vec![];
+        let mut found: Vec<String> = vec![]; // Store found sample names as String
         let tracker = |p: Option<&Path>| {
             if let Some(path) = p {
                 let track_name = path.to_str().unwrap_or("");
                 // Check if any sample matches the track name
-                if let Some(sample) = samples.iter().find(|&&sample| track_name.contains(sample)) {
-                    found.push(sample); // Push the sample name to found
+                if let Some(sample) = samples.iter().find(|sample| track_name.contains(sample.as_str())) {
+                    found.push(sample.clone()); // Push the sample name to found as a String
                     true
                 } else {
                     false
@@ -194,7 +194,7 @@ pub fn prepare_tracks_from_file<P: AsRef<Path>>(
         }
         tracks
     } else {
-        // Get all tracks if no samples supplied (no pops)
+        // Get all tracks if no samples supplied
         let tracks: Vec<D4TrackReader> =
             D4TrackReader::open_tracks(d4_file_path, |_| true).context("Failed to open D4 file")?;
         tracks
@@ -202,6 +202,7 @@ pub fn prepare_tracks_from_file<P: AsRef<Path>>(
 
     Ok(tracks)
 }
+
 
 pub fn run_tasks_on_tracks(
     tracks: Vec<D4TrackReader>,
