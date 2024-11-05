@@ -3,8 +3,8 @@ pub mod d4_tasks;
 
 use anyhow::{bail, Result};
 use d4::{
-    ptab::PTablePartitionWriter, stab::SecondaryTablePartWriter, task::TaskOutputVec, Chrom,
-    D4FileBuilder, D4FileMerger, D4FileWriter, Dictionary,
+    ptab::PTablePartitionWriter, stab::SecondaryTablePartWriter, Chrom, D4FileBuilder,
+    D4FileMerger, D4FileWriter, Dictionary,
 };
 use log::{debug, warn};
 use serde::Deserialize;
@@ -14,6 +14,58 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
+
+pub enum D4Reader {
+    D4(d4::D4TrackReader),
+    Bgzf(d4_bgzf::BgzfD4MatrixReader),
+}
+
+impl D4Reader {
+    pub fn chrom_regions(
+        &self,
+        thresholds: Thresholds,
+        exclude_chrs: Option<&HashSet<String>>,
+    ) -> Result<Vec<ChromRegion>> {
+        match self {
+            D4Reader::D4(reader) => {
+                prepare_chrom_regions(reader.chrom_regions(), thresholds, exclude_chrs)
+            }
+            D4Reader::Bgzf(reader) => {
+                prepare_chrom_regions(reader.chrom_regions(), thresholds, exclude_chrs)
+            }
+        }
+    }
+
+    pub fn run_tasks(
+        &self,
+        loci_args: &crate::cli::LociArgs,
+        chrom_regions: Vec<ChromRegion>,
+        sample_refs: Option<Vec<String>>, // Updated to Vec<String>
+    ) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
+        match self {
+            D4Reader::Bgzf(_) => d4_bgzf::run_bgzf_tasks(
+                loci_args.infile.clone(),
+                loci_args.threads,
+                sample_refs.clone(), // Pass Vec<String> directly
+                chrom_regions,
+                (loci_args.mean_depth_min, loci_args.mean_depth_max),
+                loci_args.depth_proportion,
+                loci_args.output_counts,
+            ),
+            D4Reader::D4(_) => {
+                let tracks = d4_tasks::prepare_tracks_from_file(loci_args.infile.clone(), sample_refs)?;
+                d4_tasks::run_tasks_on_tracks(
+                    tracks,
+                    chrom_regions,
+                    (loci_args.mean_depth_min, loci_args.mean_depth_max),
+                    loci_args.depth_proportion,
+                    loci_args.output_counts,
+                )
+            }
+        }
+    }
+    
+}
 
 #[derive(Clone)]
 pub enum Thresholds {
@@ -321,7 +373,7 @@ mod tests {
         debug!("Starting run and write test...");
         // Step 1: Load the D4 file and read tracks
         let d4_file_path = "tests/data/merged.d4"; // Path to your D4 file
-        let samples = vec!["0.per", "2.per"];
+        let samples: Vec<String> = vec!["0.per".to_string(), "2.per".to_string()];
 
         let tracks = d4_tasks::prepare_tracks_from_file(d4_file_path, Some(samples.clone()))?;
         // number of tracks should be same as number of samples specified

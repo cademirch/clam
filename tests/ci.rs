@@ -58,6 +58,55 @@ fn test_gzipped_d4() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_gzipped_d4_pops() -> Result<(), Box<dyn std::error::Error>> {
+    let _ = env_logger::builder()
+        .target(env_logger::Target::Stdout)
+        .filter_level(log::LevelFilter::Trace)
+        .is_test(true)
+        .try_init();
+    let mut cmd = Command::cargo_bin("clam")?;
+
+    // Generate a unique file name for the output
+    let output_file = PathBuf::from_str("tests/data/test_gzipped_pops.d4")?;
+    let pops_file = PathBuf::from_str("tests/data/populations.tsv")?;
+
+    // Specify the `loci` subcommand and add positional arguments for infile and outfile
+    cmd.arg("loci")
+        .arg("tests/data/merged.d4.gz") // infile as a positional argument
+        .arg(&output_file) // unique outfile as a positional argument
+        .arg("-m")
+        .arg("3")
+        .arg("-M")
+        .arg("20")
+        .arg("-p")
+        .arg(&pops_file);
+
+    // Execute the command and capture the output
+    let output = cmd.output()?;
+
+    
+    assert!(
+        output.status.success(),
+        "Command failed with stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    debug!("Ran command");
+    debug!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+    debug!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    
+    let metadata = fs::metadata(&output_file)
+        .context(format!("Couldn't get metadata for file: {}", output_file.display()))?;
+    assert!(metadata.len() > 0, "Output file should not be empty.");
+
+    
+    fs::remove_file(&output_file)?;
+
+    Ok(())
+}
+
+#[test]
 fn test_d4() -> Result<(), Box<dyn std::error::Error>> {
     let _ = env_logger::builder()
         .target(env_logger::Target::Stdout)
