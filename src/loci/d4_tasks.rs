@@ -115,8 +115,7 @@ impl<T: Iterator<Item = i32> + ExactSizeIterator> Task<T> for TaskParent {
                 self.mean_thresholds.0,
                 self.mean_thresholds.1
             );
-            if (self.mean_thresholds.0 < mean && mean < self.mean_thresholds.1)
-                && prop >= self.depth_proportion
+            if self.output_counts || ((self.mean_thresholds.0 < mean && mean < self.mean_thresholds.1) && prop >= self.depth_proportion)
             {
                 if let Some(ref mut region) = current_region {
                     // check if current_region is not none

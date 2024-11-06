@@ -25,12 +25,12 @@ Callable Loci and More
 
 Calculate callable sites from depth statistics.
 
-**Usage:** `clam loci [OPTIONS] <INFILE> <OUTFILE>`
+**Usage:** `clam loci [OPTIONS] <INFILE> <OUTPREFIX>`
 
 ###### **Arguments:**
 
 * `<INFILE>` — Path to input D4 file
-* `<OUTFILE>` — Path to output file. Extensions allowed: {".bed", ".d4"}. ".bed" is mutually exclusive with --populations
+* `<OUTPREFIX>` — Output file prefix. The extension will be added automatically based on the `--no-counts` flag
 
 ###### **Options:**
 
@@ -40,16 +40,16 @@ Calculate callable sites from depth statistics.
 * `-M`, `--max-depth <MAX_DEPTH>` — Maximum depth to consider site callable per individual
 
   Default value: `inf`
-* `-d`, `--depth-proportion <DEPTH_PROPORTION>` — Proportion of samples passing thresholds at site to consider callable
-
-  Default value: `1`
-* `-u`, `--min-mean-depth <MEAN_DEPTH_MIN>` — Minimum mean depth across all samples at site to consider callable
+* `-d`, `--depth-proportion <DEPTH_PROPORTION>` — Proportion of samples passing thresholds at site to consider callable. Ignored when outputting counts
 
   Default value: `0`
-* `-U`, `--max-mean-depth <MEAN_DEPTH_MAX>` — Maximum mean depth across all samples at site to consider callable
+* `-u`, `--min-mean-depth <MEAN_DEPTH_MIN>` — Minimum mean depth across all samples at site to consider callable. Ignored when outputting counts
+
+  Default value: `0`
+* `-U`, `--max-mean-depth <MEAN_DEPTH_MAX>` — Maximum mean depth across all samples at site to consider callable. Ignored when outputting counts
 
   Default value: `inf`
-* `-c`, `--output-counts` — Output number of individuals callable at site
+* `--no-counts` — Disable outputting counts; produces a .bed file instead
 
   Default value: `false`
 * `-t`, `--threads <THREADS>` — Number of threads to use
