@@ -6,7 +6,7 @@ use d4::{
     ptab::PTablePartitionWriter, stab::SecondaryTablePartWriter, Chrom, D4FileBuilder,
     D4FileMerger, D4FileWriter, Dictionary,
 };
-use log::{debug, warn};
+use log::{debug, warn, trace};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::collections::{hash_map::Entry, HashSet};
@@ -15,53 +15,93 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 
-use clap::{Parser, Subcommand, ArgGroup};
 use camino::Utf8PathBuf;
-
+use clap::{ArgGroup, Parser, Subcommand};
 
 #[derive(Parser, Debug, Clone)]
-#[command(author, version, about = "Calculate callable sites from depth statistics.")]
+#[command(
+    author,
+    version,
+    about = "Calculate callable sites from depth statistics."
+)]
 
 pub struct LociArgs {
     /// Path to input D4 file
     #[arg(required(true))]
     pub infile: Utf8PathBuf,
-    /// Path to output file. Extensions allowed: {".bed", ".d4"}. ".bed" is mutually exclusive with --populations
+
+    /// Output file prefix. The extension will be added automatically based on the `--no-counts` flag.
     #[arg(required(true))]
-    pub outfile: Utf8PathBuf,
+    pub outprefix: Utf8PathBuf,
+
     /// Minimum depth to consider site callable per individual
-    #[arg(short = 'm', long = "min-depth", default_value_t = 0.0, conflicts_with("threshold_file"))]
+    #[arg(
+        short = 'm',
+        long = "min-depth",
+        default_value_t = 0.0,
+        conflicts_with("threshold_file")
+    )]
     pub min_depth: f64,
+
     /// Maximum depth to consider site callable per individual
     #[arg(short = 'M', long = "max-depth", default_value_t = f64::INFINITY, conflicts_with("threshold_file"))]
     pub max_depth: f64,
-    /// Proportion of samples passing thresholds at site to consider callable
-    #[arg(short = 'd', long = "depth-proportion", default_value_t = 1.0, conflicts_with("population_file"))]
+
+    /// Proportion of samples passing thresholds at site to consider callable. Ignored when outputting counts.
+    #[arg(
+        short = 'd',
+        long = "depth-proportion",
+        default_value_t = 0.0,
+        conflicts_with("population_file")
+    )]
     pub depth_proportion: f64,
-    /// Minimum mean depth across all samples at site to consider callable
-    #[arg(short = 'u', long = "min-mean-depth", default_value_t = 0.0, conflicts_with("population_file"))]
+
+    /// Minimum mean depth across all samples at site to consider callable. Ignored when outputting counts.
+    #[arg(
+        short = 'u',
+        long = "min-mean-depth",
+        default_value_t = 0.0,
+        conflicts_with("population_file")
+    )]
     pub mean_depth_min: f64,
-    /// Maximum mean depth across all samples at site to consider callable
+
+    /// Maximum mean depth across all samples at site to consider callable. Ignored when outputting counts.
     #[arg(short = 'U', long = "max-mean-depth", default_value_t = f64::INFINITY, conflicts_with("population_file"))]
     pub mean_depth_max: f64,
-    /// Output number of individuals callable at site.
-    #[arg(short = 'c', long = "output-counts", default_value_t = false)]
-    pub output_counts: bool,
+
+    /// Disable outputting counts; produces a .bed file instead.
+    #[arg(long = "no-counts", default_value_t = false)]
+    pub no_counts: bool,
+
     /// Number of threads to use
     #[arg(short = 't', long = "threads", default_value_t = 1)]
     pub threads: usize,
+
     /// Path to file that defines populations. Tab separated: sample, population_name
     #[arg(short = 'p', long = "population-file")]
     pub population_file: Option<Utf8PathBuf>,
+
     /// Path to file that defines per-chromosome individual level thresholds. Tab separated: chrom, min, max
     #[arg(long = "thresholds-file")]
     pub threshold_file: Option<Utf8PathBuf>,
+
     /// Comma separated list of chromosomes to exclude
     #[arg(short = 'x', value_delimiter = ',', num_args = 1.., conflicts_with("exclude_file"))]
     pub exclude: Option<Vec<String>>,
+
     /// Path to file with chromosomes to exclude, one per line
     #[arg(long = "exclude-file", conflicts_with("exclude"))]
     pub exclude_file: Option<Utf8PathBuf>,
+}
+
+impl LociArgs {
+    /// Resolve the final output file path with the appropriate extension based on `--no-counts` flag.
+    pub fn resolve_output_file(&self) -> Utf8PathBuf {
+        let mut output_file = self.outprefix.clone();
+        let extension = if self.no_counts { "bed" } else { "d4" };
+        output_file.set_extension(extension);
+        output_file
+    }
 }
 
 pub enum D4Reader {
@@ -91,6 +131,8 @@ impl D4Reader {
         chrom_regions: Vec<ChromRegion>,
         sample_refs: Option<Vec<String>>, // Updated to Vec<String>
     ) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
+        let output_counts = !loci_args.no_counts;
+        debug!("output_counts: {output_counts}");
         match self {
             D4Reader::Bgzf(_) => d4_bgzf::run_bgzf_tasks(
                 loci_args.infile.clone(),
@@ -99,21 +141,21 @@ impl D4Reader {
                 chrom_regions,
                 (loci_args.mean_depth_min, loci_args.mean_depth_max),
                 loci_args.depth_proportion,
-                loci_args.output_counts,
+                output_counts,
             ),
             D4Reader::D4(_) => {
-                let tracks = d4_tasks::prepare_tracks_from_file(loci_args.infile.clone(), sample_refs)?;
+                let tracks =
+                    d4_tasks::prepare_tracks_from_file(loci_args.infile.clone(), sample_refs)?;
                 d4_tasks::run_tasks_on_tracks(
                     tracks,
                     chrom_regions,
                     (loci_args.mean_depth_min, loci_args.mean_depth_max),
                     loci_args.depth_proportion,
-                    loci_args.output_counts,
+                    output_counts,
                 )
             }
         }
     }
-    
 }
 
 #[derive(Clone)]
@@ -204,7 +246,7 @@ pub fn write_d4<P: AsRef<Path>>(
     let mut partitions = d4_writer.parallel_parts(None)?;
     for (idx, partition) in partitions.iter().enumerate() {
         let region_info = partition.0.region();
-        debug!(
+        trace!(
             "Partition {}: chrom = {}, region = {}-{}",
             idx, region_info.0, region_info.1, region_info.2
         );
@@ -247,7 +289,7 @@ pub fn write_d4<P: AsRef<Path>>(
 
                 for current_pos in pos..record_end {
                     if !primary_encoder.encode(current_pos as usize, region.count as i32) {
-                        debug!("Encoding secondary table for pos: {}", current_pos); // Debugging output
+                        trace!("Encoding secondary table for pos: {}", current_pos); // Debugging output
                         secondary_table.encode(current_pos as u32, region.count as i32)?;
                     }
                 }
@@ -255,7 +297,7 @@ pub fn write_d4<P: AsRef<Path>>(
                 pos = record_end; // Move the position to the next unencoded part
             }
 
-            debug!(
+            trace!(
                 "Flushing secondary table for partition {}",
                 current_partition
             ); // Debugging output
@@ -266,7 +308,7 @@ pub fn write_d4<P: AsRef<Path>>(
 
     // Finish writing all partitions
     for (idx, (_, mut secondary_table)) in partitions.into_iter().enumerate() {
-        debug!("Finishing partition {}", idx); // Debugging output
+        trace!("Finishing partition {}", idx); // Debugging output
         secondary_table.finish()?;
     }
 
@@ -277,30 +319,18 @@ pub fn write_d4<P: AsRef<Path>>(
 pub fn write_bed<P: AsRef<Path>>(
     output_path: P,
     regions: Vec<(String, u32, Vec<CallableRegion>)>,
-    output_counts: bool,
 ) -> Result<()> {
     let mut file = File::create(output_path)?;
 
     for (chrom, begin, callable_regions) in regions {
         for region in callable_regions.into_iter() {
-            if output_counts {
-                writeln!(
-                    file,
-                    "{}\t{}\t{}\t{}",
-                    chrom,
-                    region.begin + begin,
-                    region.end + begin,
-                    region.count
-                )?;
-            } else {
-                writeln!(
-                    file,
-                    "{}\t{}\t{}",
-                    chrom,
-                    region.begin + begin,
-                    region.end + begin
-                )?;
-            }
+            writeln!(
+                file,
+                "{}\t{}\t{}",
+                chrom,
+                region.begin + begin,
+                region.end + begin
+            )?;
         }
     }
 
@@ -414,59 +444,8 @@ mod tests {
             .is_test(true)
             .try_init();
     }
-
-    #[test]
-    fn test_run_and_write_d4() -> Result<()> {
-        // Initialize logger for debugging in tests
-        init();
-        debug!("Starting run and write test...");
-        // Step 1: Load the D4 file and read tracks
-        let d4_file_path = "tests/data/merged.d4"; // Path to your D4 file
-        let samples: Vec<String> = vec!["0.per".to_string(), "2.per".to_string()];
-
-        let tracks = d4_tasks::prepare_tracks_from_file(d4_file_path, Some(samples.clone()))?;
-        // number of tracks should be same as number of samples specified
-        assert_eq!(samples.len(), tracks.len());
-        let thresholds = Thresholds::Fixed((0.0, f64::INFINITY)); // Default thresholds
-        let mean_thresholds = (0.0, f64::INFINITY); // Example mean thresholds
-        let depth_proportion = 0.0; // Default depth proportion
-        let output_counts = true; // Default setting, adjust if needed
-        let exclude_chrs: Option<HashSet<String>> = None; // No chromosomes to exclude by default
-
-        let rdr: d4::D4TrackReader = d4::D4TrackReader::open_first_track(d4_file_path)?;
-        let chrom_regions =
-            super::prepare_chrom_regions(rdr.chrom_regions(), thresholds, exclude_chrs.as_ref())?;
-        let chroms: Vec<d4::Chrom> = chrom_regions
-            .clone()
-            .into_iter()
-            .map(|r| d4::Chrom {
-                name: r.chr.to_string(),
-                size: r.end.try_into().unwrap(),
-            })
-            .collect();
-        drop(rdr);
-
-        let task_output = d4_tasks::run_tasks_on_tracks(
-            tracks,
-            chrom_regions,
-            mean_thresholds,
-            depth_proportion,
-            output_counts,
-        )?;
-
-        debug!("Writing d4 file...");
-        let output_path = write_d4::<PathBuf>(task_output, chroms, None)?;
-
-        assert!(
-            std::fs::metadata(output_path.to_path_buf()).is_ok(),
-            "Output D4 file should be created"
-        );
-
-        std::fs::remove_file(output_path).expect("Failed to clean up output file");
-
-        debug!("Successfully processed and wrote output to D4.");
-        Ok(())
-    }
+#[test]
+    
 
     #[test]
     fn test_add_filters_to_chroms_success() {

@@ -307,7 +307,7 @@ impl BgzfD4MatrixReader {
                 mean > per_site_thresholds.0 && mean < per_site_thresholds.1;
             let meets_proportion = (count as f64) / (values.len() as f64) >= min_proportion;
 
-            if meets_site_thresholds && meets_proportion {
+            if output_counts || (meets_site_thresholds && meets_proportion) {
                 // Start a new region or extend the current one
                 if let Some(ref mut region) = current_region {
                     // Check if we can extend the region

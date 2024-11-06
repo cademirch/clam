@@ -2,7 +2,9 @@ mod loci;
 mod utils;
 
 use std::path::PathBuf;
-use anyhow::{bail, Ok, Result};
+use std::fs::create_dir_all;
+use anyhow::{bail, Ok, Result, Context};
+use log::warn;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -55,12 +57,18 @@ fn main() -> Result<()> {
             let gzipped = loci_args.infile.extension().unwrap() == "gz";
             let populations = loci_args.population_file.is_some();
 
-            let bed_out = match loci_args.outfile.extension() {
-                Some(ext) if ext == "d4" => false,
-                Some(ext) if ext == "bed" => true,
-                Some(ext) => bail!("Unrecognized input file extension: {}", ext.to_string()),
-                None => bail!("Input file has no extension"),
-            };
+            let bed_out = loci_args.no_counts;
+            let outfile = loci_args.resolve_output_file();
+
+            if let Some(parent) = outfile.parent() {
+                if !parent.exists() {
+                    create_dir_all(parent)
+                        .with_context(|| format!("Failed to create parent directories for {:?}", outfile))?;
+                }
+            }
+            if !loci_args.no_counts && (loci_args.mean_depth_min > 0.0 || loci_args.depth_proportion > 0.0) {
+                warn!("Mean depth proportion settings ignored because we are reporting counts.");
+            }
 
             if bed_out && populations {
                 bail!("To use populations feature, output file must be a d4 file!");
@@ -102,19 +110,19 @@ fn main() -> Result<()> {
                 }
 
                 loci::merge_d4_files(
-                    loci_args.outfile.clone().into_std_path_buf(),
+                    outfile.clone().into_std_path_buf(),
                     temp_file_paths,
                     population_map.get_popname_refs(),
                 )?;
             } else {
                 let res = d4_reader.run_tasks(&loci_args, chrom_regions.clone(), None)?;
                 if bed_out {
-                    loci::write_bed(loci_args.outfile.clone(), res, loci_args.output_counts)?;
+                    loci::write_bed(outfile.clone(), res)?;
                 } else {
                     loci::write_d4::<PathBuf>(
                         res,
                         chroms,
-                        Some(loci_args.outfile.clone().into_std_path_buf()),
+                        Some(outfile.clone().into_std_path_buf()),
                     )?;
                 }
             }
