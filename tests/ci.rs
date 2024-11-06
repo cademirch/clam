@@ -93,7 +93,7 @@ fn d4_files_are_equal<P: AsRef<Path> + Clone>(file1: P, file2: P, chrom: &str, b
 
 
 #[test]
-fn test_no_pops_output_bed() -> Result<(), Box<dyn std::error::Error>> {
+fn loci_test_no_pops_output_bed() -> Result<(), Box<dyn std::error::Error>> {
     //bamsim generate --num-bams 5 --num-chrs 1 --chr-length 1000 --min-depth 3 --max-depth 15 --min-mean-depth 6 --proportion 0.5 test_no_pops/
     let _ = env_logger::builder()
         .target(env_logger::Target::Stdout)
@@ -133,7 +133,7 @@ fn test_no_pops_output_bed() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_pops() -> Result<(), Box<dyn std::error::Error>> {
+fn loci_test_pops() -> Result<(), Box<dyn std::error::Error>> {
     //./target/release/bamsim generate --num-bams 5 --num-chrs 1 --chr-length 1000 --min-depth 3 --max-depth 15 --min-mean-depth 6 --proportion 0.5 test_pops/pop1/bams/
     let _ = env_logger::builder()
         .target(env_logger::Target::Stdout)
@@ -174,7 +174,7 @@ fn test_pops() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn bgzf_test_no_pops_output_d4() -> Result<(), Box<dyn std::error::Error>> {
+fn loci_bgzf_test_no_pops_output_d4() -> Result<(), Box<dyn std::error::Error>> {
     //bamsim generate --num-bams 5 --num-chrs 1 --chr-length 1000 --min-depth 3 --max-depth 15 --min-mean-depth 6 --proportion 0.5 test_no_pops/
     let _ = env_logger::builder()
         .target(env_logger::Target::Stdout)
@@ -216,7 +216,7 @@ fn bgzf_test_no_pops_output_d4() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn bgzf_test_no_pops_output_bed() -> Result<(), Box<dyn std::error::Error>> {
+fn loci_bgzf_test_no_pops_output_bed() -> Result<(), Box<dyn std::error::Error>> {
     //bamsim generate --num-bams 5 --num-chrs 1 --chr-length 1000 --min-depth 3 --max-depth 15 --min-mean-depth 6 --proportion 0.5 test_no_pops/
     let _ = env_logger::builder()
         .target(env_logger::Target::Stdout)
@@ -256,7 +256,7 @@ fn bgzf_test_no_pops_output_bed() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_no_pops_output_d4() -> Result<(), Box<dyn std::error::Error>> {
+fn loci_test_no_pops_output_d4() -> Result<(), Box<dyn std::error::Error>> {
     //bamsim generate --num-bams 5 --num-chrs 1 --chr-length 1000 --min-depth 3 --max-depth 15 --min-mean-depth 6 --proportion 0.5 test_no_pops/
     let _ = env_logger::builder()
         .target(env_logger::Target::Stdout)
@@ -298,7 +298,7 @@ fn test_no_pops_output_d4() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn bgzf_test_pops() -> Result<(), Box<dyn std::error::Error>> {
+fn loci_bgzf_test_pops() -> Result<(), Box<dyn std::error::Error>> {
     //./target/release/bamsim generate --num-bams 5 --num-chrs 1 --chr-length 1000 --min-depth 3 --max-depth 15 --min-mean-depth 6 --proportion 0.5 test_pops/pop1/bams/
     let _ = env_logger::builder()
         .target(env_logger::Target::Stdout)
