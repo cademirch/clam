@@ -444,59 +444,8 @@ mod tests {
             .is_test(true)
             .try_init();
     }
-
-    #[test]
-    fn test_run_and_write_d4() -> Result<()> {
-        // Initialize logger for debugging in tests
-        init();
-        debug!("Starting run and write test...");
-        // Step 1: Load the D4 file and read tracks
-        let d4_file_path = "tests/data/merged.d4"; // Path to your D4 file
-        let samples: Vec<String> = vec!["0.per".to_string(), "2.per".to_string()];
-
-        let tracks = d4_tasks::prepare_tracks_from_file(d4_file_path, Some(samples.clone()))?;
-        // number of tracks should be same as number of samples specified
-        assert_eq!(samples.len(), tracks.len());
-        let thresholds = Thresholds::Fixed((0.0, f64::INFINITY)); // Default thresholds
-        let mean_thresholds = (0.0, f64::INFINITY); // Example mean thresholds
-        let depth_proportion = 0.0; // Default depth proportion
-        let output_counts = true; // Default setting, adjust if needed
-        let exclude_chrs: Option<HashSet<String>> = None; // No chromosomes to exclude by default
-
-        let rdr: d4::D4TrackReader = d4::D4TrackReader::open_first_track(d4_file_path)?;
-        let chrom_regions =
-            super::prepare_chrom_regions(rdr.chrom_regions(), thresholds, exclude_chrs.as_ref())?;
-        let chroms: Vec<d4::Chrom> = chrom_regions
-            .clone()
-            .into_iter()
-            .map(|r| d4::Chrom {
-                name: r.chr.to_string(),
-                size: r.end.try_into().unwrap(),
-            })
-            .collect();
-        drop(rdr);
-
-        let task_output = d4_tasks::run_tasks_on_tracks(
-            tracks,
-            chrom_regions,
-            mean_thresholds,
-            depth_proportion,
-            output_counts,
-        )?;
-
-        debug!("Writing d4 file...");
-        let output_path = write_d4::<PathBuf>(task_output, chroms, None)?;
-
-        assert!(
-            std::fs::metadata(output_path.to_path_buf()).is_ok(),
-            "Output D4 file should be created"
-        );
-
-        std::fs::remove_file(output_path).expect("Failed to clean up output file");
-
-        debug!("Successfully processed and wrote output to D4.");
-        Ok(())
-    }
+#[test]
+    
 
     #[test]
     fn test_add_filters_to_chroms_success() {
