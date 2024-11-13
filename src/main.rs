@@ -1,11 +1,14 @@
 mod loci;
+mod stat;
 mod utils;
 
-use std::path::PathBuf;
-use std::fs::create_dir_all;
-use anyhow::{bail, Ok, Result, Context};
-use log::warn;
+use anyhow::{bail, Context, Ok, Result};
 use clap::{Parser, Subcommand};
+
+use log::warn;
+
+use std::fs::create_dir_all;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Parser)]
 #[command(name = "clam")]
@@ -20,9 +23,7 @@ struct Cli {
 enum Commands {
     Loci(loci::LociArgs),
 
-    Stat {
-        file: String,
-    },
+    Stat(stat::StatArgs),
 
     #[command(hide = true)]
     Mkdocs,
@@ -62,11 +63,14 @@ fn main() -> Result<()> {
 
             if let Some(parent) = outfile.parent() {
                 if !parent.exists() {
-                    create_dir_all(parent)
-                        .with_context(|| format!("Failed to create parent directories for {:?}", outfile))?;
+                    create_dir_all(parent).with_context(|| {
+                        format!("Failed to create parent directories for {:?}", outfile)
+                    })?;
                 }
             }
-            if !loci_args.no_counts && (loci_args.mean_depth_min > 0.0 || loci_args.depth_proportion > 0.0) {
+            if !loci_args.no_counts
+                && (loci_args.mean_depth_min > 0.0 || loci_args.depth_proportion > 0.0)
+            {
                 warn!("Mean depth proportion settings ignored because we are reporting counts.");
             }
 
@@ -129,9 +133,9 @@ fn main() -> Result<()> {
 
             Ok(())
         }
-        Commands::Stat { file } => {
-            // Placeholder for the Stat command functionality
-            todo!();
+        Commands::Stat(stat_args) => {
+            stat::run_stat(stat_args)?;
+            Ok(())
         }
     }
 }
