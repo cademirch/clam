@@ -17,6 +17,7 @@ use noodles::vcf::{
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
+use log::{info, debug, trace};
 use std::num::NonZeroUsize;
 use std::ops::Bound;
 use std::path::Path;
@@ -93,7 +94,7 @@ struct DxyRecord {
 pub fn run_stat(args: StatArgs) -> Result<()> {
     // Load VCF header and determine ploidy
     let (header, ploidy) = get_vcf_header_and_ploidy(&args.vcf)?;
-
+    info!("Read vcf header");
     let pop_map = if let Some(pop_file) = &args.population_file {
         PopulationMapping::from_path(pop_file)?
     } else {
@@ -132,7 +133,7 @@ pub fn run_stat(args: StatArgs) -> Result<()> {
 
     // Get sequence lengths for regions based on VCF header
     let mut seqlens = seqlens_vcf(&header)?;
-
+    trace!("Got contig lengths: {:?}", seqlens);
     let exclude_chroms = get_exclude_chromosomes(&args.exclude, &args.exclude_file)?;
 
     // Modify `seqlens` in place if `exclude_chroms` has elements
@@ -145,7 +146,7 @@ pub fn run_stat(args: StatArgs) -> Result<()> {
     } else {
         regions_from_seqlens(args.window_size, seqlens)?
     };
-
+    trace!("Got regions: {:?}", regions);
     // Set up windows from regions
     let windows = windows_from_regions(
         regions.clone(),
@@ -166,7 +167,7 @@ pub fn run_stat(args: StatArgs) -> Result<()> {
         worker_count,
         regions,
         &args.vcf,
-        &args.vcf.with_extension("tbi"),
+        &args.vcf.with_extension("gz.tbi"),
         samp_idx_to_pop_idx,
         windows,
     )?;
