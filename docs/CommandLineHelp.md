@@ -17,7 +17,7 @@ Callable Loci and More
 ###### **Subcommands:**
 
 * `loci` — Calculate callable sites from depth statistics.
-* `stat` — 
+* `stat` — Calculate population genetic statisitcs from VCF using callable sites.
 
 
 
@@ -64,11 +64,28 @@ Calculate callable sites from depth statistics.
 
 ## `clam stat`
 
-**Usage:** `clam stat <FILE>`
+Calculate population genetic statisitcs from VCF using callable sites.
+
+**Usage:** `clam stat [OPTIONS] --window-size <WINDOW_SIZE> <VCF> [CALLABLE_SITES]`
 
 ###### **Arguments:**
 
-* `<FILE>`
+* `<VCF>` — Path to input VCF file
+* `<CALLABLE_SITES>` — Path to input callable sites D4 file from clam loci
+
+###### **Options:**
+
+* `-o`, `--outdir <OUTDIR>` — Where to write output files. Defaults to current working directory
+* `-t`, `--threads <THREADS>`
+
+  Default value: `1`
+* `-w`, `--window-size <WINDOW_SIZE>` — Size of windows for statistics in bp. Conflicts with 'regions-file'
+* `-r`, `--regions-file <REGIONS_FILE>` — File specifying regions to calculate statistics for. Must be 1 based. Conflicts with 'window-size'
+* `-s`, `--sites-file <SITES_FILE>` — Specify sites to consider for calculations. 1 site per line chr:pos (1 based)
+* `-p`, `--population-file <POPULATION_FILE>` — Path to file that defines populations. Tab separated: sample, population_name
+* `-f`, `--fai <FASTA_INDEX>` — Path to fasta index for reference VCF was called against. Only needed if VCF does not have contig info in the header
+* `-x <EXCLUDE>` — Comma separated list of chromosomes to exclude
+* `--exclude-file <EXCLUDE_FILE>` — Path to file with chromosomes to exclude, one per line
 
 
 

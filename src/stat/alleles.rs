@@ -78,18 +78,26 @@ pub fn process_single_region<P: AsRef<Path>>(
     samp_idx_to_pop_idx: &FnvHashMap<usize, usize>,
     processed_tx: &Sender<ProcessedRecord>,
 ) -> Result<()> {
+
     let mut rdr = File::open(vcf.as_ref())
         .map(bgzf::Reader::new)
         .map(vcf::io::Reader::new)?;
-    let index = tabix::read(tbi.as_ref())?;
+    
+    let index = tabix::read(tbi.as_ref()).context("Failed to read .tbi file")?;
+    
     let header = rdr.read_header()?;
-
+    
+    
     let query = rdr.query(&header, &index, &region)?;
+    trace!(
+        "Worker processing region {}, began iterating query",
+        region_idx
+    );
     for result in query {
         let record = result?;
         let mut counts = None;
-
-        if record.alternate_bases().len() == 1 {
+        
+        if record.alternate_bases().len() <= 1 {
             let num_pops = samp_idx_to_pop_idx.values().max().map_or(0, |&v| v + 1);
             let mut counts_vec: Vec<[u32; 2]> = vec![[0; 2]; num_pops];
             count_alleles(&record, &header, &samp_idx_to_pop_idx, &mut counts_vec)?;
@@ -102,6 +110,7 @@ pub fn process_single_region<P: AsRef<Path>>(
             .send((chrom, region_idx, start, counts))
             .unwrap();
     }
+    
     Ok(())
 }
 
@@ -121,7 +130,7 @@ pub fn update_windows_for_record(
     } else {
         true // If `sites` is `None`, allow updating counts
     };
-    
+    trace!("Should update counts: {}, window idx: {}, startpos: {}, counts: {:?}", should_update_counts, window_idx, start, counts);
     if should_update_counts {
         if let Some(counts) = counts {
             // Update population counts
@@ -199,16 +208,11 @@ pub fn process<P: AsRef<Path>>(
                 Ok(())
             });
         }
-
-        // Drop `processed_tx` after all worker threads have finished
-        scope.spawn(move || {
-            drop(processed_tx);
-            info!("Closed processed_tx after all workers finished");
-        });
+        drop(processed_tx);
 
         // Aggregate results in the main thread
         while let Ok((_, window_idx, start, counts)) = processed_rx.recv() {
-            debug!("Aggregator received data for window index {}: {:?}", window_idx, counts);
+            
             update_windows_for_record(window_idx, start, counts, &mut windows).unwrap();
         }
     }); // Ensure that all threads within the scope complete
