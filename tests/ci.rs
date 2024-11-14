@@ -102,10 +102,10 @@ fn loci_test_no_pops_output_bed() -> Result<(), Box<dyn std::error::Error>> {
         .try_init();
     let mut cmd = Command::cargo_bin("clam")?;
 
-    let input_file = PathBuf::from_str("tests/data/test_no_pops/merged.d4")?;
-    let output_prefix = PathBuf::from_str("tests/data/test_no_pops/output_bed")?;
+    let input_file = PathBuf::from_str("tests/data/loci/test_no_pops/merged.d4")?;
+    let output_prefix = PathBuf::from_str("tests/data/loci/test_no_pops/output_bed")?;
     let output_file = output_prefix.with_extension("bed");
-    let expected_output_file = PathBuf::from_str("tests/data/test_no_pops/truth.bed")?;
+    let expected_output_file = PathBuf::from_str("tests/data/loci/test_no_pops/truth.bed")?;
 
     cmd.arg("loci")
         .arg(&input_file) // infile as a positional argument
@@ -142,11 +142,11 @@ fn loci_test_pops() -> Result<(), Box<dyn std::error::Error>> {
         .try_init();
     let mut cmd = Command::cargo_bin("clam")?;
 
-    let input_file = PathBuf::from_str("tests/data/test_pops/merged.d4")?;
-    let output_prefix = PathBuf::from_str("tests/data/test_pops/output_d4")?;
+    let input_file = PathBuf::from_str("tests/data/loci/test_pops/merged.d4")?;
+    let output_prefix = PathBuf::from_str("tests/data/loci/test_pops/output_d4")?;
     let output_file = output_prefix.with_extension("d4");
-    let expected_output_file = PathBuf::from_str("tests/data/test_pops/counts.d4")?;
-    let pop_file = PathBuf::from_str("tests/data/test_pops/populations.tsv")?;
+    let expected_output_file = PathBuf::from_str("tests/data/loci/test_pops/counts.d4")?;
+    let pop_file = PathBuf::from_str("tests/data/loci/test_pops/populations.tsv")?;
     let chrom = "sq0";
     let begin = 0;
     let end = 1000;
@@ -183,10 +183,10 @@ fn loci_bgzf_test_no_pops_output_d4() -> Result<(), Box<dyn std::error::Error>> 
         .try_init();
     let mut cmd = Command::cargo_bin("clam")?;
 
-    let input_file = PathBuf::from_str("tests/data/test_no_pops/merged.d4.gz")?;
-    let output_prefix = PathBuf::from_str("tests/data/test_no_pops/output_d4")?;
+    let input_file = PathBuf::from_str("tests/data/loci/test_no_pops/merged.d4.gz")?;
+    let output_prefix = PathBuf::from_str("tests/data/loci/test_no_pops/output_d4")?;
     let output_file = output_prefix.with_extension("d4");
-    let expected_output_file = PathBuf::from_str("tests/data/test_no_pops/truth_counts.d4")?;
+    let expected_output_file = PathBuf::from_str("tests/data/loci/test_no_pops/truth_counts.d4")?;
     let chrom = "sq0";
     let begin = 0;
     let end = 1000;
@@ -225,10 +225,10 @@ fn loci_bgzf_test_no_pops_output_bed() -> Result<(), Box<dyn std::error::Error>>
         .try_init();
     let mut cmd = Command::cargo_bin("clam")?;
 
-    let input_file = PathBuf::from_str("tests/data/test_no_pops/merged.d4.gz")?;
-    let output_prefix = PathBuf::from_str("tests/data/test_no_pops/output_bed")?;
+    let input_file = PathBuf::from_str("tests/data/loci/test_no_pops/merged.d4.gz")?;
+    let output_prefix = PathBuf::from_str("tests/data/loci/test_no_pops/output_bed")?;
     let output_file = output_prefix.with_extension("bed");
-    let expected_output_file = PathBuf::from_str("tests/data/test_no_pops/truth.bed")?;
+    let expected_output_file = PathBuf::from_str("tests/data/loci/test_no_pops/truth.bed")?;
 
     cmd.arg("loci")
         .arg(&input_file) // infile as a positional argument
@@ -265,10 +265,10 @@ fn loci_test_no_pops_output_d4() -> Result<(), Box<dyn std::error::Error>> {
         .try_init();
     let mut cmd = Command::cargo_bin("clam")?;
 
-    let input_file = PathBuf::from_str("tests/data/test_no_pops/merged.d4")?;
-    let output_prefix = PathBuf::from_str("tests/data/test_no_pops/output_d4")?;
+    let input_file = PathBuf::from_str("tests/data/loci/test_no_pops/merged.d4")?;
+    let output_prefix = PathBuf::from_str("tests/data/loci/test_no_pops/output_d4")?;
     let output_file = output_prefix.with_extension("d4");
-    let expected_output_file = PathBuf::from_str("tests/data/test_no_pops/truth_counts.d4")?;
+    let expected_output_file = PathBuf::from_str("tests/data/loci/test_no_pops/truth_counts.d4")?;
     let chrom = "sq0";
     let begin = 0;
     let end = 1000;
@@ -307,11 +307,11 @@ fn loci_bgzf_test_pops() -> Result<(), Box<dyn std::error::Error>> {
         .try_init();
     let mut cmd = Command::cargo_bin("clam")?;
 
-    let input_file = PathBuf::from_str("tests/data/test_pops/merged.d4.gz")?;
-    let output_prefix = PathBuf::from_str("tests/data/test_pops/output_d4")?;
+    let input_file = PathBuf::from_str("tests/data/loci/test_pops/merged.d4.gz")?;
+    let output_prefix = PathBuf::from_str("tests/data/loci/test_pops/output_d4")?;
     let output_file = output_prefix.with_extension("d4");
-    let expected_output_file = PathBuf::from_str("tests/data/test_pops/counts.d4")?;
-    let pop_file = PathBuf::from_str("tests/data/test_pops/populations.tsv")?;
+    let expected_output_file = PathBuf::from_str("tests/data/loci/test_pops/counts.d4")?;
+    let pop_file = PathBuf::from_str("tests/data/loci/test_pops/populations.tsv")?;
     let chrom = "sq0";
     let begin = 0;
     let end = 1000;

@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use fnv::FnvHashMap;
-use log::warn;
+use indexmap::IndexSet;
+use noodles::vcf::variant::record_buf::samples::sample;
 use noodles::{bed, core::Region};
 use serde::Deserialize;
 use std::collections::{hash_map::Entry, HashMap, HashSet};
@@ -11,7 +12,7 @@ use std::io::{BufReader, BufRead};
 
 #[derive(Debug, Clone)]
 pub struct PopulationMapping {
-    pub sample_name_to_pop_idx: FnvHashMap<String, usize>,
+    
     pub pop_idx_to_pop_name: Vec<String>,
     pub pop_idx_to_sample_names: Vec<Vec<String>>,
     pub num_populations: usize,
@@ -61,7 +62,6 @@ impl PopulationMapping {
         }
 
         Ok(PopulationMapping {
-            sample_name_to_pop_idx,
             pop_idx_to_pop_name: pop_idx_to_name,
             pop_idx_to_sample_names,
             num_populations,
@@ -79,6 +79,20 @@ impl PopulationMapping {
             .iter()
             .map(|s| s.as_str())
             .collect()
+    }
+
+    pub fn sample_idx_vcf(&self, header_samples: &IndexSet<String>) -> Result<FnvHashMap<usize, usize>> {
+        let mut res = FnvHashMap::default();
+        for (pop_idx, sample_names) in self.pop_idx_to_sample_names.iter().enumerate() {
+            for sample in sample_names.iter() {
+                if let Some(sample_idx) = header_samples.get_index_of(sample) {
+                    res.insert(sample_idx, pop_idx);
+                } else {
+                    bail!("Sample: '{}' not found in VCF header!", sample);
+                }
+            }
+        }
+        Ok(res)
     }
 }
 
@@ -104,8 +118,8 @@ pub fn get_exclude_chromosomes(
     }
 }
 
-pub fn read_bed_regions<P: AsRef<Path>>(bed_file: P) -> Result<HashMap<String, Vec<Region>>> {
-    let mut res: HashMap<String, Vec<Region>> = HashMap::new();
+pub fn read_bed_regions<P: AsRef<Path>>(bed_file: P) -> Result<Vec<Region>> {
+    let mut res = vec![];
     let mut rdr = bed::io::reader::Builder::<3>::default()
         .build_from_path(bed_file.as_ref())
         .expect(&format!(
@@ -130,10 +144,7 @@ pub fn read_bed_regions<P: AsRef<Path>>(bed_file: P) -> Result<HashMap<String, V
         }?;
         let region = Region::new(chrom, start..=end);
         
-        match res.entry(chrom.to_string()) {
-            Entry::Vacant(e) => {e.insert(vec![region]);},
-            Entry::Occupied(mut e) => {e.get_mut().push(region);}
-        };
+        res.push(region);
     }
 
 
