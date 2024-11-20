@@ -2,9 +2,11 @@ use super::{CallableRegion, ChromRegion};
 use anyhow::{bail, Context, Result};
 use crossbeam::channel::{bounded, Receiver, Sender};
 use d4::{find_tracks, ssio::D4TrackReader, Chrom};
-use log::trace;
+use log::{info, trace};
 use noodles::bgzf::{self, IndexedReader};
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 use std::{collections::HashMap, fs::File, path::Path, thread};
 
@@ -24,6 +26,12 @@ pub fn run_bgzf_tasks<P: AsRef<Path>>(
         Receiver<(String, u32, u32, f64, f64)>,
     ) = bounded(threads);
     let (result_sender, result_receiver) = bounded(threads);
+    let total_chunks: u32 = regions
+        .iter()
+        .map(|r| (r.end - r.begin + CHUNK_SIZE - 1) / CHUNK_SIZE) // Ceiling division to count all chunks
+        .sum();
+    info!("Total chunks to process: {}", total_chunks);
+    let mut completed_chunks = 0;
 
     let region_sender_thread = {
         let region_sender = region_sender.clone();
@@ -54,6 +62,8 @@ pub fn run_bgzf_tasks<P: AsRef<Path>>(
             drop(region_sender); // Close the sender when done
         })
     };
+    let start_time = Instant::now();
+    let mut last_log_time = Instant::now();
 
     let workers: Vec<_> = (0..threads)
         .map(|_| {
@@ -123,6 +133,23 @@ pub fn run_bgzf_tasks<P: AsRef<Path>>(
             .entry(chrom)
             .or_insert_with(Vec::new)
             .extend(callable_regions);
+        completed_chunks += 1;
+
+        // Log progress every 10 chunks
+        if completed_chunks % 10 == 0 {
+            let elapsed_for_last_10 = last_log_time.elapsed();
+            last_log_time = Instant::now(); // Reset for the next 10 chunks
+            let total_elapsed = start_time.elapsed();
+
+            info!(
+                "Processed {} chunks out of {} ({:.2}%) | Last 10 chunks in {:?} | Total time: {:?}",
+                completed_chunks,
+                total_chunks,
+                completed_chunks as f64 / total_chunks as f64 * 100.0,
+                elapsed_for_last_10,
+                total_elapsed
+            );
+        }
     }
 
     // Wait for the region sender thread to complete
@@ -344,5 +371,3 @@ impl BgzfD4MatrixReader {
         Ok(callable_regions)
     }
 }
-
-
