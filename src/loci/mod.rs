@@ -70,7 +70,7 @@ pub struct LociArgs {
     pub mean_depth_max: f64,
 
     /// Disable outputting counts; produces a .bed file instead.
-    #[arg(long = "no-counts", default_value_t = false)]
+    #[arg(long = "no-counts", default_value_t = false, conflicts_with("population_file"))]
     pub no_counts: bool,
 
     /// Number of threads to use
@@ -443,9 +443,7 @@ mod tests {
             .filter_level(log::LevelFilter::Trace)
             .is_test(true)
             .try_init();
-    }
-#[test]
-    
+    }    
 
     #[test]
     fn test_add_filters_to_chroms_success() {

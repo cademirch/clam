@@ -1,5 +1,5 @@
 use super::*;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use crossbeam::channel::{bounded, Receiver, Sender};
 use fnv::FnvHashMap;
 use noodles::bgzf;
@@ -14,9 +14,9 @@ use noodles::vcf::{
 };
 
 use ::log::{debug, info};
+use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use std::num::NonZeroUsize;
 use std::{fs::File, path::Path, thread};
-
 pub type ProcessedRecord = (String, usize, usize, Option<Vec<[u32; 2]>>); //chrom idx, window_idx, position, allele counts
 
 /// Count alleles in a single vcf record
@@ -78,16 +78,14 @@ pub fn process_single_region<P: AsRef<Path>>(
     samp_idx_to_pop_idx: &FnvHashMap<usize, usize>,
     processed_tx: &Sender<ProcessedRecord>,
 ) -> Result<()> {
-
     let mut rdr = File::open(vcf.as_ref())
         .map(bgzf::Reader::new)
         .map(vcf::io::Reader::new)?;
-    
+
     let index = tabix::read(tbi.as_ref()).context("Failed to read .tbi file")?;
-    
+
     let header = rdr.read_header()?;
-    
-    
+
     let query = rdr.query(&header, &index, &region)?;
     trace!(
         "Worker processing region {}, began iterating query",
@@ -96,7 +94,7 @@ pub fn process_single_region<P: AsRef<Path>>(
     for result in query {
         let record = result?;
         let mut counts = None;
-        
+
         if record.alternate_bases().len() <= 1 {
             let num_pops = samp_idx_to_pop_idx.values().max().map_or(0, |&v| v + 1);
             let mut counts_vec: Vec<[u32; 2]> = vec![[0; 2]; num_pops];
@@ -110,7 +108,7 @@ pub fn process_single_region<P: AsRef<Path>>(
             .send((chrom, region_idx, start, counts))
             .unwrap();
     }
-    
+
     Ok(())
 }
 
@@ -130,7 +128,13 @@ pub fn update_windows_for_record(
     } else {
         true // If `sites` is `None`, allow updating counts
     };
-    trace!("Should update counts: {}, window idx: {}, startpos: {}, counts: {:?}", should_update_counts, window_idx, start, counts);
+    trace!(
+        "Should update counts: {}, window idx: {}, startpos: {}, counts: {:?}",
+        should_update_counts,
+        window_idx,
+        start,
+        counts
+    );
     if should_update_counts {
         if let Some(counts) = counts {
             // Update population counts
@@ -169,30 +173,43 @@ pub fn process<P: AsRef<Path>>(
     tbi: P,
     samp_idx_to_pop_idx: FnvHashMap<usize, usize>,
     mut windows: Vec<WindowedData>,
+    quiet: bool,
 ) -> Result<Vec<WindowedData>> {
     let (region_tx, region_rx) = bounded(worker_count.get());
     let (processed_tx, processed_rx) = bounded(worker_count.get());
+    let num_regions = regions.len();
+    info!("Processing {} regions.", num_regions);
+    let start_time = std::time::Instant::now();
+    let bar = if quiet {
+        None
+    } else {
+        let bar = ProgressBar::new(num_regions as u64);
+        bar.set_style(ProgressStyle::with_template("{spinner:.green} [{wide_bar:.cyan/blue}] {percent}% done.")
+        .unwrap()
+        .progress_chars("#>-"));
+    Some(bar)
+    
+    };
 
     thread::scope(|scope| {
-        // Spawn a thread to distribute regions.
         scope.spawn(move || {
             for (region_idx, region) in regions.into_iter().enumerate() {
                 debug!("Sending region {} to region_tx", region_idx);
                 region_tx.send((region_idx, region)).unwrap();
             }
-            // debug!("Dropping region_tx");
-            drop(region_tx); // Close this channel after sending all regions
+            drop(region_tx);
         });
 
-        // Spawn worker threads to process each region.
         for i in 0..worker_count.get() {
             let region_rx = region_rx.clone();
             let processed_tx = processed_tx.clone();
             let vcf_path = vcf.as_ref().to_path_buf();
             let tbi_path = tbi.as_ref().to_path_buf();
             let samp_idx_to_pop_idx = samp_idx_to_pop_idx.clone();
+            let bar = bar.as_ref();
 
             scope.spawn(move || -> Result<()> {
+                let mut counter = 0;
                 while let Ok((region_idx, region)) = region_rx.recv() {
                     debug!("Worker {} processing region {}", i, region_idx);
                     process_single_region(
@@ -203,20 +220,34 @@ pub fn process<P: AsRef<Path>>(
                         &samp_idx_to_pop_idx,
                         &processed_tx,
                     )?;
+                    counter += 1;
+
+                    if counter >= num_regions / 100 {
+                        if let Some(bar) = bar {
+                            bar.inc((num_regions/100) as u64);
+                        }
+                        counter = 0;
+                    }
                 }
-                // debug!("Worker {} finished", i);
+
+                if let Some(bar) = bar {
+                    bar.inc(counter as u64);
+                }
+
                 Ok(())
             });
         }
         drop(processed_tx);
 
-        // Aggregate results in the main thread
         while let Ok((_, window_idx, start, counts)) = processed_rx.recv() {
-            
             update_windows_for_record(window_idx, start, counts, &mut windows).unwrap();
         }
-    }); // Ensure that all threads within the scope complete
+    });
 
+    if let Some(bar) = bar {
+        bar.finish();
+    }
+    info!("Processed {} regions in {:#?}", num_regions, start_time.elapsed());
     Ok(windows)
 }
 

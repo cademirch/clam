@@ -137,11 +137,17 @@ pub fn read_bed_regions<P: AsRef<Path>>(bed_file: P) -> Result<Vec<Region>> {
         },
     } {
         let chrom = record.reference_sequence_name();
-        let start = record.feature_start().expect(&format!("Bad bed record start: {:?}", record));
+        let start = match record.feature_start() {
+            Ok(pos) => pos,
+            Err(e) => {
+                bail!("Bad bed record start: {:?}. Error: {:?}", record, e);
+            }
+        };
         let end = match record.feature_end() {
-            Some(pos) => pos,
-            None => bail!("Bed record missing end: {:?}", record)
-        }?;
+            Some(Ok(pos)) => pos,
+            Some(Err(e)) => bail!("Bad bed record end: {:?}. Error: {:?}", record, e),
+            None => bail!("Bed record missing end: {:?}", record),
+        };
         let region = Region::new(chrom, start..=end);
         
         res.push(region);
@@ -150,3 +156,4 @@ pub fn read_bed_regions<P: AsRef<Path>>(bed_file: P) -> Result<Vec<Region>> {
 
     Ok(res)
 }
+
