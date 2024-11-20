@@ -7,8 +7,9 @@ use alleles::process;
 use anyhow::{anyhow, bail, Context, Result};
 use bstr::{BString, ByteSlice};
 use camino::Utf8PathBuf;
-use clap::Parser;
+use clap::{ArgGroup, Parser};
 use fnv::FnvHashMap;
+use log::{debug, info, trace};
 use noodles::core::{Position, Region};
 use noodles::vcf::{
     self,
@@ -17,18 +18,24 @@ use noodles::vcf::{
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
-use log::{info, debug, trace};
 use std::num::NonZeroUsize;
 use std::ops::Bound;
 use std::path::Path;
 use windows::WindowedData;
 
 #[derive(Parser, Debug, Clone)]
-#[command(about = "Calculate population genetic statisitcs from VCF using callable sites.")]
-
+#[command(about = "Calculate population genetic statistics from VCF using callable sites.")]
+#[command(group(ArgGroup::new("regions")
+    .required(true)
+    .multiple(false)
+    .args(&["window_size", "regions_file"])),
+    group(ArgGroup::new("exclude chromosomes")
+    .required(false)
+    .multiple(false)
+    .args(&["exclude", "exclude_file"])))]
 pub struct StatArgs {
     /// Path to input VCF file
-    #[arg(required(true))]
+    #[arg(required = true)]
     pub vcf: Utf8PathBuf,
 
     /// Path to input callable sites D4 file from clam loci
@@ -38,17 +45,19 @@ pub struct StatArgs {
     #[arg(short = 'o', long = "outdir")]
     pub outdir: Option<Utf8PathBuf>,
 
+    /// Number of threads to use
     #[arg(short = 't', long = "threads", default_value_t = NonZeroUsize::new(1).unwrap())]
     pub threads: NonZeroUsize,
-    /// Size of windows for statistics in bp. Conflicts with 'regions-file'
-    #[arg(short = 'w', long = "window-size", conflicts_with("regions_file"))]
-    pub window_size: usize,
 
-    /// File specifying regions to calculate statistics for. Must be 1 based. Conflicts with 'window-size'
-    #[arg(short = 'r', long = "regions-file", conflicts_with("window_size"))]
+    /// Size of windows for statistics in bp. Conflicts with 'regions-file'
+    #[arg(short = 'w', long = "window-size")]
+    pub window_size: Option<usize>,
+
+    /// File specifying regions to calculate statistics for. Conflicts with 'window-size'
+    #[arg(short = 'r', long = "regions-file")]
     pub regions_file: Option<Utf8PathBuf>,
 
-    /// Specify sites to consider for calculations. 1 site per line chr:pos (1 based)
+    /// Specify sites to consider for calculations. Bed format.
     #[arg(short = 's', long = "sites-file")]
     pub sites_file: Option<Utf8PathBuf>,
 
@@ -61,7 +70,7 @@ pub struct StatArgs {
     pub fasta_index: Option<Utf8PathBuf>,
 
     /// Comma separated list of chromosomes to exclude
-    #[arg(short = 'x', value_delimiter = ',', num_args = 1.., conflicts_with("exclude_file"))]
+    #[arg(short = 'x', value_delimiter = ',', num_args = 1..)]
     pub exclude: Option<Vec<String>>,
 
     /// Path to file with chromosomes to exclude, one per line
@@ -91,10 +100,10 @@ struct DxyRecord {
     differences: u32,
 }
 
-pub fn run_stat(args: StatArgs) -> Result<()> {
+pub fn run_stat(args: StatArgs, quiet: bool) -> Result<()> {
     // Load VCF header and determine ploidy
     let (header, ploidy) = get_vcf_header_and_ploidy(&args.vcf)?;
-    info!("Read vcf header");
+    
     let pop_map = if let Some(pop_file) = &args.population_file {
         PopulationMapping::from_path(pop_file)?
     } else {
@@ -122,7 +131,10 @@ pub fn run_stat(args: StatArgs) -> Result<()> {
 
     let mut d4_reader = if let Some(callable_sites) = args.callable_sites {
         if num_populations != 1 {
-            Some(callable::D4CallableSites::from_file(Some(pop_names.clone()), callable_sites)?)
+            Some(callable::D4CallableSites::from_file(
+                Some(pop_names.clone()),
+                callable_sites,
+            )?)
         } else {
             Some(callable::D4CallableSites::from_file(None, callable_sites)?)
         }
@@ -130,10 +142,9 @@ pub fn run_stat(args: StatArgs) -> Result<()> {
         None
     };
 
-
     // Get sequence lengths for regions based on VCF header
     let mut seqlens = seqlens_vcf(&header)?;
-    trace!("Got contig lengths: {:?}", seqlens);
+    
     let exclude_chroms = get_exclude_chromosomes(&args.exclude, &args.exclude_file)?;
 
     // Modify `seqlens` in place if `exclude_chroms` has elements
@@ -143,26 +154,34 @@ pub fn run_stat(args: StatArgs) -> Result<()> {
 
     let regions = if let Some(regions_file) = args.regions_file.clone() {
         read_bed_regions(regions_file)?
+    } else if let Some(window_size) = args.window_size {
+        regions_from_seqlens(window_size, seqlens)?
     } else {
-        regions_from_seqlens(args.window_size, seqlens)?
+        bail!("Either regions or windows are required!")
     };
-    trace!("Got regions: {:?}", regions);
+    
+    let sites = if let Some(sites_file) = args.sites_file {
+        let sites_regions = read_bed_regions(sites_file)?;
+        Some(sites_map(sites_regions)?)
+    } else {
+        None
+    };
     // Set up windows from regions
     let windows = windows_from_regions(
         regions.clone(),
-        if let Some(pop_file) = args.population_file {
-            PopulationMapping::from_path(&pop_file)?.num_populations
-        } else {
-            1
-        },
+        pop_map.num_populations,
         ploidy as u32,
-        None,
+        sites
     )?;
 
     // Define worker count from threads argument
     let worker_count = args.threads;
-
+    let tbi_path = &args.vcf.with_extension("gz.tbi");
+    if !tbi_path.exists() {
+        bail!("Couldn't find tabix index: {}", tbi_path);
+    }
     // Process the VCF data
+    info!("Starting VCF processing...");
     let mut results = process(
         worker_count,
         regions,
@@ -170,6 +189,7 @@ pub fn run_stat(args: StatArgs) -> Result<()> {
         &args.vcf.with_extension("gz.tbi"),
         samp_idx_to_pop_idx,
         windows,
+        quiet
     )?;
 
     let outdir = args.outdir.unwrap_or_else(|| Utf8PathBuf::from("."));
@@ -196,7 +216,6 @@ pub fn run_stat(args: StatArgs) -> Result<()> {
     // threaded too
     let should_query_d4 = d4_reader.is_some();
     for window in results.iter_mut() {
-        
         if should_query_d4 {
             let _ = window.query_d4(d4_reader.as_mut().unwrap())?; // Safe to unwrap as we checked `is_some`
         }
@@ -342,6 +361,33 @@ pub fn seqlens_vcf(header: &vcf::Header) -> Result<FnvHashMap<String, usize>> {
     Ok(res)
 }
 
+pub fn sites_map(sites_regions: Vec<Region>) -> Result<FnvHashMap<String, Vec<u32>>> {
+    let mut res: FnvHashMap<String, Vec<u32>> = FnvHashMap::default();
+
+    for region in sites_regions {
+        let name = String::from_utf8(region.name().to_vec())
+            .map_err(|e| anyhow::anyhow!("Invalid UTF-8 in region name: {}", e))?;
+
+        let start = match region.start() {
+            Bound::Included(pos) => pos.get(),
+            Bound::Excluded(pos) => pos.get() + 1,
+            Bound::Unbounded => anyhow::bail!("Start bound of region is unbounded"),
+        };
+
+        let end = match region.end() {
+            Bound::Included(pos) => pos.get(),
+            Bound::Excluded(pos) => pos.get() - 1,
+            Bound::Unbounded => anyhow::bail!("End bound of region is unbounded"),
+        };
+
+        let positions = res.entry(name).or_insert_with(Vec::new);
+        for pos in start..=end {
+            positions.push(pos as u32);
+        }
+    }
+
+    Ok(res)
+}
 pub fn get_vcf_header_and_ploidy<P: AsRef<Path>>(vcf_path: P) -> Result<(vcf::Header, usize)> {
     // Create a VCF reader from the provided path
     let mut reader = vcf::io::reader::Builder::default()
@@ -489,6 +535,7 @@ mod tests {
             tbi_fp,
             samp_idx_to_pop_idx,
             windows,
+            true
         )?;
 
         let truth_fp = "tests/data/stat/diploid/small.vcf.counts.tsv";
@@ -539,6 +586,7 @@ mod tests {
             tbi_fp,
             samp_idx_to_pop_idx,
             windows,
+            true
         )?;
 
         let truth_0_fp = "tests/data/stat/diploid/small.vcf.pop0.counts.tsv";
@@ -597,6 +645,7 @@ mod tests {
             tbi_fp,
             samp_idx_to_pop_idx,
             windows,
+            true
         )?;
 
         let truth_0_fp = "tests/data/stat/diploid/small.vcf.pop0.counts.tsv";
@@ -645,6 +694,7 @@ mod tests {
             tbi_fp,
             samp_idx_to_pop_idx,
             windows,
+            true
         )?;
 
         let truth_fp = "tests/data/stat/diploid/small.vcf.counts.tsv";
@@ -693,6 +743,7 @@ mod tests {
             tbi_fp,
             samp_idx_to_pop_idx,
             windows,
+            true
         )?;
         //tests/data/stat/diploid/small.vcf.counts.tsv (zero based coords)
         let truth_pos: Vec<usize> = [0, 10, 21, 34, 45, 555, 611, 731, 854, 975].to_vec();

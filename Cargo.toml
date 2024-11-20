@@ -24,6 +24,7 @@ camino = "1.1.9"
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 clap-markdown = "0.1.4"
 indexmap = "2.6.0"
+indicatif = "0.17.9"
 
 
 [dev-dependencies]

@@ -2,10 +2,10 @@ mod loci;
 mod stat;
 mod utils;
 
-use anyhow::{bail, Context, Ok, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
-use log::warn;
+use log::{info, warn};
 
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
@@ -17,8 +17,15 @@ use std::path::{Path, PathBuf};
 struct Cli {
     #[command(subcommand)]
     command: Commands,
-}
 
+    /// Increase verbosity (-v, -vv for more verbosity)
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
+
+    /// Suppress output (overrides verbosity)
+    #[arg(short, long, action)]
+    quiet: bool,
+}
 #[derive(Debug, Subcommand)]
 enum Commands {
     Loci(loci::LociArgs),
@@ -29,9 +36,32 @@ enum Commands {
     Mkdocs,
 }
 fn main() -> Result<()> {
-    env_logger::init();
     let args = Cli::parse();
 
+    // Set up logging based on verbosity flags
+    let log_level = if args.quiet {
+        log::LevelFilter::Off
+    } else {
+        match args.verbose {
+            0 => log::LevelFilter::Info,  // Default
+            1 => log::LevelFilter::Debug, // -v
+            2 => log::LevelFilter::Trace, // -vv
+            _ => log::LevelFilter::Trace, // Any more `v`s
+        }
+    };
+
+    env_logger::builder()
+        .filter_level(log_level)
+        .init();
+
+    // Capture command-line arguments for logging
+    let str_args: Vec<String> = std::env::args().collect();
+    let command_line = str_args.join(" ");
+    let version = env!("CARGO_PKG_VERSION");
+    info!(
+        "clam version: {} arguments supplied: {}",
+        version, command_line
+    );
     match args.command {
         Commands::Mkdocs => {
             clap_markdown::print_help_markdown::<Cli>();
@@ -72,10 +102,6 @@ fn main() -> Result<()> {
                 && (loci_args.mean_depth_min > 0.0 || loci_args.depth_proportion > 0.0)
             {
                 warn!("Mean depth proportion settings ignored because we are reporting counts.");
-            }
-
-            if bed_out && populations {
-                bail!("To use populations feature, output file must be a d4 file!");
             }
 
             let d4_reader = if gzipped {
@@ -134,7 +160,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Stat(stat_args) => {
-            stat::run_stat(stat_args)?;
+            stat::run_stat(stat_args, args.quiet)?;
             Ok(())
         }
     }
