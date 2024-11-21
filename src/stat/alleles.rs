@@ -2,9 +2,7 @@ use super::*;
 use anyhow::{bail, Context, Result};
 use crossbeam::channel::{bounded, Receiver, Sender};
 use fnv::FnvHashMap;
-use noodles::bgzf;
 use noodles::core::Region;
-use noodles::tabix;
 use noodles::vcf::{
     self,
     variant::record::{
@@ -74,19 +72,14 @@ pub fn process_single_region<P: AsRef<Path>>(
     region_idx: usize,
     region: Region,
     vcf: &P,
-    tbi: &P,
     samp_idx_to_pop_idx: &FnvHashMap<usize, usize>,
     processed_tx: &Sender<ProcessedRecord>,
 ) -> Result<()> {
-    let mut rdr = File::open(vcf.as_ref())
-        .map(bgzf::Reader::new)
-        .map(vcf::io::Reader::new)?;
+    let mut reader = vcf::io::indexed_reader::Builder::default().build_from_path(vcf)?;
+    let header = reader.read_header()?;
+    trace!("Querying region: {}...", region);
+    let query = reader.query(&header, &region).unwrap();
 
-    let index = tabix::read(tbi.as_ref()).context("Failed to read .tbi file")?;
-
-    let header = rdr.read_header()?;
-
-    let query = rdr.query(&header, &index, &region)?;
     trace!(
         "Worker processing region {}, began iterating query",
         region_idx
@@ -139,7 +132,7 @@ pub fn update_windows_for_record(
         if let Some(counts) = counts {
             // Update population counts
             for (pop_idx, vals) in counts.iter().enumerate() {
-                debug!("Updating popidx: {} with values: {:?}", pop_idx, vals);
+                trace!("Updating popidx: {} with values: {:?}", pop_idx, vals);
                 windowed_data.update_population(pop_idx, *vals);
             }
 
@@ -170,25 +163,21 @@ pub fn process<P: AsRef<Path>>(
     worker_count: NonZeroUsize,
     regions: Vec<Region>,
     vcf: P,
-    tbi: P,
     samp_idx_to_pop_idx: FnvHashMap<usize, usize>,
     mut windows: Vec<WindowedData>,
-    quiet: bool,
+    progress_bar: Option<ProgressBar>,
 ) -> Result<Vec<WindowedData>> {
     let (region_tx, region_rx) = bounded(worker_count.get());
     let (processed_tx, processed_rx) = bounded(worker_count.get());
     let num_regions = regions.len();
-    info!("Processing {} regions.", num_regions);
+    info!("Processing {} VCF regions.", num_regions);
     let start_time = std::time::Instant::now();
-    let bar = if quiet {
-        None
+
+    let bar = if let Some(bar) = progress_bar {
+        bar.set_length(num_regions as u64);
+        Some(bar)
     } else {
-        let bar = ProgressBar::new(num_regions as u64);
-        bar.set_style(ProgressStyle::with_template("{spinner:.green} [{wide_bar:.cyan/blue}] {percent}% done.")
-        .unwrap()
-        .progress_chars("#>-"));
-    Some(bar)
-    
+        None
     };
 
     thread::scope(|scope| {
@@ -204,50 +193,44 @@ pub fn process<P: AsRef<Path>>(
             let region_rx = region_rx.clone();
             let processed_tx = processed_tx.clone();
             let vcf_path = vcf.as_ref().to_path_buf();
-            let tbi_path = tbi.as_ref().to_path_buf();
+            let bar = bar.clone();
             let samp_idx_to_pop_idx = samp_idx_to_pop_idx.clone();
-            let bar = bar.as_ref();
 
             scope.spawn(move || -> Result<()> {
-                let mut counter = 0;
                 while let Ok((region_idx, region)) = region_rx.recv() {
                     debug!("Worker {} processing region {}", i, region_idx);
                     process_single_region(
                         region_idx,
                         region,
                         &vcf_path,
-                        &tbi_path,
                         &samp_idx_to_pop_idx,
                         &processed_tx,
                     )?;
-                    counter += 1;
-
-                    if counter >= num_regions / 100 {
-                        if let Some(bar) = bar {
-                            bar.inc((num_regions/100) as u64);
-                        }
-                        counter = 0;
-                    }
-                }
-
-                if let Some(bar) = bar {
-                    bar.inc(counter as u64);
+                    if let Some(ref bar) = bar {
+                        bar.inc(1);
+                    };
                 }
 
                 Ok(())
             });
         }
         drop(processed_tx);
-
+        
         while let Ok((_, window_idx, start, counts)) = processed_rx.recv() {
             update_windows_for_record(window_idx, start, counts, &mut windows).unwrap();
+            
         }
-    });
+        
+    }); 
 
     if let Some(bar) = bar {
-        bar.finish();
+        bar.finish_and_clear();
     }
-    info!("Processed {} regions in {:#?}", num_regions, start_time.elapsed());
+    info!(
+        "Processed {} VCF regions in {:#?}",
+        num_regions,
+        start_time.elapsed()
+    );
     Ok(windows)
 }
 

@@ -114,7 +114,7 @@ impl WindowedData {
     }
     pub fn update_population(&mut self, population_idx: usize, values: [u32; 2]) {
         if let Some(population) = self.get_population_mut(population_idx) {
-            log::debug!("Update pop values: {:?}", values);
+            log::trace!("Update pop values: {:?}", values);
             let gts = values[0] + values[1];
             let diffs = values[0] * values[1];
             let comps = (gts * (gts - 1)) / 2;

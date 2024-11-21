@@ -11,6 +11,8 @@ use clap::{ArgGroup, Parser};
 use fnv::FnvHashMap;
 use log::{debug, info, trace};
 use noodles::core::{Position, Region};
+use noodles::csi::BinningIndex;
+use noodles::tabix;
 use noodles::vcf::{
     self,
     variant::record::samples::{keys::key, series::Value, Series},
@@ -21,6 +23,7 @@ use std::io::Write;
 use std::num::NonZeroUsize;
 use std::ops::Bound;
 use std::path::Path;
+use std::time::Instant;
 use windows::WindowedData;
 
 #[derive(Parser, Debug, Clone)]
@@ -100,10 +103,16 @@ struct DxyRecord {
     differences: u32,
 }
 
-pub fn run_stat(args: StatArgs, quiet: bool) -> Result<()> {
+pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) -> Result<()> {
     // Load VCF header and determine ploidy
     let (header, ploidy) = get_vcf_header_and_ploidy(&args.vcf)?;
+    let tbi_path = &args.vcf.with_extension("gz.tbi");
+    if !tbi_path.exists() {
+        bail!("Couldn't find tabix index: {}", tbi_path);
+    }
+
     
+
     let pop_map = if let Some(pop_file) = &args.population_file {
         PopulationMapping::from_path(pop_file)?
     } else {
@@ -142,9 +151,15 @@ pub fn run_stat(args: StatArgs, quiet: bool) -> Result<()> {
         None
     };
 
+    let index = tabix::read(tbi_path)?;
+    let index_header = index.header().context("Tabix file missing header")?;
+    let index_seqs = index_header.reference_sequence_names();
+
     // Get sequence lengths for regions based on VCF header
     let mut seqlens = seqlens_vcf(&header)?;
-    
+    // only keep chroms that are in the tabix index!
+    seqlens.retain(|key,_| index_seqs.contains(key));
+
     let exclude_chroms = get_exclude_chromosomes(&args.exclude, &args.exclude_file)?;
 
     // Modify `seqlens` in place if `exclude_chroms` has elements
@@ -159,7 +174,7 @@ pub fn run_stat(args: StatArgs, quiet: bool) -> Result<()> {
     } else {
         bail!("Either regions or windows are required!")
     };
-    
+
     let sites = if let Some(sites_file) = args.sites_file {
         let sites_regions = read_bed_regions(sites_file)?;
         Some(sites_map(sites_regions)?)
@@ -171,27 +186,24 @@ pub fn run_stat(args: StatArgs, quiet: bool) -> Result<()> {
         regions.clone(),
         pop_map.num_populations,
         ploidy as u32,
-        sites
+        sites,
     )?;
 
     // Define worker count from threads argument
     let worker_count = args.threads;
-    let tbi_path = &args.vcf.with_extension("gz.tbi");
-    if !tbi_path.exists() {
-        bail!("Couldn't find tabix index: {}", tbi_path);
-    }
+
     // Process the VCF data
     info!("Starting VCF processing...");
+    let start_time = Instant::now();
     let mut results = process(
         worker_count,
         regions,
         &args.vcf,
-        &args.vcf.with_extension("gz.tbi"),
         samp_idx_to_pop_idx,
         windows,
-        quiet
+        progress_bar,
     )?;
-
+    
     let outdir = args.outdir.unwrap_or_else(|| Utf8PathBuf::from("."));
 
     // Create the clam_pi.tsv file
@@ -216,8 +228,11 @@ pub fn run_stat(args: StatArgs, quiet: bool) -> Result<()> {
     // threaded too
     let should_query_d4 = d4_reader.is_some();
     for window in results.iter_mut() {
+
         if should_query_d4 {
+            let start = Instant::now();
             let _ = window.query_d4(d4_reader.as_mut().unwrap())?; // Safe to unwrap as we checked `is_some`
+            info!("Queried {}:{}-{} callable sites in {:#?}", window.chrom.clone(), window.begin, window.end, start.elapsed());
         }
         for (pop_idx, population) in window.populations.iter().enumerate() {
             let comps = population.within_comps;
@@ -532,10 +547,9 @@ mod tests {
             worker_count,
             regions,
             vcf_fp,
-            tbi_fp,
             samp_idx_to_pop_idx,
             windows,
-            true
+            None,
         )?;
 
         let truth_fp = "tests/data/stat/diploid/small.vcf.counts.tsv";
@@ -583,10 +597,9 @@ mod tests {
             worker_count,
             regions,
             vcf_fp,
-            tbi_fp,
             samp_idx_to_pop_idx,
             windows,
-            true
+            None,
         )?;
 
         let truth_0_fp = "tests/data/stat/diploid/small.vcf.pop0.counts.tsv";
@@ -642,10 +655,9 @@ mod tests {
             worker_count,
             regions,
             vcf_fp,
-            tbi_fp,
             samp_idx_to_pop_idx,
             windows,
-            true
+            None,
         )?;
 
         let truth_0_fp = "tests/data/stat/diploid/small.vcf.pop0.counts.tsv";
@@ -691,10 +703,9 @@ mod tests {
             worker_count,
             regions,
             vcf_fp,
-            tbi_fp,
             samp_idx_to_pop_idx,
             windows,
-            true
+            None,
         )?;
 
         let truth_fp = "tests/data/stat/diploid/small.vcf.counts.tsv";
@@ -740,10 +751,9 @@ mod tests {
             worker_count,
             regions,
             vcf_fp,
-            tbi_fp,
             samp_idx_to_pop_idx,
             windows,
-            true
+            None,
         )?;
         //tests/data/stat/diploid/small.vcf.counts.tsv (zero based coords)
         let truth_pos: Vec<usize> = [0, 10, 21, 34, 45, 555, 611, 731, 854, 975].to_vec();

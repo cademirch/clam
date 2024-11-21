@@ -18,3 +18,4 @@ Cargo.lock
 
 tests/**/bams/
 tests/**/depths/
+scratch/
