@@ -296,6 +296,14 @@ pub fn process_windows<P: AsRef<Path>>(
             });
         }
     });
+    info!("Finished processing in {:#?}", start_time.elapsed());
+    let sort_time = Instant::now();
+    info!("Sorting results...");
+    {
+        let mut result_queue = res.lock().unwrap();
+        result_queue.make_contiguous().sort();
+    }
+    info!("Finished processing in {:#?}", sort_time.elapsed());
     Ok(())
 }
 // impl WindowedData {

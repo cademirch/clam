@@ -392,7 +392,7 @@ fn make_region_sites_binary_search(
     Ok(region_sites)
 }
 
-
+/// Extracts the start and end positions from a `Region`, normalizing bounds to inclusive positions.
 fn get_region_positions(region: &Region) -> Result<(usize,usize)> {
     let start = match region.start() {
         Bound::Included(pos) => pos.get(),
