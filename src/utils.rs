@@ -23,6 +23,14 @@ struct PopFileRecord {
     population_name: String,
 }
 
+pub fn count_combinations(n: u32, r: u32) -> u32 {
+    if r > n {
+        0
+    } else {
+        (1..=r).fold(1, |acc, val| acc * (n - val + 1) / val)
+    }
+}
+
 impl PopulationMapping {
     /// Creates a PopulationMapping from a file containing sample and population data.
     pub fn from_path<P: AsRef<Path>>(pop_file: P) -> Result<PopulationMapping> {

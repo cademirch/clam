@@ -6,6 +6,8 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 use log::{info, warn};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif_log_bridge::LogWrapper;
 
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
@@ -50,9 +52,20 @@ fn main() -> Result<()> {
         }
     };
 
-    env_logger::builder()
-        .filter_level(log_level)
-        .init();
+    let logger = env_logger::builder().filter_level(log_level).build();
+    let multi = MultiProgress::new();
+    LogWrapper::new(multi.clone(), logger).try_init().unwrap();
+    log::set_max_level(log_level);
+    let progress_bar = if args.quiet {
+        None
+    } else {
+        let bar = ProgressBar::no_length().with_style(ProgressStyle::with_template(
+            "{spinner:.green} [{wide_bar:.cyan/blue}] {percent}% done.",
+        )
+        .unwrap()
+        .progress_chars("#>-"));
+        Some(multi.add(bar))
+    };
 
     // Capture command-line arguments for logging
     let str_args: Vec<String> = std::env::args().collect();
@@ -160,7 +173,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Stat(stat_args) => {
-            stat::run_stat(stat_args, args.quiet)?;
+            stat::run_stat(stat_args, progress_bar)?;
             Ok(())
         }
     }

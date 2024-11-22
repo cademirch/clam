@@ -2,8 +2,9 @@ pub mod alleles;
 pub mod callable;
 pub mod windows;
 
+
 use crate::utils::{get_exclude_chromosomes, read_bed_regions, PopulationMapping};
-use alleles::process;
+// use alleles::process;
 use anyhow::{anyhow, bail, Context, Result};
 use bstr::{BString, ByteSlice};
 use camino::Utf8PathBuf;
@@ -15,13 +16,15 @@ use noodles::vcf::{
     self,
     variant::record::samples::{keys::key, series::Value, Series},
 };
+use windows::Window;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use std::num::NonZeroUsize;
 use std::ops::Bound;
 use std::path::Path;
-use windows::WindowedData;
+use noodles::csi::BinningIndex;
+// use windows::WindowedData;
 
 #[derive(Parser, Debug, Clone)]
 #[command(about = "Calculate population genetic statistics from VCF using callable sites.")]
@@ -100,10 +103,16 @@ struct DxyRecord {
     differences: u32,
 }
 
-pub fn run_stat(args: StatArgs, quiet: bool) -> Result<()> {
+pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) -> Result<()> {
     // Load VCF header and determine ploidy
     let (header, ploidy) = get_vcf_header_and_ploidy(&args.vcf)?;
-    
+    let tbi_path = &args.vcf.with_extension("gz.tbi");
+    if !tbi_path.exists() {
+        bail!("Couldn't find tabix index: {}", tbi_path);
+    }
+    let index = noodles::tabix::read(tbi_path)?;
+    let index_header = index.header().context("Tabix file missing header")?;
+    let index_seqs = index_header.reference_sequence_names();
     let pop_map = if let Some(pop_file) = &args.population_file {
         PopulationMapping::from_path(pop_file)?
     } else {
@@ -129,22 +138,22 @@ pub fn run_stat(args: StatArgs, quiet: bool) -> Result<()> {
     let samp_idx_to_pop_idx = pop_map.sample_idx_vcf(header.sample_names())?;
     let pop_names = pop_map.get_popname_refs();
 
-    let mut d4_reader = if let Some(callable_sites) = args.callable_sites {
-        if num_populations != 1 {
-            Some(callable::D4CallableSites::from_file(
-                Some(pop_names.clone()),
-                callable_sites,
-            )?)
-        } else {
-            Some(callable::D4CallableSites::from_file(None, callable_sites)?)
-        }
-    } else {
-        None
-    };
+    // let mut d4_reader = if let Some(callable_sites) = args.callable_sites {
+    //     if num_populations != 1 {
+    //         Some(callable::D4CallableSites::from_file(
+    //             Some(pop_names.clone()),
+    //             callable_sites,
+    //         )?)
+    //     } else {
+    //         Some(callable::D4CallableSites::from_file(None, callable_sites)?)
+    //     }
+    // } else {
+    //     None
+    // };
 
     // Get sequence lengths for regions based on VCF header
     let mut seqlens = seqlens_vcf(&header)?;
-    
+    seqlens.retain(|key,_| index_seqs.contains(key));
     let exclude_chroms = get_exclude_chromosomes(&args.exclude, &args.exclude_file)?;
 
     // Modify `seqlens` in place if `exclude_chroms` has elements
@@ -159,20 +168,20 @@ pub fn run_stat(args: StatArgs, quiet: bool) -> Result<()> {
     } else {
         bail!("Either regions or windows are required!")
     };
-    
+
     let sites = if let Some(sites_file) = args.sites_file {
         let sites_regions = read_bed_regions(sites_file)?;
-        Some(sites_map(sites_regions)?)
+        let sites_mapp = sites_map(sites_regions)?;
+        Some(make_region_sites_binary_search(&regions, sites_mapp)?)
     } else {
         None
     };
+
+    
+    
+    
     // Set up windows from regions
-    let windows = windows_from_regions(
-        regions.clone(),
-        pop_map.num_populations,
-        ploidy as u32,
-        sites
-    )?;
+    let windows = Window::from_regions(regions, pop_map, sites, ploidy as u32);
 
     // Define worker count from threads argument
     let worker_count = args.threads;
@@ -182,93 +191,85 @@ pub fn run_stat(args: StatArgs, quiet: bool) -> Result<()> {
     }
     // Process the VCF data
     info!("Starting VCF processing...");
-    let mut results = process(
-        worker_count,
-        regions,
-        &args.vcf,
-        &args.vcf.with_extension("gz.tbi"),
-        samp_idx_to_pop_idx,
-        windows,
-        quiet
-    )?;
+    let mut results = windows::process_windows(args.vcf, args.callable_sites, worker_count, samp_idx_to_pop_idx, windows, progress_bar)?;
 
-    let outdir = args.outdir.unwrap_or_else(|| Utf8PathBuf::from("."));
+    // let outdir = args.outdir.unwrap_or_else(|| Utf8PathBuf::from("."));
 
-    // Create the clam_pi.tsv file
-    let clam_pi_path = outdir.join("clam_pi.tsv");
-    let clam_pi_file = File::create(&clam_pi_path)?;
-    let mut clam_pi_writer = csv::WriterBuilder::new()
-        .delimiter(b'\t')
-        .from_writer(clam_pi_file);
-    // Conditionally create the clam_dxy.tsv file
-    let mut clam_dxy_writer = if num_populations >= 2 {
-        let clam_dxy_path = outdir.join("clam_dxy.tsv");
-        let clam_dxy_file = File::create(&clam_dxy_path)?;
-        let clam_dxy_writer = csv::WriterBuilder::new()
-            .delimiter(b'\t')
-            .from_writer(clam_dxy_file);
-        Some(clam_dxy_writer)
-    } else {
-        None
-    };
+    // // Create the clam_pi.tsv file
+    // let clam_pi_path = outdir.join("clam_pi.tsv");
+    // let clam_pi_file = File::create(&clam_pi_path)?;
+    // let mut clam_pi_writer = csv::WriterBuilder::new()
+    //     .delimiter(b'\t')
+    //     .from_writer(clam_pi_file);
+    // // Conditionally create the clam_dxy.tsv file
+    // let mut clam_dxy_writer = if num_populations >= 2 {
+    //     let clam_dxy_path = outdir.join("clam_dxy.tsv");
+    //     let clam_dxy_file = File::create(&clam_dxy_path)?;
+    //     let clam_dxy_writer = csv::WriterBuilder::new()
+    //         .delimiter(b'\t')
+    //         .from_writer(clam_dxy_file);
+    //     Some(clam_dxy_writer)
+    // } else {
+    //     None
+    // };
 
-    // single threaded version for both
-    // threaded too
-    let should_query_d4 = d4_reader.is_some();
-    for window in results.iter_mut() {
-        if should_query_d4 {
-            let _ = window.query_d4(d4_reader.as_mut().unwrap())?; // Safe to unwrap as we checked `is_some`
-        }
-        for (pop_idx, population) in window.populations.iter().enumerate() {
-            let comps = population.within_comps;
-            let diffs = population.within_diffs;
-            let pi = if comps > 0 {
-                diffs as f32 / comps as f32
-            } else {
-                0.0 // Handle zero comparisons
-            };
-            clam_pi_writer.serialize(PiRecord {
-                population_name: pop_names[pop_idx].to_string(),
-                chrom: window.chrom.clone(),
-                start: window.begin,
-                end: window.end,
-                pi: pi,
-                comparisons: comps,
-                differences: diffs,
-            })?;
-        }
-        if let Some(dxy_writer) = clam_dxy_writer.as_mut() {
-            for pop1 in 0..num_populations {
-                for pop2 in (pop1 + 1)..num_populations {
-                    // Get the index for this population pair
-                    let pair_idx = window.get_pair_index(pop1, pop2);
+    // // single threaded version for both
+    // // threaded too
+    // let should_query_d4 = d4_reader.is_some();
+    // for window in results.iter_mut() {
+    //     if should_query_d4 {
+    //         let _ = window.query_d4(d4_reader.as_mut().unwrap())?; // Safe to unwrap as we checked `is_some`
+    //     }
+    //     for (pop_idx, population) in window.populations.iter().enumerate() {
+    //         let comps = population.within_comps;
+    //         let diffs = population.within_diffs;
+    //         let pi = if comps > 0 {
+    //             diffs as f32 / comps as f32
+    //         } else {
+    //             0.0 // Handle zero comparisons
+    //         };
+    //         clam_pi_writer.serialize(PiRecord {
+    //             population_name: pop_names[pop_idx].to_string(),
+    //             chrom: window.chrom.clone(),
+    //             start: window.begin,
+    //             end: window.end,
+    //             pi: pi,
+    //             comparisons: comps,
+    //             differences: diffs,
+    //         })?;
+    //     }
+    //     if let Some(dxy_writer) = clam_dxy_writer.as_mut() {
+    //         for pop1 in 0..num_populations {
+    //             for pop2 in (pop1 + 1)..num_populations {
+    //                 // Get the index for this population pair
+    //                 let pair_idx = window.get_pair_index(pop1, pop2);
 
-                    // Retrieve comparisons and differences for DXY calculation
-                    if let (Some(comps), Some(diffs)) = (
-                        window.dxy_comps.as_ref().and_then(|c| c.get(pair_idx)),
-                        window.dxy_diffs.as_ref().and_then(|d| d.get(pair_idx)),
-                    ) {
-                        let dxy_value = if *comps > 0 {
-                            *diffs as f32 / *comps as f32
-                        } else {
-                            0.0 // Handle zero comparisons
-                        };
+    //                 // Retrieve comparisons and differences for DXY calculation
+    //                 if let (Some(comps), Some(diffs)) = (
+    //                     window.dxy_comps.as_ref().and_then(|c| c.get(pair_idx)),
+    //                     window.dxy_diffs.as_ref().and_then(|d| d.get(pair_idx)),
+    //                 ) {
+    //                     let dxy_value = if *comps > 0 {
+    //                         *diffs as f32 / *comps as f32
+    //                     } else {
+    //                         0.0 // Handle zero comparisons
+    //                     };
 
-                        dxy_writer.serialize(DxyRecord {
-                            population1_name: pop_names[pop1].to_string(),
-                            population2_name: pop_names[pop2].to_string(),
-                            chrom: window.chrom.clone(),
-                            start: window.begin,
-                            end: window.end,
-                            dxy: dxy_value,
-                            comparisons: *comps,
-                            differences: *diffs,
-                        })?;
-                    }
-                }
-            }
-        }
-    }
+    //                     dxy_writer.serialize(DxyRecord {
+    //                         population1_name: pop_names[pop1].to_string(),
+    //                         population2_name: pop_names[pop2].to_string(),
+    //                         chrom: window.chrom.clone(),
+    //                         start: window.begin,
+    //                         end: window.end,
+    //                         dxy: dxy_value,
+    //                         comparisons: *comps,
+    //                         differences: *diffs,
+    //                     })?;
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
     Ok(())
 }
 
@@ -298,48 +299,48 @@ pub fn regions_from_seqlens(
 }
 
 /// Make hashmap of chrom:vec<windowData>> from hashmap of chrom:<vec<Region>>
-pub fn windows_from_regions(
-    regions: Vec<Region>,
-    num_pops: usize,
-    ploidy: u32,
-    sites: Option<FnvHashMap<String, Vec<u32>>>,
-) -> Result<Vec<WindowedData>> {
-    let mut windows = Vec::with_capacity(regions.len());
-    for region in regions {
-        let chrom = region.name().to_str()?;
+// pub fn windows_from_regions(
+//     regions: Vec<Region>,
+//     num_pops: usize,
+//     ploidy: u32,
+//     sites: Option<FnvHashMap<String, Vec<u32>>>,
+// ) -> Result<Vec<WindowedData>> {
+//     let mut windows = Vec::with_capacity(regions.len());
+//     for region in regions {
+//         let chrom = region.name().to_str()?;
 
-        // Get the list of sites for this chromosome, if any
-        let chrom_sites = sites.as_ref().and_then(|s| s.get(chrom));
+//         // Get the list of sites for this chromosome, if any
+//         let chrom_sites = sites.as_ref().and_then(|s| s.get(chrom));
 
-        let start = match region.start() {
-            Bound::Included(pos) | Bound::Excluded(pos) => pos.get() as u32,
-            Bound::Unbounded => return Err(anyhow!("Unbounded start position in region")),
-        };
-        let end = match region.end() {
-            Bound::Included(pos) | Bound::Excluded(pos) => pos.get() as u32,
-            Bound::Unbounded => return Err(anyhow!("Unbounded end position in region")),
-        };
+//         let start = match region.start() {
+//             Bound::Included(pos) | Bound::Excluded(pos) => pos.get() as u32,
+//             Bound::Unbounded => return Err(anyhow!("Unbounded start position in region")),
+//         };
+//         let end = match region.end() {
+//             Bound::Included(pos) | Bound::Excluded(pos) => pos.get() as u32,
+//             Bound::Unbounded => return Err(anyhow!("Unbounded end position in region")),
+//         };
 
-        // Filter sites within the region's start and end
-        let region_sites: Option<HashSet<u32>> = chrom_sites.map(|s| {
-            let start_idx = s.binary_search(&start).unwrap_or_else(|x| x);
-            let end_idx = s.binary_search(&(end + 1)).unwrap_or_else(|x| x);
+//         // Filter sites within the region's start and end
+//         let region_sites: Option<HashSet<u32>> = chrom_sites.map(|s| {
+//             let start_idx = s.binary_search(&start).unwrap_or_else(|x| x);
+//             let end_idx = s.binary_search(&(end + 1)).unwrap_or_else(|x| x);
 
-            s[start_idx..end_idx].iter().copied().collect() // Collect into a HashSet<u32>
-        });
+//             s[start_idx..end_idx].iter().copied().collect() // Collect into a HashSet<u32>
+//         });
 
-        windows.push(WindowedData::new(
-            chrom,
-            start,
-            end,
-            num_pops,
-            region_sites,
-            ploidy,
-        ));
-    }
+//         windows.push(WindowedData::new(
+//             chrom,
+//             start,
+//             end,
+//             num_pops,
+//             region_sites,
+//             ploidy,
+//         ));
+//     }
 
-    Ok(windows)
-}
+//     Ok(windows)
+// }
 pub fn seqlens_vcf(header: &vcf::Header) -> Result<FnvHashMap<String, usize>> {
     let mut res = FnvHashMap::default();
 
@@ -360,6 +361,53 @@ pub fn seqlens_vcf(header: &vcf::Header) -> Result<FnvHashMap<String, usize>> {
 
     Ok(res)
 }
+fn make_region_sites_binary_search(
+    regions: &[Region], 
+    mut sites: FnvHashMap<String, Vec<u32>>,
+) -> Result<Vec<HashSet<u32>>> {
+    let mut region_sites = Vec::with_capacity(regions.len());
+
+    // Ensure all chromosome sites are sorted
+    for chrom_sites in sites.values_mut() {
+        chrom_sites.sort_unstable(); // Sort each list of positions in place
+    }
+
+    for region in regions {
+        let mut site_set = HashSet::new();
+
+        if let Some(chrom_sites) = sites.get(region.name().to_str().map_err(|_| {
+            anyhow!("Failed to convert region name to string")
+        })?) {
+            let (start, end) = get_region_positions(region)?;
+            let start_idx = chrom_sites.partition_point(|&pos| pos < start as u32);
+            let end_idx = chrom_sites.partition_point(|&pos| pos < end as u32);
+
+            // Collect positions within the range
+            site_set.extend(&chrom_sites[start_idx..end_idx]);
+        }
+
+        region_sites.push(site_set);
+    }
+
+    Ok(region_sites)
+}
+
+
+fn get_region_positions(region: &Region) -> Result<(usize,usize)> {
+    let start = match region.start() {
+        Bound::Included(pos) => pos.get(),
+        Bound::Excluded(pos) => pos.get() + 1,
+        Bound::Unbounded => anyhow::bail!("Start bound of region is unbounded"),
+    };
+
+    let end = match region.end() {
+        Bound::Included(pos) => pos.get(),
+        Bound::Excluded(pos) => pos.get() - 1,
+        Bound::Unbounded => anyhow::bail!("End bound of region is unbounded"),
+    };
+
+    Ok((start, end))
+}
 
 pub fn sites_map(sites_regions: Vec<Region>) -> Result<FnvHashMap<String, Vec<u32>>> {
     let mut res: FnvHashMap<String, Vec<u32>> = FnvHashMap::default();
@@ -368,17 +416,7 @@ pub fn sites_map(sites_regions: Vec<Region>) -> Result<FnvHashMap<String, Vec<u3
         let name = String::from_utf8(region.name().to_vec())
             .map_err(|e| anyhow::anyhow!("Invalid UTF-8 in region name: {}", e))?;
 
-        let start = match region.start() {
-            Bound::Included(pos) => pos.get(),
-            Bound::Excluded(pos) => pos.get() + 1,
-            Bound::Unbounded => anyhow::bail!("Start bound of region is unbounded"),
-        };
-
-        let end = match region.end() {
-            Bound::Included(pos) => pos.get(),
-            Bound::Excluded(pos) => pos.get() - 1,
-            Bound::Unbounded => anyhow::bail!("End bound of region is unbounded"),
-        };
+        let (start,end) = get_region_positions(&region)?;
 
         let positions = res.entry(name).or_insert_with(Vec::new);
         for pos in start..=end {
