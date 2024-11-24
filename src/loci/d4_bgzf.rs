@@ -1,16 +1,186 @@
 use super::{CallableRegion, ChromRegion};
 use anyhow::{bail, Context, Result};
 use crossbeam::channel::{bounded, Receiver, Sender};
-use d4::{find_tracks, ssio::D4TrackReader, Chrom};
+use d4::ssio::D4TrackView;
+use d4::{find_tracks, index::D4IndexCollection, ssio::D4TrackReader, Chrom};
 use log::{info, trace};
 use noodles::bgzf::{self, IndexedReader};
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::Instant;
 use std::{collections::HashMap, fs::File, path::Path, thread};
 
 const CHUNK_SIZE: u32 = 10_000_000;
+
+/// A track reader for a single file/track.
+/// File must be bgzipped with a `.gzi` index file next to it.
+pub struct BGZID4TrackReader {
+    inner: D4TrackReader<IndexedReader<File>>,
+}
+
+impl BGZID4TrackReader {
+    pub fn from_path<P: AsRef<Path>>(src: P, track_name: Option<&str>) -> Result<Self> {
+        let mut indexed_reader = bgzf::indexed_reader::Builder::default()
+            .build_from_path(src.as_ref())
+            .with_context(|| format!("Failed to read d4 file: {}", src.as_ref().display()))?;
+
+        let ic = D4IndexCollection::from_reader(&mut indexed_reader).with_context(|| {
+            format!(
+                "Failed to create D4 index collection for {}",
+                src.as_ref().display()
+            )
+        })?;
+
+        ic.load_seconary_frame_index().with_context(|| {
+            format!(
+                "Failed to load secondary frame index for {}",
+                src.as_ref().display()
+            )
+        })?;
+
+        drop(ic);
+
+        let d4_reader =
+            D4TrackReader::from_reader(indexed_reader, track_name).with_context(|| {
+                format!(
+                    "Failed to create D4 track reader for {}",
+                    src.as_ref().display()
+                )
+            })?;
+
+        Ok(Self { inner: d4_reader })
+    }
+    pub fn inner_mut(&mut self) -> &mut D4TrackReader<IndexedReader<File>> {
+        &mut self.inner
+    }
+}
+
+pub struct BGZID4MatrixReader {
+    readers: Vec<BGZID4TrackReader>,
+}
+
+impl BGZID4MatrixReader {
+    pub fn from_paths<P: AsRef<Path>>(paths: Vec<P>) -> Result<Self> {
+        let readers: Result<Vec<_>> = paths
+            .into_iter()
+            .map(|p| BGZID4TrackReader::from_path(p, None))
+            .collect();
+
+        Ok(Self { readers: readers? })
+    }
+    pub fn from_merged<P: AsRef<Path>>(src: P, track_names: Vec<&str>) -> Result<Self> {
+        let readers: Result<Vec<_>> = track_names
+            .into_iter()
+            .map(|track| BGZID4TrackReader::from_path(src.as_ref(), Some(track)))
+            .collect();
+
+        Ok(Self { readers: readers? })
+    }
+    pub fn chrom_regions(&mut self) -> Vec<(&str, u32, u32)> {
+        self.readers[0]
+            .inner_mut()
+            .get_header()
+            .chrom_list()
+            .iter()
+            .map(|x| (x.name.as_str(), 0, x.size as u32))
+            .collect()
+    }
+    pub fn get_views(
+        &mut self,
+        chrom: &str,
+        begin: u32,
+        end: u32,
+    ) -> Result<Vec<D4TrackView<IndexedReader<File>>>> {
+        let mut views: Vec<_> = self
+            .readers
+            .iter_mut()
+            .map(|track| track.inner_mut().get_view(chrom, begin, end).unwrap())
+            .collect::<Vec<_>>();
+        Ok(views)
+    }
+    pub fn get_callable_regions(
+        &mut self,
+        chrom: &str,
+        begin: u32,
+        end: u32,
+        per_sample_thresholds: (f64, f64),
+        per_site_thresholds: (f64, f64),
+        min_proportion: f64,
+        output_counts: bool,
+    ) -> Result<Vec<CallableRegion>> {
+        let mut views = self.get_views(chrom, begin, end)?;
+        let mut callable_regions = Vec::new();
+        let mut current_region: Option<CallableRegion> = None;
+
+        let cached_values: Vec<Vec<u32>> = views
+            .iter_mut()
+            .map(|view| {
+                let mut pos_values = Vec::with_capacity((end - begin) as usize);
+                for pos in begin..end {
+                    let (reported_pos, value) = view.next().unwrap().unwrap();
+                    assert_eq!(reported_pos, pos);
+                    pos_values.push(value as u32);
+                }
+                pos_values
+            })
+            .collect();
+        for pos_index in 0..(end - begin) as usize {
+            // Collect values for each view at the current position in parallel
+            let pos = begin + pos_index as u32;
+            let values: Vec<u32> = cached_values.iter().map(|v| v[pos_index]).collect();
+            trace!("chrom: {}, pos: {}, vals: {:?}", chrom, pos, values);
+            // Calculate mean of values at this position
+            let mean = values.iter().map(|&v| v as f64).sum::<f64>() / values.len() as f64;
+            // trace!("Got values at pos {}", pos);
+            // Count the values that pass per_sample_thresholds
+            let count = values
+                .iter()
+                .filter(|&&v| {
+                    let v = v as f64;
+                    v >= per_sample_thresholds.0 && v <= per_sample_thresholds.1
+                })
+                .count() as u32;
+
+            let meets_site_thresholds =
+                mean > per_site_thresholds.0 && mean < per_site_thresholds.1;
+            let meets_proportion = (count as f64) / (values.len() as f64) >= min_proportion;
+
+            if output_counts || (meets_site_thresholds && meets_proportion) {
+                // Start a new region or extend the current one
+                if let Some(ref mut region) = current_region {
+                    // Check if we can extend the region
+                    if region.end == pos && (!output_counts || region.count == count) {
+                        region.end += 1; // Extend the current region
+                    } else {
+                        // Can't extend, finalize the region and start a new one
+                        callable_regions.push(region.clone());
+                        *region = CallableRegion {
+                            count,
+                            begin: pos,
+                            end: pos + 1,
+                        };
+                    }
+                } else {
+                    // No current region, so start a new one
+                    current_region = Some(CallableRegion {
+                        count,
+                        begin: pos,
+                        end: pos + 1,
+                    });
+                }
+            } else if let Some(region) = current_region.take() {
+                // Finalize any open region if criteria are no longer met
+                callable_regions.push(region);
+            }
+        }
+
+        // If there's an ongoing region at the end of the loop, finalize it
+        if let Some(region) = current_region {
+            callable_regions.push(region);
+        }
+
+        Ok(callable_regions)
+    }
+}
 
 pub fn run_bgzf_tasks<P: AsRef<Path>>(
     d4_file: P,
@@ -79,7 +249,7 @@ pub fn run_bgzf_tasks<P: AsRef<Path>>(
                         .collect::<Vec<&str>>()
                 });
 
-                let mut matrix_rdr = BgzfD4MatrixReader::from_path(d4_file, track_names)
+                let mut matrix_rdr = BGZID4MatrixReader::from_merged(d4_file, track_names.unwrap())
                     .expect("Failed to create BgzfD4MatrixReader");
                 let tid = thread::current().id();
 

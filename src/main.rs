@@ -155,7 +155,7 @@ fn main() -> Result<()> {
                 loci::merge_d4_files(
                     outfile.clone().into_std_path_buf(),
                     temp_file_paths,
-                    population_map.get_popname_refs(),
+                    population_map.get_popname_refs().unwrap(),
                 )?;
             } else {
                 let res = d4_reader.run_tasks(&loci_args, chrom_regions.clone(), None)?;

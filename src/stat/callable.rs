@@ -1,6 +1,6 @@
 use anyhow::{Context, Ok, Result};
 use d4::ssio::{D4TrackReader, D4TrackView};
-use log::debug;
+use log::{debug, trace};
 use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
@@ -17,9 +17,9 @@ impl D4CallableSites {
         if let Some(pops) = pops {
             readers.reserve(pops.len());
             for pop in pops {
-                let file = File::open(&d4_file_path)
-                    .context(format!("Couldn't open d4 file: {}", d4_file_path.display()))?;
-                let rdr = D4TrackReader::from_reader(file, Some(pop))?;
+                let file = File::open(&d4_file_path).unwrap();
+                trace!("Opened d4 file: {:?}", file);
+                let rdr = D4TrackReader::from_reader(file, Some(pop)).unwrap();
                 readers.push(rdr);
             }
         } else {
@@ -28,10 +28,50 @@ impl D4CallableSites {
             let rdr = D4TrackReader::from_reader(file, None)?;
             readers.push(rdr);
         }
-
+        trace!("Created D4CallableSites");
         Ok(D4CallableSites { readers })
     }
-
+    pub fn query_counts(&mut self, chrom: &str, begin: u32, end: u32) -> Result<Vec<Vec<u32>>> {
+        // Initialize a 2D vector with default values of 0
+        let adjusted_begin = begin - 1;
+        let mut res = vec![vec![0; (end - adjusted_begin) as usize]; self.readers.len()];
+    
+        // Create views for the specified region
+        let mut views: Vec<D4TrackView<File>> = self
+            .readers
+            .iter_mut()
+            .map(|reader| reader.get_view(chrom, adjusted_begin, end).unwrap())
+            .collect();
+    
+        // Iterate through the range of positions
+        for pos in adjusted_begin..end {
+            // Get the callable individuals (values) for each population at this position
+            let values: Vec<u32> = views
+                .iter_mut()
+                .map(|view| {
+                    // Get the next reported position and value
+                    let (reported_pos, value) = view.next().unwrap().unwrap();
+    
+                    // Ensure the reported position matches the current position
+                    debug!(
+                        "reported_pos: {}, pos: {}, value: {}",
+                        reported_pos, pos, value
+                    );
+                    assert_eq!(reported_pos, pos);
+    
+                    value as u32
+                })
+                .collect();
+    
+            // Populate the results vector with values for each population
+            for (population_idx, value) in values.iter().enumerate() {
+                res[population_idx][(pos - adjusted_begin) as usize] = *value;
+            }
+        }
+    
+        Ok(res)
+    }
+    
     pub fn query(
         &mut self,
         chrom: &str,
@@ -47,8 +87,6 @@ impl D4CallableSites {
             .map(|x| x.get_view(chrom, begin, end).unwrap())
             .collect();
 
-        
-        
         let mut within_comps: Vec<u32> = vec![0; num_pops];
 
         let num_pop_combs = if num_pops > 1 {
@@ -69,7 +107,10 @@ impl D4CallableSites {
                 .iter_mut()
                 .map(|view| {
                     let (reported_pos, value) = view.next().unwrap().unwrap();
-                    debug!("reported_pos: {}, pos: {}, value: {}", reported_pos, pos, value);
+                    trace!(
+                        "reported_pos: {}, pos: {}, value: {}",
+                        reported_pos, pos, value
+                    );
                     assert_eq!(reported_pos, pos);
                     value as u32
                 })
@@ -103,7 +144,7 @@ impl D4CallableSites {
                 }
             }
         }
-        debug!(
+        trace!(
             "Callable Sites - {}:{}-{} {:?}",
             chrom, begin, end, within_comps
         );
@@ -159,7 +200,7 @@ mod tests {
             &HashSet::new(), // skip_sites, empty for this test
         )?;
 
-        assert_eq!(within_comps[0],45, "{:?}", within_comps);
+        assert_eq!(within_comps[0], 45, "{:?}", within_comps);
 
         Ok(())
     }

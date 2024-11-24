@@ -117,20 +117,7 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
         PopulationMapping::from_path(pop_file)?
     } else {
         // Default mapping: 1 population, all samples in the same population
-        let mut sample_to_pop_idx = FnvHashMap::default();
-        let mut pop_idx_to_sample_names = vec![Vec::new()];
-        let pop_idx_to_pop_name = vec!["Population_0".to_string()];
-
-        for (idx, sample_name) in header.sample_names().iter().enumerate() {
-            sample_to_pop_idx.insert(idx, 0); // Map all samples to population 0
-            pop_idx_to_sample_names[0].push(sample_name.clone()); // Add all samples to Population_0
-        }
-
-        PopulationMapping {
-            pop_idx_to_pop_name,
-            pop_idx_to_sample_names,
-            num_populations: 1,
-        }
+        PopulationMapping::default(&header)
     };
 
     // Set up sample-to-population mapping, if population file is provided
@@ -181,7 +168,7 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
     
     
     // Set up windows from regions
-    let windows = Window::from_regions(regions, pop_map, sites, ploidy as u32);
+    let windows = Window::from_regions(regions, pop_map.clone(), sites, ploidy as u32);
 
     // Define worker count from threads argument
     let worker_count = args.threads;
@@ -191,7 +178,7 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
     }
     // Process the VCF data
     info!("Starting VCF processing...");
-    let mut results = windows::process_windows(args.vcf, args.callable_sites, worker_count, samp_idx_to_pop_idx, windows, progress_bar)?;
+    let mut results = windows::process_windows(args.vcf, args.callable_sites, worker_count, samp_idx_to_pop_idx, pop_names, windows, progress_bar)?;
 
     // let outdir = args.outdir.unwrap_or_else(|| Utf8PathBuf::from("."));
 

@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use fnv::FnvHashMap;
 use indexmap::IndexSet;
+use noodles::vcf::{self, header};
 use noodles::vcf::variant::record_buf::samples::sample;
 use noodles::{bed, core::Region};
 use serde::Deserialize;
@@ -13,7 +14,7 @@ use std::io::{BufReader, BufRead};
 #[derive(Debug, Clone)]
 pub struct PopulationMapping {
     
-    pub pop_idx_to_pop_name: Vec<String>,
+    pub pop_idx_to_pop_name: Option<Vec<String>>,
     pub pop_idx_to_sample_names: Vec<Vec<String>>,
     pub num_populations: usize,
 }
@@ -32,8 +33,24 @@ pub fn count_combinations(n: u32, r: u32) -> u32 {
 }
 
 impl PopulationMapping {
+    pub fn default(header: &vcf::Header) -> Self {
+        let mut sample_to_pop_idx = FnvHashMap::default();
+        let mut pop_idx_to_sample_names = vec![Vec::new()];
+        let pop_idx_to_pop_name = None;
+
+        for (idx, sample_name) in header.sample_names().iter().enumerate() {
+            sample_to_pop_idx.insert(idx, 0); // Map all samples to population 0
+            pop_idx_to_sample_names[0].push(sample_name.clone()); // Add all samples to Population_0
+        }
+
+        PopulationMapping {
+            pop_idx_to_pop_name,
+            pop_idx_to_sample_names,
+            num_populations: 1,
+        }
+    }
     /// Creates a PopulationMapping from a file containing sample and population data.
-    pub fn from_path<P: AsRef<Path>>(pop_file: P) -> Result<PopulationMapping> {
+    pub fn from_path<P: AsRef<Path>>(pop_file: P) -> Result<Self> {
         let file = File::open(&pop_file).expect(&format!(
             "Failed to open population file: {}",
             pop_file.as_ref().display()
@@ -70,7 +87,7 @@ impl PopulationMapping {
         }
 
         Ok(PopulationMapping {
-            pop_idx_to_pop_name: pop_idx_to_name,
+            pop_idx_to_pop_name: Some(pop_idx_to_name),
             pop_idx_to_sample_names,
             num_populations,
         })
@@ -82,11 +99,10 @@ impl PopulationMapping {
             .map(|s| s.as_str())
             .collect()
     }
-    pub fn get_popname_refs(&self) -> Vec<&str> {
+    pub fn get_popname_refs(&self) -> Option<Vec<&str>> {
         self.pop_idx_to_pop_name
-            .iter()
-            .map(|s| s.as_str())
-            .collect()
+            .as_ref() 
+            .map(|vec| vec.iter().map(String::as_str).collect())
     }
 
     pub fn sample_idx_vcf(&self, header_samples: &IndexSet<String>) -> Result<FnvHashMap<usize, usize>> {

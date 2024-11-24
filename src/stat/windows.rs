@@ -1,12 +1,13 @@
 use super::callable::D4CallableSites;
+use crate::stat::callable;
 use crate::utils::{count_combinations, PopulationMapping};
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
+use bstr::ByteSlice;
 use fnv::FnvHashMap;
 use indicatif::ProgressBar;
 use log::{info, trace};
 use noodles::core::Region;
 use noodles::vcf;
-use noodles::vcf::record::samples::series::value;
 use noodles::vcf::variant::record::AlternateBases;
 use std::cmp::Ordering;
 use std::collections::{HashSet, VecDeque};
@@ -16,6 +17,36 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
+
+pub trait RegionExt {
+    fn start_as_u32(&self) -> u32;
+    fn end_as_u32(&self) -> u32;
+    fn name_as_str(&self) -> &str;
+}
+
+impl RegionExt for Region {
+    fn start_as_u32(&self) -> u32 {
+        match self.start() {
+            Bound::Included(pos) => pos.get().try_into().unwrap(),
+            Bound::Excluded(_) => panic!("Region starts should always be Included."),
+            Bound::Unbounded => panic!("Region starts should always be bounded."),
+        }
+    }
+
+    fn end_as_u32(&self) -> u32 {
+        match self.end() {
+            Bound::Included(pos) => pos.get().try_into().unwrap(),
+            Bound::Excluded(_) => panic!("Region ends should always be Included."),
+            Bound::Unbounded => panic!("Region ends should always be bounded."),
+        }
+    }
+
+    fn name_as_str(&self) -> &str {
+        self.name()
+            .to_str()
+            .expect("Region name is not valid UTF-8")
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct Population {
@@ -64,6 +95,7 @@ impl Window {
             .map(|(region, site)| {
                 let populations: Vec<Population> = population_info
                     .get_popname_refs()
+                    .unwrap_or(vec!["pop1"])
                     .iter()
                     .map(|name| Population::new(name.to_string()))
                     .collect();
@@ -89,6 +121,14 @@ impl Window {
                 }
             })
             .collect() // Collect the iterator into a VecDeque<Window>
+    }
+
+    pub fn get_region_info(&self) -> (&str, u32, u32) {
+        let chrom = self.region.name_as_str();
+        let start = self.region.start_as_u32();
+        let end = self.region.end_as_u32();
+
+        (chrom, start, end)
     }
     pub fn get_pair_index(&self, pop1: usize, pop2: usize) -> usize {
         if pop1 < pop2 {
@@ -168,17 +208,8 @@ impl Ord for Window {
         match self.region.name().cmp(other.region.name()) {
             Ordering::Equal => {
                 // Compare by region start
-                let self_start = match self.region.start() {
-                    Bound::Included(pos) => pos,
-                    Bound::Excluded(_) => panic!("Region starts should always be Included."),
-                    Bound::Unbounded => panic!("Region starts should always be bounded."),
-                };
-
-                let other_start = match other.region.start() {
-                    Bound::Included(pos) => pos,
-                    Bound::Excluded(_) => panic!("Region starts should always be Included."),
-                    Bound::Unbounded => panic!("Region starts should always be bounded."),
-                };
+                let self_start = self.region.start_as_u32();
+                let other_start = other.region.start_as_u32();
 
                 self_start.cmp(&other_start)
             }
@@ -206,6 +237,7 @@ pub fn process_windows<P: AsRef<Path>>(
     d4_path: Option<P>,
     worker_count: NonZeroUsize,
     sample_map: FnvHashMap<usize, usize>,
+    population_names: Option<Vec<&str>>,
     windows: VecDeque<Window>,
     progress_bar: Option<ProgressBar>,
 ) -> Result<()> {
@@ -226,28 +258,60 @@ pub fn process_windows<P: AsRef<Path>>(
             trace!("Spawned worker {}", i);
             let work_queue = Arc::clone(&work_queue);
             let res = Arc::clone(&res);
-            let vcf_path = vcf_path.as_ref().clone();
-            let d4_path = d4_path.as_ref().clone();
+            let vcf_path = vcf_path.as_ref();
+            let d4_path = d4_path.as_ref().map(|p| p.as_ref().to_path_buf());
             let sample_map = sample_map.clone();
             let bar = bar.clone();
+            let population_names = population_names.clone();
 
             scope.spawn(move || -> Result<()> {
                 trace!("Worker {} starting...", i);
+
+                let mut vcf_reader =
+                    vcf::io::indexed_reader::Builder::default().build_from_path(vcf_path)?;
+
+                let header = vcf_reader.read_header()?;
+
+                let mut d4_reader = if let Some(ref path) = d4_path {
+                    Some(D4CallableSites::from_file(population_names, path)?)
+                } else {
+                    None
+                };
+                trace!("D4 Reader: {}", d4_reader.is_some());
+                
+                // actual work loop
                 while let Some(mut window) = {
                     let mut queue = work_queue.lock().unwrap();
                     queue.pop_front()
                 } {
                     trace!("Worker {} aquired window", i);
-                    let population_names: Vec<&str> = window
-                        .populations
-                        .iter()
-                        .map(|pop| pop.name.as_str())
-                        .collect();
-                    let mut vcf_reader =
-                        vcf::io::indexed_reader::Builder::default().build_from_path(vcf_path)?;
-                    // let mut d4_reader =
-                    //     D4CallableSites::from_file(Some(population_names), d4_path)?;
-                    let header = vcf_reader.read_header()?;
+                    
+                    let (chrom, window_begin, window_end) = window.get_region_info();
+                    
+                        let callable_counts: Result<Option<Vec<Vec<u32>>>> =
+                            d4_reader.as_mut().map_or(Ok(None), |reader| {
+                                let query_d4_time = Instant::now();
+                                match reader.query_counts(chrom, window_begin, window_end) {
+                                    Ok(res) => {
+                                        trace!(
+                                            "Worker {} queried {} callable counts d4 in: {:#?}",
+                                            i,
+                                            res[0].len(),
+                                            query_d4_time.elapsed()
+                                        );
+                        
+                                        Ok(Some(res))
+                                    }
+                                    Err(e) => {
+                                        bail!(
+                                        "Worker {} encountered an error querying callable counts: {}",
+                                        i,
+                                        e
+                                    );
+                                    }
+                                }
+                            });
+                            
                     trace!("Worker {} querying region: {:?}", i, &window.region);
                     let query = vcf_reader.query(&header, &window.region)?;
                     let mut sites_skipped: HashSet<u32> = HashSet::new();
