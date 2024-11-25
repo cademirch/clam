@@ -1,19 +1,21 @@
 use anyhow::{Context, Result};
 use assert_cmd::prelude::*;
+use d4::find_tracks_in_file;
+use d4::ssio::{D4MatrixReader, D4TrackReader};
 use log::debug;
 use std::fs;
-use std::io::{self, BufReader, Read, BufRead};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
-use std::fs::File;
-use d4::ssio::{D4MatrixReader, D4TrackReader};
-use d4::find_tracks_in_file;
 
 /// Compare two files byte-by-byte to check if they are the same.
 fn files_are_equal<P: AsRef<Path> + Clone>(file1: P, file2: P) -> Result<bool> {
-    let f1 = File::open(file1.clone()).context(format!("{} does not exist", file1.as_ref().display()))?;
-    let f2 = File::open(file2.clone()).context(format!("{} does not exist", file2.as_ref().display()))?;
+    let f1 = File::open(file1.clone())
+        .context(format!("{} does not exist", file1.as_ref().display()))?;
+    let f2 = File::open(file2.clone())
+        .context(format!("{} does not exist", file2.as_ref().display()))?;
 
     let mut reader1 = BufReader::new(f1);
     let mut reader2 = BufReader::new(f2);
@@ -41,7 +43,13 @@ fn files_are_equal<P: AsRef<Path> + Clone>(file1: P, file2: P) -> Result<bool> {
     Ok(true)
 }
 
-fn d4_files_are_equal<P: AsRef<Path> + Clone>(file1: P, file2: P, chrom: &str, begin: u32, end: u32) -> Result<bool> {
+fn d4_files_are_equal<P: AsRef<Path> + Clone>(
+    file1: P,
+    file2: P,
+    chrom: &str,
+    begin: u32,
+    end: u32,
+) -> Result<bool> {
     let mut f1_tracks: Vec<PathBuf> = vec![];
     find_tracks_in_file(file1.clone(), |_| true, &mut f1_tracks)?;
 
@@ -63,7 +71,7 @@ fn d4_files_are_equal<P: AsRef<Path> + Clone>(file1: P, file2: P, chrom: &str, b
 
         for result in view {
             let (pos, value) = result?;
-            f1_data[idx].push(value as u32);  // Assuming values are within u32 range
+            f1_data[idx].push(value as u32); // Assuming values are within u32 range
         }
     }
 
@@ -80,17 +88,22 @@ fn d4_files_are_equal<P: AsRef<Path> + Clone>(file1: P, file2: P, chrom: &str, b
     }
 
     // Compare data from f1 and f2
-    for (track1, track2) in f1_data.iter().zip(f2_data.iter()) {
+    for (idx, (track1, track2)) in f1_data.iter().zip(f2_data.iter()).enumerate() {
         if track1 != track2 {
-            return Ok(false);  // Mismatch found
+            for (pos, (value1, value2)) in track1.iter().zip(track2.iter()).enumerate() {
+                if value1 != value2 {
+                    debug!(
+                        "Mismatch at track index {}, position {}: track1 value = {}, track2 value = {}",
+                        idx, pos, value1, value2
+                    );
+                    return Ok(false); // Mismatch found
+                }
+            }
         }
     }
 
-    Ok(true)  // All data matched
+    Ok(true) // All data matched
 }
-
-
-
 
 #[test]
 fn loci_test_no_pops_output_bed() -> Result<(), Box<dyn std::error::Error>> {
@@ -166,7 +179,13 @@ fn loci_test_pops() -> Result<(), Box<dyn std::error::Error>> {
     debug!("stdout: {}", String::from_utf8_lossy(&output.stdout));
     debug!("stderr: {}", String::from_utf8_lossy(&output.stderr));
 
-    let success = d4_files_are_equal(expected_output_file.clone(), output_file.clone(), &chrom, begin, end)?;
+    let success = d4_files_are_equal(
+        expected_output_file.clone(),
+        output_file.clone(),
+        &chrom,
+        begin,
+        end,
+    )?;
     assert_eq!(true, success);
     fs::remove_file(&output_file)?;
 
@@ -208,7 +227,13 @@ fn loci_bgzf_test_no_pops_output_d4() -> Result<(), Box<dyn std::error::Error>> 
     debug!("stdout: {}", String::from_utf8_lossy(&output.stdout));
     debug!("stderr: {}", String::from_utf8_lossy(&output.stderr));
 
-    let success = d4_files_are_equal(expected_output_file.clone(), output_file.clone(), &chrom, begin, end)?;
+    let success = d4_files_are_equal(
+        expected_output_file.clone(),
+        output_file.clone(),
+        &chrom,
+        begin,
+        end,
+    )?;
     assert_eq!(true, success);
     fs::remove_file(&output_file)?;
 
@@ -290,7 +315,13 @@ fn loci_test_no_pops_output_d4() -> Result<(), Box<dyn std::error::Error>> {
     debug!("stdout: {}", String::from_utf8_lossy(&output.stdout));
     debug!("stderr: {}", String::from_utf8_lossy(&output.stderr));
 
-    let success = d4_files_are_equal(expected_output_file.clone(), output_file.clone(), &chrom, begin, end)?;
+    let success = d4_files_are_equal(
+        expected_output_file.clone(),
+        output_file.clone(),
+        &chrom,
+        begin,
+        end,
+    )?;
     assert_eq!(true, success);
     fs::remove_file(&output_file)?;
 
@@ -331,7 +362,13 @@ fn loci_bgzf_test_pops() -> Result<(), Box<dyn std::error::Error>> {
     debug!("stdout: {}", String::from_utf8_lossy(&output.stdout));
     debug!("stderr: {}", String::from_utf8_lossy(&output.stderr));
 
-    let success = d4_files_are_equal(expected_output_file.clone(), output_file.clone(), &chrom, begin, end)?;
+    let success = d4_files_are_equal(
+        expected_output_file.clone(),
+        output_file.clone(),
+        &chrom,
+        begin,
+        end,
+    )?;
     assert_eq!(true, success);
     fs::remove_file(&output_file)?;
 

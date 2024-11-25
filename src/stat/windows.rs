@@ -72,7 +72,6 @@ pub struct Window {
     pub populations: Vec<Population>,
     pub dxy_comps: Option<Vec<u32>>,
     pub dxy_diffs: Option<Vec<u32>>,
-    // pub sites_skipped: HashSet<u32>, // if we skipped sites while iterating vcf we record here so we can know not to count that site in callable sites.
     pub sites: Option<HashSet<u32>>, // for specifiying specific sites in this window we are only interersted in
     pub ploidy: u32,
 }
@@ -168,6 +167,7 @@ impl Window {
             panic!("Invalid population index: {}", population_idx);
         }
     }
+
     pub fn update_counts(&mut self, counts: Vec<[u32; 2]>) {
         if counts.len() >= 2 {
             for pop1 in 0..counts.len() {
@@ -240,7 +240,7 @@ pub fn process_windows<P: AsRef<Path>>(
     population_names: Option<Vec<&str>>,
     windows: VecDeque<Window>,
     progress_bar: Option<ProgressBar>,
-) -> Result<()> {
+) ->  Result<VecDeque<Window>> {
     let num_windows = windows.len();
     let res = Arc::new(Mutex::new(VecDeque::<Window>::with_capacity(num_windows)));
     let work_queue = Arc::new(Mutex::new(windows));
@@ -278,40 +278,14 @@ pub fn process_windows<P: AsRef<Path>>(
                     None
                 };
                 trace!("D4 Reader: {}", d4_reader.is_some());
-                
+
                 // actual work loop
                 while let Some(mut window) = {
                     let mut queue = work_queue.lock().unwrap();
                     queue.pop_front()
                 } {
                     trace!("Worker {} aquired window", i);
-                    
-                    let (chrom, window_begin, window_end) = window.get_region_info();
-                    
-                        let callable_counts: Result<Option<Vec<Vec<u32>>>> =
-                            d4_reader.as_mut().map_or(Ok(None), |reader| {
-                                let query_d4_time = Instant::now();
-                                match reader.query_counts(chrom, window_begin, window_end) {
-                                    Ok(res) => {
-                                        trace!(
-                                            "Worker {} queried {} callable counts d4 in: {:#?}",
-                                            i,
-                                            res[0].len(),
-                                            query_d4_time.elapsed()
-                                        );
-                        
-                                        Ok(Some(res))
-                                    }
-                                    Err(e) => {
-                                        bail!(
-                                        "Worker {} encountered an error querying callable counts: {}",
-                                        i,
-                                        e
-                                    );
-                                    }
-                                }
-                            });
-                            
+
                     trace!("Worker {} querying region: {:?}", i, &window.region);
                     let query = vcf_reader.query(&header, &window.region)?;
                     let mut sites_skipped: HashSet<u32> = HashSet::new();
@@ -346,7 +320,34 @@ pub fn process_windows<P: AsRef<Path>>(
                             sites_skipped.insert(start as u32);
                         }
                     }
-                    //todo: query d4
+                    if let Some(reader) = d4_reader.as_mut() {
+                        let query_d4_time = Instant::now();
+                        let (chrom, window_begin, window_end) = window.get_region_info();
+
+                        match reader.query(
+                            chrom,
+                            window_begin,
+                            window_end,
+                            window.ploidy,
+                            &sites_skipped,
+                        ) {
+                            Ok((within, dxy)) => {
+                                trace!(
+                                    "Worker {} queried callable counts d4 in: {:#?}",
+                                    i,
+                                    query_d4_time.elapsed()
+                                );
+                                window.update_comparisons(&within, &dxy);
+                            }
+                            Err(e) => {
+                                bail!(
+                                    "Worker {} encountered an error querying callable counts: {}",
+                                    i,
+                                    e
+                                );
+                            }
+                        }
+                    }
                     {
                         let mut result_queue = res.lock().unwrap();
                         result_queue.push_back(window);
@@ -362,13 +363,16 @@ pub fn process_windows<P: AsRef<Path>>(
     });
     info!("Finished processing in {:#?}", start_time.elapsed());
     let sort_time = Instant::now();
-    info!("Sorting results...");
+    
     {
         let mut result_queue = res.lock().unwrap();
         result_queue.make_contiguous().sort();
     }
-    info!("Finished processing in {:#?}", sort_time.elapsed());
-    Ok(())
+    info!("Sorted results in {:#?}", sort_time.elapsed());
+    let result = Ok(std::mem::take(&mut *res.lock().unwrap())); 
+    result
+
+
 }
 // impl WindowedData {
 //     pub fn new(

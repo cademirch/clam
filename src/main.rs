@@ -118,7 +118,7 @@ fn main() -> Result<()> {
             }
 
             let d4_reader = if gzipped {
-                loci::D4Reader::Bgzf(loci::d4_bgzf::BgzfD4MatrixReader::from_path(
+                loci::D4Reader::Bgzf(loci::d4_bgzf::BGZID4MatrixReader::from_merged(
                     loci_args.infile.clone(),
                     None,
                 )?)
@@ -149,7 +149,7 @@ fn main() -> Result<()> {
                         chrom_regions.clone(),
                         Some(samples.clone()),
                     )?;
-                    temp_file_paths.push(loci::write_d4::<PathBuf>(res, chroms.clone(), None)?);
+                    temp_file_paths.push(loci::write_d4_parallel::<PathBuf>(res, chroms.clone(), None)?);
                 }
 
                 loci::merge_d4_files(
@@ -162,7 +162,7 @@ fn main() -> Result<()> {
                 if bed_out {
                     loci::write_bed(outfile.clone(), res)?;
                 } else {
-                    loci::write_d4::<PathBuf>(
+                    loci::write_d4_parallel::<PathBuf>(
                         res,
                         chroms,
                         Some(outfile.clone().into_std_path_buf()),

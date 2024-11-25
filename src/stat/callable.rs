@@ -31,46 +31,52 @@ impl D4CallableSites {
         trace!("Created D4CallableSites");
         Ok(D4CallableSites { readers })
     }
-    pub fn query_counts(&mut self, chrom: &str, begin: u32, end: u32) -> Result<Vec<Vec<u32>>> {
-        // Initialize a 2D vector with default values of 0
-        let adjusted_begin = begin - 1;
-        let mut res = vec![vec![0; (end - adjusted_begin) as usize]; self.readers.len()];
+    // pub fn query_counts(&mut self, chrom: &str, begin: u32, end: u32, ploidy: u32,) -> Result<Vec<Vec<u32>>> {
+    //     // Initialize a 2D vector with default values of 0
+    //     let adjusted_begin = begin - 1;
+    //     let mut within_comps = vec![vec![0; (end - adjusted_begin) as usize]; self.readers.len()];
     
-        // Create views for the specified region
-        let mut views: Vec<D4TrackView<File>> = self
-            .readers
-            .iter_mut()
-            .map(|reader| reader.get_view(chrom, adjusted_begin, end).unwrap())
-            .collect();
+    //     // Create views for the specified region
+    //     let mut views: Vec<D4TrackView<File>> = self
+    //         .readers
+    //         .iter_mut()
+    //         .map(|reader| reader.get_view(chrom, adjusted_begin, end).unwrap())
+    //         .collect();
     
-        // Iterate through the range of positions
-        for pos in adjusted_begin..end {
-            // Get the callable individuals (values) for each population at this position
-            let values: Vec<u32> = views
-                .iter_mut()
-                .map(|view| {
-                    // Get the next reported position and value
-                    let (reported_pos, value) = view.next().unwrap().unwrap();
+    //     // Iterate through the range of positions
+    //     for pos in adjusted_begin..end {
+    //         // Get the callable individuals (values) for each population at this position
+    //         let values: Vec<u32> = views
+    //             .iter_mut()
+    //             .map(|view| {
+    //                 // Get the next reported position and value
+    //                 let (reported_pos, value) = view.next().unwrap().unwrap();
     
-                    // Ensure the reported position matches the current position
-                    debug!(
-                        "reported_pos: {}, pos: {}, value: {}",
-                        reported_pos, pos, value
-                    );
-                    assert_eq!(reported_pos, pos);
+    //                 // Ensure the reported position matches the current position
+    //                 debug!(
+    //                     "reported_pos: {}, pos: {}, value: {}",
+    //                     reported_pos, pos, value
+    //                 );
+    //                 assert_eq!(reported_pos, pos);
     
-                    value as u32
-                })
-                .collect();
+    //                 value as u32
+    //             })
+    //             .collect();
     
-            // Populate the results vector with values for each population
-            for (population_idx, value) in values.iter().enumerate() {
-                res[population_idx][(pos - adjusted_begin) as usize] = *value;
-            }
-        }
+    //         // Populate the results vector with values for each population
+    //         for (pop_idx, &callable_indvs) in values.iter().enumerate() {
+    //             let haps = ploidy * callable_indvs;
+    //             let within_comp = if haps > 1 {
+    //                 (haps as u64 * (haps as u64 - 1) / 2) as u32
+    //             } else {
+    //                 0
+    //             };
+    //             within_comps[pop_idx] += within_comp;
+    //         }
+    //     }
     
-        Ok(res)
-    }
+    //     Ok(res)
+    // }
     
     pub fn query(
         &mut self,

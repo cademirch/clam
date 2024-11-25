@@ -3,7 +3,7 @@ use anyhow::{bail, Context, Result};
 use crossbeam::channel::{bounded, Receiver, Sender};
 use d4::ssio::D4TrackView;
 use d4::{find_tracks, index::D4IndexCollection, ssio::D4TrackReader, Chrom};
-use log::{info, trace};
+use log::{info, trace, warn};
 use noodles::bgzf::{self, IndexedReader};
 use rayon::prelude::*;
 use std::time::Instant;
@@ -13,44 +13,42 @@ const CHUNK_SIZE: u32 = 10_000_000;
 
 /// A track reader for a single file/track.
 /// File must be bgzipped with a `.gzi` index file next to it.
+///
+fn build_bgzf_reader<P: AsRef<Path>>(src: P) -> Result<IndexedReader<File>> {
+    bgzf::indexed_reader::Builder::default()
+        .build_from_path(src.as_ref())
+        .with_context(|| format!("Failed to read d4 file: {}", src.as_ref().display()))
+}
 pub struct BGZID4TrackReader {
     inner: D4TrackReader<IndexedReader<File>>,
 }
 
 impl BGZID4TrackReader {
     pub fn from_path<P: AsRef<Path>>(src: P, track_name: Option<&str>) -> Result<Self> {
-        let mut indexed_reader = bgzf::indexed_reader::Builder::default()
-            .build_from_path(src.as_ref())
-            .with_context(|| format!("Failed to read d4 file: {}", src.as_ref().display()))?;
+        let indexed_reader = build_bgzf_reader(src.as_ref())?;
 
-        let ic = D4IndexCollection::from_reader(&mut indexed_reader).with_context(|| {
-            format!(
-                "Failed to create D4 index collection for {}",
-                src.as_ref().display()
+        let d4_reader = D4TrackReader::from_reader(indexed_reader, track_name).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to create D4 track reader for file: {}, track_name: {:?}. Error: {}",
+                src.as_ref().display(),
+                track_name,
+                e
             )
         })?;
+        let track_root = d4_reader.as_root();
+        let ic = D4IndexCollection::from_root_container(&track_root);
 
-        ic.load_seconary_frame_index().with_context(|| {
-            format!(
-                "Failed to load secondary frame index for {}",
-                src.as_ref().display()
-            )
-        })?;
-
-        drop(ic);
-
-        let d4_reader =
-            D4TrackReader::from_reader(indexed_reader, track_name).with_context(|| {
-                format!(
-                    "Failed to create D4 track reader for {}",
-                    src.as_ref().display()
-                )
-            })?;
+        if ic.is_err() {
+            warn!("SFI index not found, query times may be slow!")
+        }
 
         Ok(Self { inner: d4_reader })
     }
     pub fn inner_mut(&mut self) -> &mut D4TrackReader<IndexedReader<File>> {
         &mut self.inner
+    }
+    pub fn inner(&self) -> &D4TrackReader<IndexedReader<File>> {
+        &self.inner
     }
 }
 
@@ -67,17 +65,55 @@ impl BGZID4MatrixReader {
 
         Ok(Self { readers: readers? })
     }
-    pub fn from_merged<P: AsRef<Path>>(src: P, track_names: Vec<&str>) -> Result<Self> {
-        let readers: Result<Vec<_>> = track_names
-            .into_iter()
-            .map(|track| BGZID4TrackReader::from_path(src.as_ref(), Some(track)))
-            .collect();
+    pub fn from_merged<P: AsRef<Path>>(src: P, track_names: Option<Vec<&str>>) -> Result<Self> {
+        let indexed_reader = build_bgzf_reader(src.as_ref())?;
+        
+        if let Some(track_names) = track_names {
+            let mut found: Vec<&str> = vec![]; // Store found sample names as String
+            let tracker = |p: Option<&Path>| {
+                if let Some(path) = p {
+                    let track_name = path.to_str().unwrap_or("");
+                    // Check if any sample matches the track name
+                    if let Some(sample) = track_names
+                        .iter()
+                        .find(|&&sample| track_name.contains(sample))
+                    {
+                        found.push(sample); // Push the sample name to found as a String
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+            let mut found_tracks = vec![];
 
-        Ok(Self { readers: readers? })
+            find_tracks(indexed_reader, tracker, &mut found_tracks)?;
+            let readers: Result<Vec<_>> = found_tracks
+                .into_iter()
+                .map(|track| {
+                    BGZID4TrackReader::from_path(src.as_ref(), Some(&track.to_string_lossy()))
+                })
+                .collect();
+
+            Ok(Self { readers: readers? })
+        } else {
+            let mut track_names = vec![];
+            find_tracks(indexed_reader, |_| true, &mut track_names)?;
+            let readers: Result<Vec<_>> = track_names
+                .into_iter()
+                .map(|track| {
+                    BGZID4TrackReader::from_path(src.as_ref(), Some(&track.to_string_lossy()))
+                })
+                .collect();
+
+            Ok(Self { readers: readers? })
+        }
     }
-    pub fn chrom_regions(&mut self) -> Vec<(&str, u32, u32)> {
+    pub fn chrom_regions(&self) -> Vec<(&str, u32, u32)> {
         self.readers[0]
-            .inner_mut()
+            .inner()
             .get_header()
             .chrom_list()
             .iter()
@@ -107,7 +143,9 @@ impl BGZID4MatrixReader {
         min_proportion: f64,
         output_counts: bool,
     ) -> Result<Vec<CallableRegion>> {
+        let viewtime = Instant::now();
         let mut views = self.get_views(chrom, begin, end)?;
+        trace!("Got views in {:?}", viewtime.elapsed());
         let mut callable_regions = Vec::new();
         let mut current_region: Option<CallableRegion> = None;
 
@@ -127,7 +165,7 @@ impl BGZID4MatrixReader {
             // Collect values for each view at the current position in parallel
             let pos = begin + pos_index as u32;
             let values: Vec<u32> = cached_values.iter().map(|v| v[pos_index]).collect();
-            trace!("chrom: {}, pos: {}, vals: {:?}", chrom, pos, values);
+            // trace!("chrom: {}, pos: {}, vals: {:?}", chrom, pos, values);
             // Calculate mean of values at this position
             let mean = values.iter().map(|&v| v as f64).sum::<f64>() / values.len() as f64;
             // trace!("Got values at pos {}", pos);
@@ -249,7 +287,7 @@ pub fn run_bgzf_tasks<P: AsRef<Path>>(
                         .collect::<Vec<&str>>()
                 });
 
-                let mut matrix_rdr = BGZID4MatrixReader::from_merged(d4_file, track_names.unwrap())
+                let mut matrix_rdr = BGZID4MatrixReader::from_merged(d4_file, track_names)
                     .expect("Failed to create BgzfD4MatrixReader");
                 let tid = thread::current().id();
 
@@ -372,172 +410,3 @@ pub fn run_bgzf_tasks<P: AsRef<Path>>(
     Ok(regions)
 }
 
-pub struct BgzfD4MatrixReader {
-    tracks: Vec<D4TrackReader<IndexedReader<File>>>,
-}
-
-impl BgzfD4MatrixReader {
-    pub fn from_path<P: AsRef<Path>>(d4_file: P, samples: Option<Vec<&str>>) -> Result<Self> {
-        let mut bgzf_reader = bgzf::indexed_reader::Builder::default()
-            .build_from_path(d4_file.as_ref())
-            .context("Failed to open d4 file!")?;
-        let mut found = vec![];
-        find_tracks(bgzf_reader, |_| true, &mut found)?; // just get all tracks
-
-        if let Some(samples_vec) = &samples {
-            let mut missing_samples = Vec::new();
-            let mut filtered_found = Vec::new();
-
-            for sample in samples_vec {
-                let mut is_sample_found = false;
-                for track_name in &found {
-                    if track_name.to_string_lossy().contains(sample) {
-                        filtered_found.push(track_name.clone());
-                        is_sample_found = true;
-                    }
-                }
-                if !is_sample_found {
-                    missing_samples.push(sample.to_string());
-                }
-            }
-
-            if !missing_samples.is_empty() {
-                bail!("Samples not found in d4 file! {:?}", missing_samples);
-            }
-
-            found = filtered_found;
-        }
-        let mut readers = Vec::new();
-        for track_name in &found {
-            let bgzf_reader = bgzf::indexed_reader::Builder::default()
-                .build_from_path(d4_file.as_ref())
-                .context("Failed to open d4 file!")?;
-
-            let rdr = D4TrackReader::from_reader(bgzf_reader, Some(&track_name.to_string_lossy()))
-                .context(format!(
-                    "Failed to create D4TrackReader for track {}",
-                    track_name.display()
-                ))?;
-            readers.push(rdr);
-        }
-
-        Ok(Self { tracks: readers })
-    }
-
-    pub fn chrom_regions(&self) -> Vec<(&str, u32, u32)> {
-        self.tracks[0]
-            .get_header()
-            .chrom_list()
-            .iter()
-            .map(|x| (x.name.as_str(), 0, x.size as u32))
-            .collect()
-    }
-    pub fn chrom_list(&self) -> Vec<&Chrom> {
-        self.tracks[0].get_header().chrom_list().iter().collect()
-    }
-    pub fn get_callable_regions(
-        &mut self,
-        chrom: &str,
-        begin: u32,
-        end: u32,
-        per_sample_thresholds: (f64, f64),
-        per_site_thresholds: (f64, f64),
-        min_proportion: f64,
-        output_counts: bool,
-    ) -> Result<Vec<CallableRegion>> {
-        // Prepare views for processing
-        let viewtime = Instant::now();
-        let mut views: Vec<_> = self
-            .tracks
-            .iter_mut()
-            .map(|track| track.get_view(chrom, begin, end).unwrap())
-            .collect::<Vec<_>>();
-        trace!(
-            "Got {}:{}-{} views in {:?}",
-            chrom,
-            begin,
-            end,
-            viewtime.elapsed()
-        );
-
-        let mut callable_regions = Vec::new();
-        let mut current_region: Option<CallableRegion> = None;
-        let valtime = Instant::now();
-        let cached_values: Vec<Vec<u32>> = views
-            .par_iter_mut()
-            .map(|view| {
-                let mut pos_values = Vec::with_capacity((end - begin) as usize);
-                for pos in begin..end {
-                    let (reported_pos, value) = view.next().unwrap().unwrap();
-                    assert_eq!(reported_pos, pos);
-                    pos_values.push(value as u32);
-                }
-                pos_values
-            })
-            .collect();
-
-        trace!(
-            "Got values at {}:{}-{} in {:?}",
-            chrom,
-            begin,
-            end,
-            valtime.elapsed()
-        );
-        for pos_index in 0..(end - begin) as usize {
-            // Collect values for each view at the current position in parallel
-            let pos = begin + pos_index as u32;
-            let values: Vec<u32> = cached_values.iter().map(|v| v[pos_index]).collect();
-            trace!("chrom: {}, pos: {}, vals: {:?}", chrom, pos, values);
-            // Calculate mean of values at this position
-            let mean = values.iter().map(|&v| v as f64).sum::<f64>() / values.len() as f64;
-            // trace!("Got values at pos {}", pos);
-            // Count the values that pass per_sample_thresholds
-            let count = values
-                .iter()
-                .filter(|&&v| {
-                    let v = v as f64;
-                    v >= per_sample_thresholds.0 && v <= per_sample_thresholds.1
-                })
-                .count() as u32;
-
-            let meets_site_thresholds =
-                mean > per_site_thresholds.0 && mean < per_site_thresholds.1;
-            let meets_proportion = (count as f64) / (values.len() as f64) >= min_proportion;
-
-            if output_counts || (meets_site_thresholds && meets_proportion) {
-                // Start a new region or extend the current one
-                if let Some(ref mut region) = current_region {
-                    // Check if we can extend the region
-                    if region.end == pos && (!output_counts || region.count == count) {
-                        region.end += 1; // Extend the current region
-                    } else {
-                        // Can't extend, finalize the region and start a new one
-                        callable_regions.push(region.clone());
-                        *region = CallableRegion {
-                            count,
-                            begin: pos,
-                            end: pos + 1,
-                        };
-                    }
-                } else {
-                    // No current region, so start a new one
-                    current_region = Some(CallableRegion {
-                        count,
-                        begin: pos,
-                        end: pos + 1,
-                    });
-                }
-            } else if let Some(region) = current_region.take() {
-                // Finalize any open region if criteria are no longer met
-                callable_regions.push(region);
-            }
-        }
-
-        // If there's an ongoing region at the end of the loop, finalize it
-        if let Some(region) = current_region {
-            callable_regions.push(region);
-        }
-
-        Ok(callable_regions)
-    }
-}
