@@ -2,11 +2,15 @@ pub mod d4_bgzf;
 pub mod d4_tasks;
 
 use anyhow::{bail, Result};
+use camino::Utf8PathBuf;
+use clap::{ArgGroup, Parser, Subcommand};
 use d4::{
     ptab::PTablePartitionWriter, stab::SecondaryTablePartWriter, Chrom, D4FileBuilder,
     D4FileMerger, D4FileWriter, Dictionary,
+    index::D4IndexCollection
 };
-use log::{debug, warn, trace};
+use log::{debug, info, trace, warn};
+use rayon::prelude::*;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::collections::{hash_map::Entry, HashSet};
@@ -14,9 +18,6 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
-
-use camino::Utf8PathBuf;
-use clap::{ArgGroup, Parser, Subcommand};
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -70,7 +71,11 @@ pub struct LociArgs {
     pub mean_depth_max: f64,
 
     /// Disable outputting counts; produces a .bed file instead.
-    #[arg(long = "no-counts", default_value_t = false, conflicts_with("population_file"))]
+    #[arg(
+        long = "no-counts",
+        default_value_t = false,
+        conflicts_with("population_file")
+    )]
     pub no_counts: bool,
 
     /// Number of threads to use
@@ -106,7 +111,7 @@ impl LociArgs {
 
 pub enum D4Reader {
     D4(d4::D4TrackReader),
-    Bgzf(d4_bgzf::BgzfD4MatrixReader),
+    Bgzf(d4_bgzf::BGZID4MatrixReader),
 }
 
 impl D4Reader {
@@ -248,7 +253,10 @@ pub fn write_d4<P: AsRef<Path>>(
         let region_info = partition.0.region();
         trace!(
             "Partition {}: chrom = {}, region = {}-{}",
-            idx, region_info.0, region_info.1, region_info.2
+            idx,
+            region_info.0,
+            region_info.1,
+            region_info.2
         );
     }
 
@@ -313,6 +321,99 @@ pub fn write_d4<P: AsRef<Path>>(
     }
 
     debug!("D4 file writing complete."); // Final debug output
+    Ok(output_path)
+}
+pub fn write_d4_parallel<P: AsRef<Path>>(
+    regions: Vec<(String, u32, Vec<CallableRegion>)>,
+    chroms: Vec<Chrom>,
+    output_path: Option<P>,
+) -> Result<PathBuf> {
+    // Initialize the D4 file writer
+    let output_path: PathBuf = if let Some(output_path) = output_path {
+        output_path.as_ref().to_path_buf()
+    } else {
+        let temp_file = NamedTempFile::new()?;
+        temp_file.into_temp_path().to_path_buf()
+    };
+
+    let mut builder = D4FileBuilder::new(output_path.clone());
+    builder.append_chrom(chroms.into_iter());
+    builder.set_denominator(1.0);
+    builder.set_dictionary(Dictionary::new_simple_range_dict(0, 1)?);
+
+    // Create the D4 file writer
+    let mut d4_writer: D4FileWriter = builder.create()?;
+    let partitions = d4_writer.parallel_parts(Some(10_000_000))?;
+    trace!("Created {} partitions for writing", partitions.len());
+
+    let partitions_result: Result<()> = partitions
+        .into_par_iter()
+        .map(|(mut partition, mut secondary_table)| {
+            let (chrom, left, right) = partition.region();
+            let chrom = chrom.to_string();
+            let mut primary_encoder = partition.make_encoder();
+            let mut last = left;
+
+            // Encapsulate encoding logic in a closure
+            let mut write_value = |pos: u32, value: i32| {
+                if !primary_encoder.encode(pos as usize, value) {
+                    secondary_table.encode(pos, value).unwrap();
+                    trace!("Secondary encode: Wrote {} at {}:{}", value, chrom, pos);
+                } else {
+                    trace!("Primary encode: Wrote {} at {}:{}", value, chrom, pos);
+                }
+            };
+
+            // Process regions within the current partition
+            if let Some((_, begin_offset, region_list)) = regions
+                .iter()
+                .find(|(region_chrom, _, _)| *region_chrom == chrom)
+            {
+                for region in region_list {
+                    let start = region.begin + *begin_offset;
+                    let end = region.end + *begin_offset;
+
+                    if end <= left || start >= right {
+                        // Skip regions outside of the partition bounds
+                        continue;
+                    }
+
+                    // Clip the region to fit within the partition bounds
+                    let clipped_start = start.max(left);
+                    let clipped_end = end.min(right);
+
+                    for pos in last..clipped_start {
+                        write_value(pos, 0);
+                    }
+
+                    for pos in clipped_start..clipped_end {
+                        write_value(pos, region.count as i32);
+                    }
+
+                    last = clipped_end;
+                }
+            }
+
+            // Fill remaining positions with zero
+            for pos in last..right {
+                write_value(pos, 0);
+            }
+
+            // Flush the secondary table
+            secondary_table.flush()?;
+            secondary_table.finish()?;
+            Ok(())
+        })
+        .collect();
+
+    // Check for any errors during the parallel operation
+    if let Err(e) = partitions_result {
+        return Err(e.into());
+    }
+    drop(d4_writer);
+    debug!("D4 file writing complete.");
+    let mut index_collection = D4IndexCollection::open_for_write(output_path.clone())?;
+    index_collection.create_secondary_frame_index()?;
     Ok(output_path)
 }
 
@@ -443,7 +544,7 @@ mod tests {
             .filter_level(log::LevelFilter::Trace)
             .is_test(true)
             .try_init();
-    }    
+    }
 
     #[test]
     fn test_add_filters_to_chroms_success() {
