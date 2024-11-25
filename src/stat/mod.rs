@@ -173,14 +173,14 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
 
     // Create the clam_pi.tsv file
     let clam_pi_path = outdir.join("clam_pi.tsv");
-    let clam_pi_file = File::create(&clam_pi_path)?;
+    let clam_pi_file = File::create(&clam_pi_path).with_context(|| format!("Couldn't open {} for writing", &clam_pi_path))?;
     let mut clam_pi_writer = csv::WriterBuilder::new()
         .delimiter(b'\t')
         .from_writer(clam_pi_file);
     // Conditionally create the clam_dxy.tsv file
     let mut clam_dxy_writer = if num_populations >= 2 {
         let clam_dxy_path = outdir.join("clam_dxy.tsv");
-        let clam_dxy_file = File::create(&clam_dxy_path)?;
+        let clam_dxy_file = File::create(&clam_dxy_path).with_context(|| format!("Couldn't open {} for writing", &clam_dxy_path))?;
         let clam_dxy_writer = csv::WriterBuilder::new()
             .delimiter(b'\t')
             .from_writer(clam_dxy_file);
