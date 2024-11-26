@@ -4,7 +4,7 @@ use log::{debug, trace};
 use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
-
+use d4::find_tracks;
 pub struct D4CallableSites {
     readers: Vec<D4TrackReader<File>>,
 }
@@ -16,10 +16,32 @@ impl D4CallableSites {
 
         if let Some(pops) = pops {
             readers.reserve(pops.len());
-            for pop in pops {
+            let mut found: Vec<&str> = vec![]; // Store found sample names as String
+            let mut tracker = |p: Option<&Path>| {
+                if let Some(path) = p {
+                    let track_name = path.to_str().unwrap_or("");
+                    // Check if any sample matches the track name
+                    let this_pops = pops.clone();
+                    if let Some(sample) = this_pops
+                        .iter()
+                        .find(|&&sample| track_name.contains(sample))
+                    {
+                        found.push(sample); // Push the sample name to found as a String
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+
+            let file = File::open(&d4_file_path).unwrap();
+            let mut found_tracks = vec![];
+            find_tracks(file, &mut tracker, &mut found_tracks)?;
+            for found in found_tracks {
                 let file = File::open(&d4_file_path).unwrap();
-                trace!("Opened d4 file: {:?}", file);
-                let rdr = D4TrackReader::from_reader(file, Some(pop)).unwrap();
+                let rdr = D4TrackReader::from_reader(file, Some(&found.to_string_lossy())).unwrap();
                 readers.push(rdr);
             }
         } else {
