@@ -9,7 +9,7 @@ use bstr::{BString, ByteSlice};
 use camino::Utf8PathBuf;
 use clap::{ArgGroup, Parser};
 use fnv::FnvHashMap;
-use log::{debug, info, trace};
+use log::{debug, info, trace, warn};
 use noodles::core::{Position, Region};
 use noodles::csi::BinningIndex;
 use noodles::vcf::{
@@ -105,6 +105,7 @@ struct DxyRecord {
 pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) -> Result<()> {
     // Load VCF header and determine ploidy
     let (header, ploidy) = get_vcf_header_and_ploidy(&args.vcf)?;
+    
     let tbi_path = &args.vcf.with_extension("gz.tbi");
     if !tbi_path.exists() {
         bail!("Couldn't find tabix index: {}", tbi_path);
@@ -455,10 +456,13 @@ pub fn get_vcf_header_and_ploidy<P: AsRef<Path>>(vcf_path: P) -> Result<(vcf::He
     for result in genotype.iter() {
         match result {
             Ok((Some(_position), _)) => ploidy += 1, // Increment for each non-missing allele
-            Ok((None, _)) => continue,               // Skip missing alleles
+            Ok((None, _)) => ploidy += 1,               // Increment for missing alleles too
             Err(e) => return Err(anyhow!("Error parsing allele: {:?}", e)),
         }
     }
+    
+    warn!("Inferred ploidy: {} from VCF. If this is incorrect, specify ploidy with the option --ploidy.", ploidy);
+    
     drop(reader);
     Ok((header.clone(), ploidy))
 }

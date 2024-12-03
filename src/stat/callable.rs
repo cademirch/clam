@@ -135,10 +135,7 @@ impl D4CallableSites {
                 .iter_mut()
                 .map(|view| {
                     let (reported_pos, value) = view.next().unwrap().unwrap();
-                    trace!(
-                        "reported_pos: {}, pos: {}, value: {}",
-                        reported_pos, pos, value
-                    );
+                    
                     assert_eq!(reported_pos, pos);
                     value as u32
                 })
@@ -151,6 +148,7 @@ impl D4CallableSites {
             // Calculate within-population comparisons
             for (pop_idx, &callable_indvs) in values.iter().enumerate() {
                 let haps = ploidy * callable_indvs;
+                trace!("Ploidy: {}, Callable Indvs: {}, Callable haplotypes: {}", ploidy, callable_indvs, haps);
                 let within_comp = if haps > 1 {
                     (haps as u64 * (haps as u64 - 1) / 2) as u32
                 } else {
@@ -172,7 +170,7 @@ impl D4CallableSites {
                 }
             }
         }
-        trace!(
+        debug!(
             "Callable Sites - {}:{}-{} {:?}",
             chrom, begin, end, within_comps
         );
