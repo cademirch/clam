@@ -1,9 +1,7 @@
 use super::callable::D4CallableSites;
-use crate::stat::callable;
 use crate::utils::{count_combinations, PopulationMapping};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use bstr::ByteSlice;
-use fnv::FnvHashMap;
 use indicatif::ProgressBar;
 use log::{info, trace};
 use noodles::core::Region;

@@ -3,13 +3,13 @@ pub mod d4_tasks;
 
 use anyhow::{bail, Result};
 use camino::Utf8PathBuf;
-use clap::{ArgGroup, Parser, Subcommand};
+use clap::Parser;
 use d4::{
     ptab::PTablePartitionWriter, stab::SecondaryTablePartWriter, Chrom, D4FileBuilder,
     D4FileMerger, D4FileWriter, Dictionary,
     index::D4IndexCollection
 };
-use log::{debug, info, trace, warn};
+use log::{debug, trace, warn};
 use rayon::prelude::*;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -293,7 +293,7 @@ pub fn write_d4<P: AsRef<Path>>(
                 let record_end = region_info.2.min(end);
 
                 let mut primary_encoder = partitions[current_partition].0.make_encoder();
-                let mut secondary_table = &mut partitions[current_partition].1;
+                let secondary_table = &mut partitions[current_partition].1;
 
                 for current_pos in pos..record_end {
                     if !primary_encoder.encode(current_pos as usize, region.count as i32) {
@@ -536,8 +536,8 @@ pub fn add_filters_to_chroms(
 mod tests {
 
     use super::*;
-    use log::debug;
-    use std::collections::{HashMap, HashSet};
+    
+    use std::collections::HashMap;
     fn init() {
         let _ = env_logger::builder()
             .target(env_logger::Target::Stdout)

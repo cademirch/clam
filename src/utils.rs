@@ -1,11 +1,10 @@
 use anyhow::{bail, Result};
 use fnv::FnvHashMap;
 use indexmap::IndexSet;
-use noodles::vcf::{self, header};
-use noodles::vcf::variant::record_buf::samples::sample;
+use noodles::vcf::{self};
 use noodles::{bed, core::Region};
 use serde::Deserialize;
-use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
 use camino::Utf8PathBuf;

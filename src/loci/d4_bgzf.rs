@@ -1,8 +1,8 @@
 use super::{CallableRegion, ChromRegion};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use crossbeam::channel::{bounded, Receiver, Sender};
 use d4::ssio::D4TrackView;
-use d4::{find_tracks, index::D4IndexCollection, ssio::D4TrackReader, Chrom};
+use d4::{find_tracks, index::D4IndexCollection, ssio::D4TrackReader};
 use log::{info, trace, warn};
 use noodles::bgzf::{self, IndexedReader};
 use rayon::prelude::*;
@@ -126,7 +126,7 @@ impl BGZID4MatrixReader {
         begin: u32,
         end: u32,
     ) -> Result<Vec<D4TrackView<IndexedReader<File>>>> {
-        let mut views: Vec<_> = self
+        let views: Vec<_> = self
             .readers
             .iter_mut()
             .map(|track| track.inner_mut().get_view(chrom, begin, end).unwrap())

@@ -1,16 +1,12 @@
 
-use super::{CallableRegion, add_filters_to_chroms, Thresholds, ChromRegion};
+use super::{CallableRegion, ChromRegion};
 use anyhow::{bail, Context, Ok, Result};
 use d4::{
-    ptab::PTablePartitionWriter,
-    stab::SecondaryTablePartWriter,
-    task::{Task, TaskOutputVec, TaskPartition},
-    Chrom, D4FileBuilder, D4FileMerger, D4FileWriter, D4MatrixReader, D4TrackReader, Dictionary,
+    task::{Task, TaskPartition}, D4MatrixReader, D4TrackReader,
     MultiTrackReader,
 };
-use log::{debug, info, trace, warn};
+use log::{info, trace};
 use std::{
-    collections::{HashMap, HashSet},
     panic,
     path::Path,
     time::Instant,
@@ -250,8 +246,8 @@ pub fn run_tasks_on_tracks(
 mod tests {
 
     use super::*;
-    use log::debug;
-    use std::collections::HashMap;
+    
+    
     fn init() {
         let _ = env_logger::builder()
             .target(env_logger::Target::Stdout)

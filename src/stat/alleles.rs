@@ -1,24 +1,10 @@
 use super::*;
 use anyhow::{bail, Context, Result};
-use crossbeam::channel::{bounded, Receiver, Sender};
 use fnv::FnvHashMap;
-use noodles::bgzf;
-use noodles::core::Region;
-use noodles::tabix;
 use noodles::vcf::{
     self,
-    variant::record::{
-        samples::{keys::key, series::Value, Series},
-        AlternateBases,
-    },
+    variant::record::samples::{keys::key, series::Value, Series},
 };
-
-use ::log::{debug, info};
-use indicatif::{ProgressBar, ProgressStyle};
-use std::num::NonZeroUsize;
-use std::{fs::File, path::Path, thread};
-
-pub type ProcessedRecord = (String, usize, usize, Option<Vec<[u32; 2]>>); //chrom idx, window_idx, position, allele counts
 
 /// Count alleles in a single vcf record
 pub fn count_alleles(
@@ -94,7 +80,7 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use fnv::FnvHashMap;
-    use noodles::vcf::{self, io::Reader};
+    use noodles::vcf::io::Reader;
     use std::io::Cursor;
 
     #[test]

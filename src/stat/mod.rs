@@ -9,14 +9,14 @@ use bstr::{BString, ByteSlice};
 use camino::Utf8PathBuf;
 use clap::{ArgGroup, Parser};
 use fnv::FnvHashMap;
-use log::{debug, info, trace, warn};
+use log::{info, trace, warn};
 use noodles::core::{Position, Region};
 use noodles::csi::BinningIndex;
 use noodles::vcf::{
     self,
     variant::record::samples::{keys::key, series::Value, Series},
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs::File;
 use std::num::NonZeroUsize;
 use std::ops::Bound;

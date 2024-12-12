@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use assert_cmd::prelude::*;
 use d4::find_tracks_in_file;
-use d4::ssio::{D4MatrixReader, D4TrackReader};
+use d4::ssio::D4TrackReader;
 use log::debug;
 use std::fs;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
