@@ -2,7 +2,12 @@ pub mod alleles;
 pub mod callable;
 pub mod windows;
 
-use crate::utils::{get_exclude_chromosomes, read_bed_regions, PopulationMapping};
+use std::collections::HashSet;
+use std::fs::File;
+use std::num::NonZeroUsize;
+use std::ops::Bound;
+use std::path::Path;
+
 // use alleles::process;
 use anyhow::{anyhow, bail, Context, Result};
 use bstr::{BString, ByteSlice};
@@ -12,17 +17,13 @@ use fnv::FnvHashMap;
 use log::{info, trace, warn};
 use noodles::core::{Position, Region};
 use noodles::csi::BinningIndex;
-use noodles::vcf::{
-    self,
-    variant::record::samples::{keys::key, series::Value, Series},
-};
-use std::collections::HashSet;
-use std::fs::File;
-use std::num::NonZeroUsize;
-use std::ops::Bound;
-use std::path::Path;
+use noodles::vcf::variant::record::samples::keys::key;
+use noodles::vcf::variant::record::samples::series::Value;
+use noodles::vcf::variant::record::samples::Series;
+use noodles::vcf::{self};
 use windows::Window;
 
+use crate::utils::{get_exclude_chromosomes, read_bed_regions, PopulationMapping};
 
 #[derive(Parser, Debug, Clone)]
 #[command(about = "Calculate population genetic statistics from VCF using callable sites.")]
@@ -108,7 +109,7 @@ struct DxyRecord {
 pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) -> Result<()> {
     // Load VCF header and determine ploidy
     let (header, ploidy) = get_vcf_header_and_ploidy(&args.vcf)?;
-    
+
     let tbi_path = &args.vcf.with_extension("gz.tbi");
     if !tbi_path.exists() {
         bail!("Couldn't find tabix index: {}", tbi_path);
@@ -123,10 +124,10 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
         // Default mapping: 1 population, all samples in the same population
         PopulationMapping::default(&header)
     };
-    
+
     // Set up sample-to-population mapping, if population file is provided
     let num_populations = pop_map.num_populations;
-    
+
     let pop_names = pop_map.get_popname_refs();
 
     // Get sequence lengths for regions based on VCF header
@@ -416,14 +417,13 @@ pub fn get_vcf_header_and_ploidy<P: AsRef<Path>>(vcf_path: P) -> Result<(vcf::He
     for result in genotype.iter() {
         match result {
             Ok((Some(_position), _)) => ploidy += 1, // Increment for each non-missing allele
-            Ok((None, _)) => ploidy += 1,               // Increment for missing alleles too
+            Ok((None, _)) => ploidy += 1,            // Increment for missing alleles too
             Err(e) => return Err(anyhow!("Error parsing allele: {:?}", e)),
         }
     }
-    
+
     warn!("Inferred ploidy: {} from VCF. If this is incorrect, specify ploidy with the option --ploidy.", ploidy);
-    
+
     drop(reader);
     Ok((header.clone(), ploidy))
 }
-

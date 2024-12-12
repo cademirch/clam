@@ -1,10 +1,11 @@
-use super::*;
 use anyhow::{bail, Context, Result};
 use fnv::FnvHashMap;
-use noodles::vcf::{
-    self,
-    variant::record::samples::{keys::key, series::Value, Series},
-};
+use noodles::vcf::variant::record::samples::keys::key;
+use noodles::vcf::variant::record::samples::series::Value;
+use noodles::vcf::variant::record::samples::Series;
+use noodles::vcf::{self};
+
+use super::*;
 
 /// Count alleles in a single vcf record
 pub fn count_alleles(
@@ -77,11 +78,13 @@ pub fn count_alleles(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::io::Cursor;
+
     use anyhow::Result;
     use fnv::FnvHashMap;
     use noodles::vcf::io::Reader;
-    use std::io::Cursor;
+
+    use super::*;
 
     #[test]
     fn test_count_alleles_single_population() -> Result<()> {

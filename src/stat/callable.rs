@@ -1,10 +1,11 @@
-use anyhow::{Context, Ok, Result};
-use d4::ssio::{D4TrackReader, D4TrackView};
-use log::{debug, trace};
 use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
+
+use anyhow::{Context, Ok, Result};
 use d4::find_tracks;
+use d4::ssio::{D4TrackReader, D4TrackView};
+use log::{debug, trace};
 pub struct D4CallableSites {
     readers: Vec<D4TrackReader<File>>,
 }
@@ -53,8 +54,7 @@ impl D4CallableSites {
         trace!("Created D4CallableSites");
         Ok(D4CallableSites { readers })
     }
-  
-    
+
     pub fn query(
         &mut self,
         chrom: &str,
@@ -64,7 +64,7 @@ impl D4CallableSites {
         skip_sites: &HashSet<u32>,
     ) -> Result<(Vec<u32>, Option<Vec<u32>>)> {
         let num_pops = self.readers.len();
-        
+
         let mut views: Vec<D4TrackView<File>> = self
             .readers
             .iter_mut()
@@ -91,7 +91,7 @@ impl D4CallableSites {
                 .iter_mut()
                 .map(|view| {
                     let (reported_pos, value) = view.next().unwrap().unwrap();
-                    
+
                     assert_eq!(reported_pos, pos);
                     value as u32
                 })
@@ -104,7 +104,12 @@ impl D4CallableSites {
             // Calculate within-population comparisons
             for (pop_idx, &callable_indvs) in values.iter().enumerate() {
                 let haps = ploidy * callable_indvs;
-                trace!("Ploidy: {}, Callable Indvs: {}, Callable haplotypes: {}", ploidy, callable_indvs, haps);
+                trace!(
+                    "Ploidy: {}, Callable Indvs: {}, Callable haplotypes: {}",
+                    ploidy,
+                    callable_indvs,
+                    haps
+                );
                 let within_comp = if haps > 1 {
                     (haps as u64 * (haps as u64 - 1) / 2) as u32
                 } else {
@@ -136,11 +141,13 @@ impl D4CallableSites {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serde::Deserialize;
     use std::collections::HashSet;
     use std::fs::File;
     use std::path::Path;
+
+    use serde::Deserialize;
+
+    use super::*;
 
     #[derive(Debug, Deserialize)]
     struct PopsTruthRecord {

@@ -2,15 +2,14 @@ mod loci;
 mod stat;
 mod utils;
 
-use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
-
-use log::{info, warn};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use indicatif_log_bridge::LogWrapper;
-
 use std::fs::create_dir_all;
 use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif_log_bridge::LogWrapper;
+use log::{info, warn};
 
 #[derive(Debug, Parser)]
 #[command(name = "clam")]
@@ -59,11 +58,13 @@ fn main() -> Result<()> {
     let progress_bar = if args.quiet {
         None
     } else {
-        let bar = ProgressBar::no_length().with_style(ProgressStyle::with_template(
-            "{spinner:.green} [{wide_bar:.cyan/blue}] {percent}% done.",
-        )
-        .unwrap()
-        .progress_chars("#>-"));
+        let bar = ProgressBar::no_length().with_style(
+            ProgressStyle::with_template(
+                "{spinner:.green} [{wide_bar:.cyan/blue}] {percent}% done.",
+            )
+            .unwrap()
+            .progress_chars("#>-"),
+        );
         Some(multi.add(bar))
     };
 
@@ -139,7 +140,8 @@ fn main() -> Result<()> {
 
             if populations {
                 let population_map = utils::PopulationMapping::from_path(
-                    loci_args.population_file.as_ref().unwrap(), None
+                    loci_args.population_file.as_ref().unwrap(),
+                    None,
                 )?;
                 let mut temp_file_paths = Vec::with_capacity(population_map.num_populations);
 
@@ -149,7 +151,11 @@ fn main() -> Result<()> {
                         chrom_regions.clone(),
                         Some(samples.clone()),
                     )?;
-                    temp_file_paths.push(loci::write_d4_parallel::<PathBuf>(res, chroms.clone(), None)?);
+                    temp_file_paths.push(loci::write_d4_parallel::<PathBuf>(
+                        res,
+                        chroms.clone(),
+                        None,
+                    )?);
                 }
 
                 loci::merge_d4_files(

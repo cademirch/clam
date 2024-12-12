@@ -1,22 +1,22 @@
 pub mod d4_bgzf;
 pub mod d4_tasks;
 
-use anyhow::{bail, Result};
-use camino::Utf8PathBuf;
-use clap::Parser;
-use d4::{
-    ptab::PTablePartitionWriter, stab::SecondaryTablePartWriter, Chrom, D4FileBuilder,
-    D4FileMerger, D4FileWriter, Dictionary,
-    index::D4IndexCollection
-};
-use log::{debug, trace, warn};
-use rayon::prelude::*;
-use serde::Deserialize;
-use std::collections::HashMap;
-use std::collections::{hash_map::Entry, HashSet};
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+use anyhow::{bail, Result, Context};
+use camino::Utf8PathBuf;
+use clap::Parser;
+use d4::index::D4IndexCollection;
+use d4::ptab::PTablePartitionWriter;
+use d4::stab::SecondaryTablePartWriter;
+use d4::{Chrom, D4FileBuilder, D4FileMerger, D4FileWriter, Dictionary};
+use log::{debug, trace, warn};
+use rayon::prelude::*;
+use serde::Deserialize;
 use tempfile::NamedTempFile;
 
 #[derive(Parser, Debug, Clone)]
@@ -226,103 +226,6 @@ pub fn merge_d4_files<P: AsRef<Path>>(outpath: P, input: Vec<P>, names: Vec<&str
     Ok(())
 }
 
-pub fn write_d4<P: AsRef<Path>>(
-    regions: Vec<(String, u32, Vec<CallableRegion>)>, // Generic input structure
-    chroms: Vec<Chrom>,
-    output_path: Option<P>,
-) -> Result<PathBuf> {
-    // Initialize the D4 file writer
-
-    let output_path: PathBuf = if let Some(output_path) = output_path {
-        output_path.as_ref().to_path_buf() // Convert P to PathBuf
-    } else {
-        let temp_file = NamedTempFile::new()?;
-        temp_file.into_temp_path().to_path_buf() // Convert NamedTempFile path to PathBuf
-    };
-
-    let mut builder = D4FileBuilder::new(output_path.to_path_buf());
-    builder.append_chrom(chroms.into_iter());
-    builder.set_denominator(1.0); // Set denominator (you can adjust as needed)
-    builder.set_dictionary(Dictionary::new_simple_range_dict(0, 1)?); // Set dictionary for encoding
-
-    // Create the D4 file writer
-    let mut d4_writer: D4FileWriter = builder.create()?;
-
-    let mut partitions = d4_writer.parallel_parts(None)?;
-    for (idx, partition) in partitions.iter().enumerate() {
-        let region_info = partition.0.region();
-        trace!(
-            "Partition {}: chrom = {}, region = {}-{}",
-            idx,
-            region_info.0,
-            region_info.1,
-            region_info.2
-        );
-    }
-
-    // Process each tuple in `regions`, which contains a chromosome, starting position, and callable regions
-    for (chrom, begin, callable_regions) in regions {
-        let mut current_partition = 0; // Track the current partition
-
-        // Process each CallableRegion
-        for region in callable_regions.into_iter() {
-            let start = region.begin + begin;
-            let end = region.end + begin;
-
-            let mut pos = start;
-            while pos < end {
-                let region_info = partitions[current_partition].0.region();
-
-                // Check if we are in the correct region for this partition
-                if region_info.0 != chrom || region_info.1 < pos || region_info.2 <= pos {
-                    // If not, find the correct partition
-                    if let Some((idx, _)) = partitions.iter().enumerate().find(|(_, part)| {
-                        let reg = part.0.region();
-                        reg.0 == chrom && reg.1 <= pos && pos <= reg.2
-                    }) {
-                        current_partition = idx;
-                    } else {
-                        debug!(
-                            "Could not find matching partition for chrom: {}, pos: {}",
-                            chrom, pos
-                        );
-                        continue;
-                    }
-                }
-
-                let record_end = region_info.2.min(end);
-
-                let mut primary_encoder = partitions[current_partition].0.make_encoder();
-                let secondary_table = &mut partitions[current_partition].1;
-
-                for current_pos in pos..record_end {
-                    if !primary_encoder.encode(current_pos as usize, region.count as i32) {
-                        trace!("Encoding secondary table for pos: {}", current_pos); // Debugging output
-                        secondary_table.encode(current_pos as u32, region.count as i32)?;
-                    }
-                }
-
-                pos = record_end; // Move the position to the next unencoded part
-            }
-
-            trace!(
-                "Flushing secondary table for partition {}",
-                current_partition
-            ); // Debugging output
-               // Flush the current partition after processing
-            partitions[current_partition].1.flush()?;
-        }
-    }
-
-    // Finish writing all partitions
-    for (idx, (_, mut secondary_table)) in partitions.into_iter().enumerate() {
-        trace!("Finishing partition {}", idx); // Debugging output
-        secondary_table.finish()?;
-    }
-
-    debug!("D4 file writing complete."); // Final debug output
-    Ok(output_path)
-}
 pub fn write_d4_parallel<P: AsRef<Path>>(
     regions: Vec<(String, u32, Vec<CallableRegion>)>,
     chroms: Vec<Chrom>,
@@ -410,10 +313,21 @@ pub fn write_d4_parallel<P: AsRef<Path>>(
     if let Err(e) = partitions_result {
         return Err(e.into());
     }
+    
     drop(d4_writer);
-    debug!("D4 file writing complete.");
-    let mut index_collection = D4IndexCollection::open_for_write(output_path.clone())?;
-    index_collection.create_secondary_frame_index()?;
+    log::info!("D4 file writing complete.");
+    
+    let mut index_collection = D4IndexCollection::open_for_write(output_path.clone())
+        .with_context(|| {
+            format!(
+                "Failed to open D4 index collection for writing at {:?}",
+                output_path
+            )
+        })?;
+
+    index_collection
+        .create_secondary_frame_index()
+        .with_context(|| "Failed to create secondary frame index for the D4 index collection")?;
     Ok(output_path)
 }
 
@@ -535,9 +449,9 @@ pub fn add_filters_to_chroms(
 #[cfg(test)]
 mod tests {
 
-    use super::*;
-    
     use std::collections::HashMap;
+
+    use super::*;
     fn init() {
         let _ = env_logger::builder()
             .target(env_logger::Target::Stdout)
@@ -549,6 +463,7 @@ mod tests {
     #[test]
     fn test_add_filters_to_chroms_success() {
         // Setup input
+        init();
         let d4_chrom_regions = vec![
             ("chr1", 0, 1000),
             ("chr2", 1000, 2000),

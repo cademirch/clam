@@ -1,13 +1,3 @@
-use super::callable::D4CallableSites;
-use crate::utils::{count_combinations, PopulationMapping};
-use anyhow::{bail, Result};
-use bstr::ByteSlice;
-use indicatif::ProgressBar;
-use log::{info, trace};
-use noodles::core::Region;
-use noodles::tabix;
-use noodles::vcf;
-use noodles::vcf::variant::record::AlternateBases;
 use std::cmp::Ordering;
 use std::collections::{HashSet, VecDeque};
 use std::num::NonZeroUsize;
@@ -16,6 +6,17 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
+
+use anyhow::{bail, Result};
+use bstr::ByteSlice;
+use indicatif::ProgressBar;
+use log::{info, trace};
+use noodles::core::Region;
+use noodles::vcf::variant::record::AlternateBases;
+use noodles::{tabix, vcf};
+
+use super::callable::D4CallableSites;
+use crate::utils::{count_combinations, PopulationMapping};
 
 pub trait RegionExt {
     fn start_as_u32(&self) -> u32;
@@ -363,7 +364,7 @@ pub fn process_windows<P: AsRef<Path>>(
 
                         match reader.query(
                             chrom,
-                            *window_begin-1,
+                            *window_begin - 1,
                             *window_end,
                             window.ploidy,
                             &sites_skipped,
