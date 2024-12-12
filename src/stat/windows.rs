@@ -7,6 +7,7 @@ use fnv::FnvHashMap;
 use indicatif::ProgressBar;
 use log::{info, trace};
 use noodles::core::Region;
+use noodles::tabix;
 use noodles::vcf;
 use noodles::vcf::variant::record::AlternateBases;
 use std::cmp::Ordering;
@@ -79,7 +80,7 @@ pub struct Window {
 impl Window {
     pub fn from_regions(
         regions: Vec<Region>,
-        population_info: PopulationMapping,
+        population_info: &PopulationMapping,
         sites: Option<Vec<HashSet<u32>>>,
         ploidy: u32,
     ) -> VecDeque<Self> {
@@ -235,12 +236,12 @@ impl Eq for Window {}
 pub fn process_windows<P: AsRef<Path>>(
     vcf_path: P,
     d4_path: Option<P>,
+    roh_path: Option<P>,
     worker_count: NonZeroUsize,
-    sample_map: FnvHashMap<usize, usize>,
-    population_names: Option<Vec<&str>>,
     windows: VecDeque<Window>,
     progress_bar: Option<ProgressBar>,
-) ->  Result<VecDeque<Window>> {
+    population_info: PopulationMapping,
+) -> Result<VecDeque<Window>> {
     let num_windows = windows.len();
     let res = Arc::new(Mutex::new(VecDeque::<Window>::with_capacity(num_windows)));
     let work_queue = Arc::new(Mutex::new(windows));
@@ -260,9 +261,9 @@ pub fn process_windows<P: AsRef<Path>>(
             let res = Arc::clone(&res);
             let vcf_path = vcf_path.as_ref();
             let d4_path = d4_path.as_ref().map(|p| p.as_ref().to_path_buf());
-            let sample_map = sample_map.clone();
+            let roh_path = roh_path.as_ref().map(|p| p.as_ref().to_path_buf());
             let bar = bar.clone();
-            let population_names = population_names.clone();
+            let pop_info = population_info.clone();
 
             scope.spawn(move || -> Result<()> {
                 trace!("Worker {} starting...", i);
@@ -272,13 +273,6 @@ pub fn process_windows<P: AsRef<Path>>(
 
                 let header = vcf_reader.read_header()?;
 
-                let mut d4_reader = if let Some(ref path) = d4_path {
-                    Some(D4CallableSites::from_file(population_names, path)?)
-                } else {
-                    None
-                };
-                trace!("D4 Reader: {}", d4_reader.is_some());
-
                 // actual work loop
                 while let Some(mut window) = {
                     let mut queue = work_queue.lock().unwrap();
@@ -286,7 +280,39 @@ pub fn process_windows<P: AsRef<Path>>(
                 } {
                     trace!("Worker {} aquired window", i);
 
-                    trace!("Worker {} querying region: {:?}", i, &window.region);
+                    let sample_map = &pop_info.samp_idx_to_pop_idx;
+                    let population_names = pop_info.get_popname_refs();
+                    let sample_name_to_samp_idx = &pop_info.sample_name_to_sample_idx;
+
+                    let mut d4_reader = if let Some(ref path) = d4_path {
+                        Some(D4CallableSites::from_file(&population_names, path)?)
+                    } else {
+                        None
+                    };
+
+                    let roh_tabix_query = if let Some(ref path) = roh_path {
+                        let mut tabix_records = vec![];
+                        let mut reader =
+                            tabix::io::indexed_reader::Builder::default().build_from_path(path)?;
+                        let query = reader.query(&window.region)?;
+                        for result in query {
+                            let record = result?;
+                            let fields: Vec<&str> = record.as_ref().split("\t").collect();
+                            if let (Some(start), Some(end), Some(sample)) =
+                                (fields.get(1), fields.get(2), fields.get(3))
+                            {
+                                let mut start: u32 = start.parse()?;
+                                let end: u32 = end.parse()?;
+                                start += 1;
+                                tabix_records
+                                    .push((sample.to_string(), std::ops::Range { start, end }));
+                            }
+                        }
+                        Some(tabix_records)
+                    } else {
+                        None
+                    };
+
                     let query = vcf_reader.query(&header, &window.region)?;
                     let mut sites_skipped: HashSet<u32> = HashSet::new();
 
@@ -294,24 +320,37 @@ pub fn process_windows<P: AsRef<Path>>(
                         let record = result?;
                         let start = record.variant_start().unwrap().unwrap().get();
 
+                        let samples_in_roh: HashSet<usize> =
+                            if let Some(ref tabix_query) = roh_tabix_query {
+                                tabix_query
+                                    .iter()
+                                    .filter_map(|(sample, interval)| {
+                                        if interval.contains(&(start as u32)) {
+                                            sample_name_to_samp_idx.get(sample).copied()
+                                        // Get index and copy value if it exists
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect() // Collect results into a HashSet
+                            } else {
+                                HashSet::with_capacity(0)
+                            };
+
                         let should_process_site = match &window.sites {
                             Some(sites) => sites.contains(&(start as u32)),
                             None => true,
                         };
-                        trace!(
-                            "Worker {} got vcf record with start pos: {}. Should process: {}",
-                            i,
-                            start,
-                            should_process_site
-                        );
+
                         if should_process_site && record.alternate_bases().len() <= 1 {
-                            let num_pops = sample_map.values().max().map_or(0, |&v| v + 1);
+                            let num_pops = pop_info.num_populations;
                             let mut counts_vec: Vec<[u32; 2]> = vec![[0; 2]; num_pops];
                             super::alleles::count_alleles(
                                 &record,
                                 &header,
                                 &sample_map,
                                 &mut counts_vec,
+                                samples_in_roh,
                             )?;
                             trace!("Counts: {:?}", counts_vec);
                             window.update_counts(counts_vec);
@@ -322,12 +361,12 @@ pub fn process_windows<P: AsRef<Path>>(
                     }
                     if let Some(reader) = d4_reader.as_mut() {
                         let query_d4_time = Instant::now();
-                        let (chrom, window_begin, window_end) = window.get_region_info();
+                        let (chrom, window_begin, window_end) = &window.get_region_info();
 
                         match reader.query(
                             chrom,
-                            window_begin,
-                            window_end,
+                            *window_begin-1,
+                            *window_end,
                             window.ploidy,
                             &sites_skipped,
                         ) {
@@ -363,15 +402,12 @@ pub fn process_windows<P: AsRef<Path>>(
     });
     info!("Finished processing in {:#?}", start_time.elapsed());
     let sort_time = Instant::now();
-    
+
     {
         let mut result_queue = res.lock().unwrap();
         result_queue.make_contiguous().sort();
     }
     info!("Sorted results in {:#?}", sort_time.elapsed());
-    let result = Ok(std::mem::take(&mut *res.lock().unwrap())); 
+    let result = Ok(std::mem::take(&mut *res.lock().unwrap()));
     result
-
-
 }
-

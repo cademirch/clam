@@ -10,7 +10,7 @@ pub struct D4CallableSites {
 }
 
 impl D4CallableSites {
-    pub fn from_file<P: AsRef<Path>>(pops: Option<Vec<&str>>, d4_file: P) -> Result<Self> {
+    pub fn from_file<P: AsRef<Path>>(pops: &Option<Vec<&str>>, d4_file: P) -> Result<Self> {
         let d4_file_path = d4_file.as_ref();
         let mut readers: Vec<D4TrackReader<File>> = Vec::new();
 
@@ -64,11 +64,11 @@ impl D4CallableSites {
         skip_sites: &HashSet<u32>,
     ) -> Result<(Vec<u32>, Option<Vec<u32>>)> {
         let num_pops = self.readers.len();
-        let adjusted_begin = begin - 1;
+        
         let mut views: Vec<D4TrackView<File>> = self
             .readers
             .iter_mut()
-            .map(|x| x.get_view(chrom, adjusted_begin, end).unwrap())
+            .map(|x| x.get_view(chrom, begin, end).unwrap())
             .collect();
 
         let mut within_comps: Vec<u32> = vec![0; num_pops];
@@ -85,7 +85,7 @@ impl D4CallableSites {
             None
         };
 
-        for pos in adjusted_begin..end {
+        for pos in begin..end {
             // Get the callable individuals (values) for each population at this position
             let values: Vec<u32> = views
                 .iter_mut()
@@ -128,7 +128,7 @@ impl D4CallableSites {
         }
         debug!(
             "Callable Sites - {}:{}-{} {:?}",
-            chrom, adjusted_begin, end, within_comps
+            chrom, begin, end, within_comps
         );
         Ok((within_comps, dxy_comps))
     }
@@ -172,7 +172,7 @@ mod tests {
     fn test_one_site() -> Result<()> {
         init();
         let fp = Path::new("tests/data/stat/diploid/no_pops_callable_sites.d4");
-        let mut d4callable = D4CallableSites::from_file(None, fp)?;
+        let mut d4callable = D4CallableSites::from_file(&None, fp)?;
 
         let (within_comps, _) = d4callable.query(
             "chr1",
@@ -195,7 +195,7 @@ mod tests {
             .delimiter(b'\t')
             .from_reader(truth_fp);
         let fp = Path::new("tests/data/stat/diploid/no_pops_callable_sites.d4");
-        let mut d4callable = D4CallableSites::from_file(None, fp)?;
+        let mut d4callable = D4CallableSites::from_file(&None, fp)?;
 
         for result in reader.deserialize() {
             let record: NoPopsTruthRecord = result?;
@@ -224,7 +224,7 @@ mod tests {
             .delimiter(b'\t')
             .from_reader(truth_fp);
         let fp = Path::new("tests/data/stat/diploid/no_pops_callable_sites.d4");
-        let mut d4callable = D4CallableSites::from_file(None, fp)?;
+        let mut d4callable = D4CallableSites::from_file(&None, fp)?;
         let mut skip_sites = HashSet::new();
         skip_sites.insert(10 as u32);
         for result in reader.deserialize() {
@@ -252,7 +252,7 @@ mod tests {
             .from_reader(truth_fp);
         let fp = Path::new("tests/data/stat/diploid/pops_callable_sites.d4");
         let pops = ["pop0", "pop1"].to_vec();
-        let mut d4callable = D4CallableSites::from_file(Some(pops), fp)?;
+        let mut d4callable = D4CallableSites::from_file(&Some(pops), fp)?;
 
         for result in reader.deserialize() {
             let record: PopsTruthRecord = result?;

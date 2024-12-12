@@ -16,14 +16,13 @@ use noodles::vcf::{
     self,
     variant::record::samples::{keys::key, series::Value, Series},
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::Write;
 use std::num::NonZeroUsize;
 use std::ops::Bound;
 use std::path::Path;
 use windows::Window;
-// use windows::WindowedData;
+
 
 #[derive(Parser, Debug, Clone)]
 #[command(about = "Calculate population genetic statistics from VCF using callable sites.")]
@@ -78,6 +77,10 @@ pub struct StatArgs {
     /// Path to file with chromosomes to exclude, one per line
     #[arg(long = "exclude-file", conflicts_with("exclude"))]
     pub exclude_file: Option<Utf8PathBuf>,
+
+    /// Path to RoH file.
+    #[arg(long = "roh-file", conflicts_with("callable_sites"))]
+    pub roh_file: Option<Utf8PathBuf>,
 }
 
 #[derive(serde::Serialize)]
@@ -115,15 +118,15 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
     let index_seqs = index_header.reference_sequence_names();
 
     let pop_map = if let Some(pop_file) = &args.population_file {
-        PopulationMapping::from_path(pop_file)?
+        PopulationMapping::from_path(pop_file, Some(header.sample_names()))?
     } else {
         // Default mapping: 1 population, all samples in the same population
         PopulationMapping::default(&header)
     };
-
+    
     // Set up sample-to-population mapping, if population file is provided
     let num_populations = pop_map.num_populations;
-    let samp_idx_to_pop_idx = pop_map.sample_idx_vcf(header.sample_names())?;
+    
     let pop_names = pop_map.get_popname_refs();
 
     // Get sequence lengths for regions based on VCF header
@@ -153,7 +156,7 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
     };
 
     // Set up windows from regions
-    let windows = Window::from_regions(regions, pop_map.clone(), sites, ploidy as u32);
+    let windows = Window::from_regions(regions, &pop_map, sites, ploidy as u32);
 
     // Define worker count from threads argument
     let worker_count = args.threads;
@@ -163,11 +166,11 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
     let mut results = windows::process_windows(
         args.vcf,
         args.callable_sites,
+        args.roh_file,
         worker_count,
-        samp_idx_to_pop_idx,
-        pop_names.clone(),
         windows,
         progress_bar,
+        pop_map.clone(),
     )?;
 
     let outdir = args.outdir.unwrap_or_else(|| Utf8PathBuf::from("."));
@@ -286,49 +289,6 @@ pub fn regions_from_seqlens(
     Ok(windows)
 }
 
-/// Make hashmap of chrom:vec<windowData>> from hashmap of chrom:<vec<Region>>
-// pub fn windows_from_regions(
-//     regions: Vec<Region>,
-//     num_pops: usize,
-//     ploidy: u32,
-//     sites: Option<FnvHashMap<String, Vec<u32>>>,
-// ) -> Result<Vec<WindowedData>> {
-//     let mut windows = Vec::with_capacity(regions.len());
-//     for region in regions {
-//         let chrom = region.name().to_str()?;
-
-//         // Get the list of sites for this chromosome, if any
-//         let chrom_sites = sites.as_ref().and_then(|s| s.get(chrom));
-
-//         let start = match region.start() {
-//             Bound::Included(pos) | Bound::Excluded(pos) => pos.get() as u32,
-//             Bound::Unbounded => return Err(anyhow!("Unbounded start position in region")),
-//         };
-//         let end = match region.end() {
-//             Bound::Included(pos) | Bound::Excluded(pos) => pos.get() as u32,
-//             Bound::Unbounded => return Err(anyhow!("Unbounded end position in region")),
-//         };
-
-//         // Filter sites within the region's start and end
-//         let region_sites: Option<HashSet<u32>> = chrom_sites.map(|s| {
-//             let start_idx = s.binary_search(&start).unwrap_or_else(|x| x);
-//             let end_idx = s.binary_search(&(end + 1)).unwrap_or_else(|x| x);
-
-//             s[start_idx..end_idx].iter().copied().collect() // Collect into a HashSet<u32>
-//         });
-
-//         windows.push(WindowedData::new(
-//             chrom,
-//             start,
-//             end,
-//             num_pops,
-//             region_sites,
-//             ploidy,
-//         ));
-//     }
-
-//     Ok(windows)
-// }
 pub fn seqlens_vcf(header: &vcf::Header) -> Result<FnvHashMap<String, usize>> {
     let mut res = FnvHashMap::default();
 
@@ -467,488 +427,3 @@ pub fn get_vcf_header_and_ploidy<P: AsRef<Path>>(vcf_path: P) -> Result<(vcf::He
     Ok((header.clone(), ploidy))
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::alleles::*;
-//     use super::*;
-//     use anyhow::{Ok, Result};
-//     use noodles::vcf::{
-//         self,
-//         header::record::value::{map::Contig, Map},
-//     };
-//     use serde::Deserialize;
-//     use std::collections::HashMap;
-//     use std::fs::File;
-
-//     #[derive(Debug, Deserialize)]
-//     struct TruthCountsRecord {
-//         chrom: String,
-//         pos: u32,
-//         ref_count: u32,
-//         alt_count: u32,
-//     }
-//     type WindowedCounts = HashMap<(String, u32), (u32, u32)>; // Map from (chrom, window_start) -> (ref_total, alt_total)
-
-//     fn read_truth_counts(file_path: &str, window_size: u32) -> Result<WindowedCounts> {
-//         let file = File::open(file_path)?;
-//         let mut rdr = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
-//         let mut windowed_counts: WindowedCounts = HashMap::new();
-
-//         for result in rdr.deserialize() {
-//             let record: TruthCountsRecord = result?;
-
-//             // Adjust for 1-based coordinates
-//             let adjusted_pos = record.pos - 1;
-
-//             // Determine the window start based on the adjusted position
-//             let window_start = if window_size == 1 {
-//                 record.pos // Each position is its own "window" in 1-based coordinates
-//             } else {
-//                 (adjusted_pos / window_size) * window_size + 1
-//             };
-
-//             // Update the cumulative counts in the window
-//             let entry = windowed_counts
-//                 .entry((record.chrom.clone(), window_start))
-//                 .or_insert((0, 0));
-//             entry.0 += record.ref_count;
-//             entry.1 += record.alt_count;
-//         }
-
-//         Ok(windowed_counts)
-//     }
-
-//     fn init() {
-//         let _ = env_logger::builder()
-//             .target(env_logger::Target::Stdout)
-//             .filter_level(log::LevelFilter::Trace)
-//             .is_test(true)
-//             .try_init();
-//     }
-
-//     // Helper function to create a mock header with specified contig lengths
-//     fn create_test_header(contig_lens: &[usize]) -> vcf::Header {
-//         let mut header = vcf::Header::default();
-//         for (i, len) in contig_lens.iter().enumerate() {
-//             let mut contig = Map::<Contig>::new();
-//             *contig.length_mut() = Some(*len);
-//             header.contigs_mut().insert(format!("chr{}", i + 1), contig);
-//         }
-//         header
-//     }
-//     fn get_position(bound: Bound<Position>) -> Option<usize> {
-//         match bound {
-//             Bound::Included(pos) | Bound::Excluded(pos) => Some(pos.get()),
-//             Bound::Unbounded => None,
-//         }
-//     }
-
-//     #[test]
-//     fn test_process_no_pops_window_1() -> Result<()> {
-//         init();
-//         let vcf_fp = Path::new("tests/data/stat/diploid/small.vcf.gz");
-//         let tbi_fp = Path::new("tests/data/stat/diploid/small.vcf.gz.tbi");
-//         let (header, ploidy) = get_vcf_header_and_ploidy(vcf_fp)?;
-//         let seqlens = seqlens_vcf(&header)?;
-//         let samples_header = header.sample_names();
-//         let mut samp_idx_to_pop_idx = FnvHashMap::default();
-//         for (idx, _) in samples_header.iter().enumerate() {
-//             samp_idx_to_pop_idx.insert(idx, 0);
-//         }
-//         let window_size = 1;
-//         let regions = regions_from_seqlens(window_size as usize, seqlens)?;
-//         let windows = windows_from_regions(regions.clone(), 1, ploidy as u32, None)?;
-//         let worker_count = std::num::NonZeroUsize::new(1).unwrap();
-
-//         let res = process(
-//             worker_count,
-//             regions,
-//             vcf_fp,
-//             tbi_fp,
-//             samp_idx_to_pop_idx,
-//             windows,
-//             true
-//         )?;
-
-//         let truth_fp = "tests/data/stat/diploid/small.vcf.counts.tsv";
-//         let truth_map = read_truth_counts(&truth_fp, window_size as u32)?;
-
-//         for r in res.iter() {
-//             let r_ref = r.populations[0].refs;
-//             let r_alt = r.populations[0].alts;
-//             let truth = truth_map.get(&(r.chrom.clone(), r.begin));
-//             if truth.is_none() {
-//                 continue;
-//             }
-//             assert_eq!((r_ref, r_alt), *truth.unwrap())
-//         }
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_process_pops_window_1() -> Result<()> {
-//         init();
-//         println!("starting test");
-//         let vcf_fp = Path::new("tests/data/stat/diploid/small.vcf.gz");
-//         let tbi_fp = Path::new("tests/data/stat/diploid/small.vcf.gz.tbi");
-//         let pops_fp = Path::new("tests/data/stat/diploid/populations.tsv");
-//         println!("reading pop file and vcf header");
-//         let pop_map = crate::utils::PopulationMapping::from_path(pops_fp)?;
-//         let (header, ploidy) = get_vcf_header_and_ploidy(vcf_fp)?;
-//         let head_samples = header.sample_names();
-//         let samp_idx_to_pop_idx = pop_map.sample_idx_vcf(&head_samples)?;
-//         let seqlens = seqlens_vcf(&header)?;
-
-//         println!("done reading pop file and vcf header");
-
-//         let window_size = 1;
-//         let regions = regions_from_seqlens(window_size as usize, seqlens)?;
-//         let windows = windows_from_regions(
-//             regions.clone(),
-//             pop_map.num_populations,
-//             ploidy as u32,
-//             None,
-//         )?;
-//         let worker_count = std::num::NonZeroUsize::new(1).unwrap();
-//         println!("starting processing");
-//         let res = process(
-//             worker_count,
-//             regions,
-//             vcf_fp,
-//             tbi_fp,
-//             samp_idx_to_pop_idx,
-//             windows,
-//             true
-//         )?;
-
-//         let truth_0_fp = "tests/data/stat/diploid/small.vcf.pop0.counts.tsv";
-//         let truth_0_map = read_truth_counts(&truth_0_fp, window_size as u32)?;
-
-//         let truth_1_fp = "tests/data/stat/diploid/small.vcf.pop1.counts.tsv";
-//         let truth_1_map = read_truth_counts(&truth_1_fp, window_size as u32)?;
-
-//         let mut truths = vec![truth_0_map, truth_1_map];
-//         for r in res.iter() {
-//             for (idx, truth_map) in truths.iter_mut().enumerate() {
-//                 let r_ref = r.populations[idx].refs;
-//                 let r_alt = r.populations[idx].alts;
-//                 let truth = truth_map.get(&(r.chrom.clone(), r.begin));
-//                 if truth.is_none() {
-//                     continue;
-//                 }
-//                 let (truth_ref, truth_alt) = *truth.unwrap();
-//                 println!(
-//                     "chrom: {} pos: {} r: {},{} truth:{},{}",
-//                     r.chrom, r.begin, r_ref, r_alt, truth_ref, truth_alt
-//                 );
-//                 assert_eq!((r_ref, r_alt), (truth_ref, truth_alt))
-//             }
-//         }
-//         Ok(())
-//     }
-//     #[test]
-//     fn test_process_pops_window_100() -> Result<()> {
-//         init();
-
-//         let vcf_fp = Path::new("tests/data/stat/diploid/small.vcf.gz");
-//         let tbi_fp = Path::new("tests/data/stat/diploid/small.vcf.gz.tbi");
-//         let pops_fp = Path::new("tests/data/stat/diploid/populations.tsv");
-
-//         let pop_map = crate::utils::PopulationMapping::from_path(pops_fp)?;
-//         let (header, ploidy) = get_vcf_header_and_ploidy(vcf_fp)?;
-//         let head_samples = header.sample_names();
-//         let samp_idx_to_pop_idx = pop_map.sample_idx_vcf(&head_samples)?;
-//         let seqlens = seqlens_vcf(&header)?;
-
-//         let window_size = 100;
-//         let regions = regions_from_seqlens(window_size as usize, seqlens)?;
-//         let windows = windows_from_regions(
-//             regions.clone(),
-//             pop_map.num_populations,
-//             ploidy as u32,
-//             None,
-//         )?;
-//         let worker_count = std::num::NonZeroUsize::new(1).unwrap();
-
-//         let res = process(
-//             worker_count,
-//             regions,
-//             vcf_fp,
-//             tbi_fp,
-//             samp_idx_to_pop_idx,
-//             windows,
-//             true
-//         )?;
-
-//         let truth_0_fp = "tests/data/stat/diploid/small.vcf.pop0.counts.tsv";
-//         let truth_0_map = read_truth_counts(&truth_0_fp, window_size as u32)?;
-
-//         let truth_1_fp = "tests/data/stat/diploid/small.vcf.pop1.counts.tsv";
-//         let truth_1_map = read_truth_counts(&truth_1_fp, window_size as u32)?;
-
-//         let mut truths = vec![truth_0_map, truth_1_map];
-//         for r in res.iter() {
-//             for (idx, truth_map) in truths.iter_mut().enumerate() {
-//                 let r_ref = r.populations[idx].refs;
-//                 let r_alt = r.populations[idx].alts;
-//                 let truth = truth_map.get(&(r.chrom.clone(), r.begin));
-//                 if truth.is_none() {
-//                     continue;
-//                 }
-//                 let (truth_ref, truth_alt) = *truth.unwrap();
-
-//                 assert_eq!((r_ref, r_alt), (truth_ref, truth_alt))
-//             }
-//         }
-//         Ok(())
-//     }
-//     #[test]
-//     fn test_process_no_pops_window_100() -> Result<()> {
-//         init();
-//         let vcf_fp = Path::new("tests/data/stat/diploid/small.vcf.gz");
-//         let tbi_fp = Path::new("tests/data/stat/diploid/small.vcf.gz.tbi");
-//         let (header, ploidy) = get_vcf_header_and_ploidy(vcf_fp)?;
-//         let seqlens = seqlens_vcf(&header)?;
-//         let samples_header = header.sample_names();
-//         let mut samp_idx_to_pop_idx = FnvHashMap::default();
-//         for (idx, _) in samples_header.iter().enumerate() {
-//             samp_idx_to_pop_idx.insert(idx, 0);
-//         }
-//         let window_size = 100;
-//         let regions = regions_from_seqlens(window_size as usize, seqlens)?;
-//         let windows = windows_from_regions(regions.clone(), 1, ploidy as u32, None)?;
-//         let worker_count = std::num::NonZeroUsize::new(1).unwrap();
-
-//         let res = process(
-//             worker_count,
-//             regions,
-//             vcf_fp,
-//             tbi_fp,
-//             samp_idx_to_pop_idx,
-//             windows,
-//             true
-//         )?;
-
-//         let truth_fp = "tests/data/stat/diploid/small.vcf.counts.tsv";
-//         let truth_map = read_truth_counts(&truth_fp, window_size as u32)?;
-//         println!("{:?}", truth_map.keys());
-
-//         for r in res.iter() {
-//             let r_ref = r.populations[0].refs;
-//             let r_alt = r.populations[0].alts;
-//             let truth = truth_map.get(&(r.chrom.clone(), r.begin));
-//             // println!("chrom: {} pos: {}", r.chrom, r.begin);
-//             if truth.is_none() {
-//                 continue;
-//             }
-//             let (truth_ref, truth_alt) = *truth.unwrap();
-
-//             assert_eq!((r_ref, r_alt), (truth_ref, truth_alt))
-//         }
-//         Ok(())
-//     }
-//     #[test]
-//     fn test_process_sites() -> Result<()> {
-//         init();
-//         let vcf_fp = Path::new("tests/data/stat/diploid/small.vcf.gz");
-//         let tbi_fp = Path::new("tests/data/stat/diploid/small.vcf.gz.tbi");
-//         let (header, ploidy) = get_vcf_header_and_ploidy(vcf_fp)?;
-//         let seqlens = seqlens_vcf(&header)?;
-//         let samples_header = header.sample_names();
-//         let mut samp_idx_to_pop_idx = FnvHashMap::default();
-//         for (idx, _) in samples_header.iter().enumerate() {
-//             samp_idx_to_pop_idx.insert(idx, 0);
-//         }
-//         let regions = regions_from_seqlens(1, seqlens)?;
-//         let mut sites: FnvHashMap<String, Vec<u32>> = FnvHashMap::default();
-//         sites
-//             .entry("chr1".to_string())
-//             .or_insert_with(Vec::new)
-//             .extend(vec![1, 11, 22]);
-//         let windows = windows_from_regions(regions.clone(), 1, ploidy as u32, Some(sites))?;
-//         let worker_count = std::num::NonZeroUsize::new(1).unwrap();
-
-//         let res = process(
-//             worker_count,
-//             regions,
-//             vcf_fp,
-//             tbi_fp,
-//             samp_idx_to_pop_idx,
-//             windows,
-//             true
-//         )?;
-//         //tests/data/stat/diploid/small.vcf.counts.tsv (zero based coords)
-//         let truth_pos: Vec<usize> = [0, 10, 21, 34, 45, 555, 611, 731, 854, 975].to_vec();
-//         let truth_counts: Vec<(u32, u32)> = [
-//             (10, 5),
-//             (6, 9),
-//             (7, 8),
-//             (0, 0),
-//             (0, 0),
-//             (0, 0),
-//             (0, 0),
-//             (0, 0),
-//             (0, 0),
-//             (0, 0),
-//         ]
-//         .to_vec();
-
-//         for (idx, pos) in truth_pos.iter().enumerate() {
-//             let (truth_ref, truth_alt) = truth_counts[idx];
-//             let r = &res[*pos];
-//             let ref_count = r.populations[0].refs;
-//             let alt_count = r.populations[0].alts;
-//             assert_eq!(ref_count, truth_ref);
-//             assert_eq!(alt_count, truth_alt)
-//         }
-//         Ok(())
-//     }
-//     #[test]
-//     fn test_get_header_ploidy_diploid() -> Result<()> {
-//         let fp = Path::new("tests/data/stat/diploid/small.vcf");
-//         let (header, ploidy) = get_vcf_header_and_ploidy(fp)?;
-//         assert_eq!(ploidy, 2);
-//         Ok(())
-//     }
-//     #[test]
-//     fn test_get_header_ploidy_haploid() -> Result<()> {
-//         let fp = Path::new("tests/data/stat/haploid/small.vcf");
-//         let (header, ploidy) = get_vcf_header_and_ploidy(fp)?;
-//         assert_eq!(ploidy, 1);
-//         Ok(())
-//     }
-//     // Test for `create_seqlens_vcf`
-//     #[test]
-//     fn test_seqlens_vcf() {
-//         let contig_lens = [500, 1000];
-//         let header = create_test_header(&contig_lens);
-
-//         let seqlens =
-//             seqlens_vcf(&header).expect("Failed to create sequence lengths from VCF header");
-
-//         assert_eq!(seqlens.get("chr1"), Some(&500));
-//         assert_eq!(seqlens.get("chr2"), Some(&1000));
-//     }
-
-//     // Test for `seqlens_vcf` with missing contig length
-//     #[test]
-//     fn test_seqlens_vcf_missing_length() {
-//         let mut header = vcf::Header::default();
-//         let contig = Map::<Contig>::new();
-//         header.contigs_mut().insert("chr1".to_string(), contig);
-
-//         let result = seqlens_vcf(&header);
-//         assert!(result.is_err());
-//         assert_eq!(
-//             result.unwrap_err().to_string(),
-//             "Contig chr1 has no length specified"
-//         );
-//     }
-
-//     #[test]
-//     fn test_regions_from_seqlens() -> Result<()> {
-//         let mut seqlens = FnvHashMap::default();
-//         seqlens.insert("chr1".to_string(), 1000);
-
-//         let window_size = 100;
-//         let regions = regions_from_seqlens(window_size, seqlens)?;
-
-//         // Verify the details of the first and last regions in the chromosome "chr1"
-//         assert_eq!(regions[0].name().to_str()?, "chr1");
-//         assert_eq!(get_position(regions[0].start()), Some(1));
-//         assert_eq!(get_position(regions[0].end()), Some(100));
-//         assert_eq!(get_position(regions[9].start()), Some(901));
-//         assert_eq!(get_position(regions[9].end()), Some(1000));
-
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_create_windows_from_regions_no_sites() -> Result<()> {
-//         // Define regions for a single chromosome "chr1"
-//         let regions = vec![
-//             Region::new(
-//                 "chr1",
-//                 Position::new(1)
-//                     .ok_or_else(|| anyhow::anyhow!("Invalid position: Position cannot be 0"))?
-//                     .into()
-//                     ..=Position::new(100)
-//                         .ok_or_else(|| anyhow::anyhow!("Invalid position: Position cannot be 0"))?,
-//             ),
-//             Region::new(
-//                 "chr1",
-//                 Position::new(101)
-//                     .ok_or_else(|| anyhow::anyhow!("Invalid position: Position cannot be 0"))?
-//                     .into()
-//                     ..=Position::new(200)
-//                         .ok_or_else(|| anyhow::anyhow!("Invalid position: Position cannot be 0"))?,
-//             ),
-//         ];
-
-//         let num_pops = 2;
-//         let windows = windows_from_regions(regions, num_pops, 2, None)?;
-
-//         // Check that there are two windows
-//         assert_eq!(windows.len(), 2);
-
-//         // Verify the details of the first and second windows
-//         assert_eq!(windows[0].begin, 1);
-//         assert_eq!(windows[0].end, 100);
-//         assert!(windows[0].sites.is_none()); // Ensure no sites are present
-//         assert_eq!(windows[1].begin, 101);
-//         assert_eq!(windows[1].end, 200);
-//         assert!(windows[1].sites.is_none()); // Ensure no sites are present
-
-//         Ok(())
-//     }
-
-//     #[test]
-//     fn test_windows_from_regions_with_sites() -> Result<()> {
-//         // Define regions for a single chromosome "chr1"
-//         let regions = vec![
-//             Region::new(
-//                 "chr1",
-//                 Position::new(1)
-//                     .ok_or_else(|| anyhow::anyhow!("Invalid position: Position cannot be 0"))?
-//                     .into()
-//                     ..=Position::new(100)
-//                         .ok_or_else(|| anyhow::anyhow!("Invalid position: Position cannot be 0"))?,
-//             ),
-//             Region::new(
-//                 "chr1",
-//                 Position::new(101)
-//                     .ok_or_else(|| anyhow::anyhow!("Invalid position: Position cannot be 0"))?
-//                     .into()
-//                     ..=Position::new(200)
-//                         .ok_or_else(|| anyhow::anyhow!("Invalid position: Position cannot be 0"))?,
-//             ),
-//         ];
-
-//         // Define sites for "chr1" within the specified regions
-//         let mut sites_map = FnvHashMap::default();
-//         sites_map.insert("chr1".to_string(), vec![10, 50, 150, 180]);
-
-//         let num_pops = 2;
-//         let windows = windows_from_regions(regions, num_pops, 2, Some(sites_map))?;
-
-//         // Check that there are two windows
-//         assert_eq!(windows.len(), 2);
-
-//         // Verify the details and sites of the first and second windows
-//         assert_eq!(windows[0].begin, 1);
-//         assert_eq!(windows[0].end, 100);
-//         assert_eq!(
-//             windows[0].sites.as_ref().unwrap(),
-//             &vec![10, 50].into_iter().collect::<HashSet<u32>>()
-//         );
-
-//         assert_eq!(windows[1].begin, 101);
-//         assert_eq!(windows[1].end, 200);
-//         assert_eq!(
-//             windows[1].sites.as_ref().unwrap(),
-//             &vec![150, 180].into_iter().collect::<HashSet<u32>>()
-//         );
-
-//         Ok(())
-//     }
-// }

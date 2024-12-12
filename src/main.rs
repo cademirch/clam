@@ -139,7 +139,7 @@ fn main() -> Result<()> {
 
             if populations {
                 let population_map = utils::PopulationMapping::from_path(
-                    loci_args.population_file.as_ref().unwrap(),
+                    loci_args.population_file.as_ref().unwrap(), None
                 )?;
                 let mut temp_file_paths = Vec::with_capacity(population_map.num_populations);
 
