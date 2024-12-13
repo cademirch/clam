@@ -1,16 +1,18 @@
+use std::collections::hash_map::Entry;
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use camino::Utf8PathBuf;
 use fnv::FnvHashMap;
-use indexmap::IndexSet;
+use indexmap::{indexset, IndexSet};
 use noodles::bed;
 use noodles::core::Region;
-use noodles::vcf::{self};
 use serde::Deserialize;
+
+const DEFAULT_POPULATION_NAME: &str = "default_population";
 
 #[derive(Debug, Deserialize)]
 struct PopFileRecord {
@@ -28,112 +30,153 @@ pub fn count_combinations(n: u32, r: u32) -> u32 {
 
 #[derive(Debug, Clone)]
 pub struct PopulationMapping {
-    pub pop_idx_to_pop_name: Option<Vec<String>>,
-    pub pop_idx_to_sample_names: Vec<Vec<String>>,
-    pub num_populations: usize,
-    pub samp_idx_to_pop_idx: FnvHashMap<usize, usize>,
-    pub sample_name_to_sample_idx: FnvHashMap<String, usize>,
+    population_names: IndexSet<String>, // index corresponds to population_idx
+    sample_names: Vec<Vec<String>>, 
+    sample_name_lookup: FnvHashMap<String, (usize, usize)>, // key is sample name. value is (population_idx, sample's idx within population (internal_idx))
+    sample_idx_lookup: Option<FnvHashMap<usize, (usize, usize)>>, // key is sample idx in vcf (global_idx). value is (population_idx, sample's idx within population (internal_idx))
 }
 
 impl PopulationMapping {
-    pub fn default(header: &vcf::Header) -> Self {
-        let mut sample_to_pop_idx = FnvHashMap::default();
-        let mut pop_idx_to_sample_names = vec![Vec::new()];
-        let mut sample_name_to_sample_idx = FnvHashMap::default(); // Initialize the new map
-        let pop_idx_to_pop_name = None;
-
-        for (idx, sample_name) in header.sample_names().iter().enumerate() {
-            let sample_name_str = sample_name.clone(); // Clone sample name
-            sample_to_pop_idx.insert(idx, 0); // Map all samples to population 0
-            pop_idx_to_sample_names[0].push(sample_name_str.clone()); // Add all samples to Population_0
-            sample_name_to_sample_idx.insert(sample_name_str, idx); // Map sample name to its index
+    /// No population file, just sample names from VCF header. Makes all sample as one population.
+    pub fn default(vcf_sample_names: &IndexSet<String>) -> Self {
+        let population_names = indexset! {DEFAULT_POPULATION_NAME.to_string()};
+        let mut sample_name_lookup = FnvHashMap::default();
+        let mut sample_idx_lookup = FnvHashMap::default();
+        let mut sample_names: Vec<Vec<String>> = vec![Vec::default();1];
+        for (global_idx, sample_name) in vcf_sample_names.iter().enumerate() {
+            let population_idx = 0; // Default population
+            let internal_idx = global_idx;
+            sample_names[0].push(sample_name.clone());
+            sample_name_lookup.insert(sample_name.clone(), (population_idx, internal_idx));
+            sample_idx_lookup.insert(global_idx, (population_idx, internal_idx));
         }
 
-        PopulationMapping {
-            pop_idx_to_pop_name,
-            pop_idx_to_sample_names,
-            num_populations: 1,
-            samp_idx_to_pop_idx: sample_to_pop_idx,
-            sample_name_to_sample_idx, // Add the new map
+        Self {
+            population_names,
+            sample_names,
+            sample_name_lookup,
+            sample_idx_lookup: Some(sample_idx_lookup),
         }
     }
 
-    /// Creates a PopulationMapping from a file containing sample and population data.
-    pub fn from_path<P: AsRef<Path>>(
-        pop_file: P,
-        header_samples: Option<&IndexSet<String>>, // Make header_samples optional
+    /// Create from population file and optional vcf header (for loci support)
+    pub fn from_path<R: Read>(
+        reader: R,
+        vcf_sample_names: Option<&IndexSet<String>>, // from vcf header
     ) -> Result<Self> {
-        let file = File::open(&pop_file).expect(&format!(
-            "Failed to open population file: {}",
-            pop_file.as_ref().display()
-        ));
-        let mut reader = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
+        let mut csv_reader = csv::ReaderBuilder::new()
+            .delimiter(b'\t')
+            .from_reader(reader);
 
-        let mut sample_name_to_pop_idx = FnvHashMap::default();
-        let mut pop_idx_to_name = Vec::new();
-        let mut sample_records: Vec<(String, String)> = Vec::new();
+        let mut population_names = IndexSet::default();
+        let mut sample_name_lookup = FnvHashMap::default();
+        let mut sample_idx_lookup = if vcf_sample_names.is_some() {
+            Some(FnvHashMap::default())
+        } else {
+            None
+        };
 
-        for result in reader.deserialize() {
+        let mut sample_names: Vec<Vec<String>> = Vec::default();
+
+        for result in csv_reader.deserialize() {
             let record: PopFileRecord = result?;
-            sample_records.push((record.sample, record.population_name));
+
+            let new_population = population_names.insert(record.population_name.clone());
+            let population_idx = population_names
+                .get_index_of(&record.population_name)
+                .unwrap();
+
+            if new_population {
+                sample_names.push(vec![record.sample.to_string()])
+            } else {
+                sample_names[population_idx].push(record.sample.to_string())
+            };
         }
 
-        for (sample_name, population_name) in &sample_records {
-            let pop_idx =
-                if let Some(idx) = pop_idx_to_name.iter().position(|p| p == population_name) {
-                    idx
-                } else {
-                    let idx = pop_idx_to_name.len();
-                    pop_idx_to_name.push(population_name.clone());
-                    idx
-                };
-
-            sample_name_to_pop_idx.insert(sample_name.clone(), pop_idx);
-        }
-
-        let num_populations = pop_idx_to_name.len();
-
-        let mut pop_idx_to_sample_names: Vec<Vec<String>> = vec![Vec::new(); num_populations];
-        for (sample_name, pop_idx) in sample_name_to_pop_idx.iter() {
-            pop_idx_to_sample_names[*pop_idx].push(sample_name.clone());
-        }
-
-        // Optional creation of mappings dependent on header_samples
-        let mut samp_idx_to_pop_idx = FnvHashMap::default();
-        let mut sample_name_to_sample_idx = FnvHashMap::default();
-        if let Some(header_samples) = header_samples {
-            for (pop_idx, sample_names) in pop_idx_to_sample_names.iter().enumerate() {
-                for sample in sample_names.iter() {
-                    if let Some(sample_idx) = header_samples.get_index_of(sample) {
-                        samp_idx_to_pop_idx.insert(sample_idx, pop_idx);
-                        sample_name_to_sample_idx.insert(sample.clone(), sample_idx);
-                    } else {
-                        bail!("Sample: '{}' not found in VCF header!", sample);
+        for (population_idx, samples) in sample_names.iter().enumerate() {
+            for (internal_idx, sample_name) in samples.iter().enumerate() {
+                match sample_name_lookup.entry(sample_name.clone()) {
+                    Entry::Vacant(entry) => {
+                        entry.insert((population_idx, internal_idx));
                     }
+                    Entry::Occupied(entry) => {
+                        bail!("Duplicated sample name: {} in population file!", {
+                            entry.key()
+                        })
+                    }
+                }
+
+                if let Some(ref mut sample_idx_lookup) = sample_idx_lookup {
+                    let global_idx = vcf_sample_names
+                        .unwrap()
+                        .get_index_of(&sample_name.to_string())
+                        .context(format!(
+                            "Sample: '{}' not in VCF header!",
+                            &sample_name.to_string()
+                        ))?;
+                    sample_idx_lookup.insert(global_idx, (population_idx, internal_idx));
                 }
             }
         }
 
-        Ok(PopulationMapping {
-            pop_idx_to_pop_name: Some(pop_idx_to_name),
-            pop_idx_to_sample_names,
-            num_populations,
-            samp_idx_to_pop_idx,
-            sample_name_to_sample_idx,
+        Ok(Self {
+            population_names,
+            sample_names,
+            sample_name_lookup,
+            sample_idx_lookup,
         })
     }
-
-    pub fn get_sample_refs(&self, pop_idx: usize) -> Vec<&str> {
-        self.pop_idx_to_sample_names[pop_idx]
+    
+    pub fn get_samples_per_population(&self) -> Vec<Vec<&str>> {
+        self.sample_names
             .iter()
-            .map(|s| s.as_str())
+            .map(|population| population.iter().map(String::as_str).collect())
             .collect()
     }
 
-    pub fn get_popname_refs(&self) -> Option<Vec<&str>> {
-        self.pop_idx_to_pop_name
-            .as_ref()
-            .map(|vec| vec.iter().map(String::as_str).collect())
+    pub fn get_sample_counts_per_population(&self) -> Vec<usize> {
+        let counts: Vec<usize> = self.sample_names.iter().map(|x| x.len()).collect();
+        counts
+    }
+    
+    pub fn num_populations(&self) -> usize {
+        self.population_names.len()
+    }
+    pub fn lookup_sample_name(&self, sample_name: &str) -> Result<(usize, usize)> {
+        let res = self
+            .sample_name_lookup
+            .get(sample_name)
+            .context("Sample name doesn't exist!")?;
+        Ok(*res)
+    }
+
+    pub fn lookup_sample_idx(&self, sample_idx: usize) -> Result<(usize, usize)> {
+        let res = if let Some(ref sample_idx_lookup) = self.sample_idx_lookup {
+            Ok(*sample_idx_lookup
+                .get(&sample_idx)
+                .context("Sample idx doesn't exist!")?)
+        } else {
+            bail!("This shouldn't happen! Please open a github issue.")
+        };
+
+        res
+    }
+
+    pub fn get_sample_refs(&self, pop_idx: usize) -> Vec<&str> {
+        self.sample_name_lookup
+            .iter()
+            .filter_map(|(sample_name, &(population_idx, _))| {
+                if population_idx == pop_idx {
+                    Some(sample_name.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn get_popname_refs(&self) -> Vec<&str> {
+        self.population_names.iter().map(String::as_str).collect()
     }
 }
 

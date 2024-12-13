@@ -2,7 +2,7 @@ pub mod alleles;
 pub mod callable;
 pub mod windows;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::num::NonZeroUsize;
 use std::ops::Bound;
@@ -106,6 +106,12 @@ struct DxyRecord {
     differences: u32,
 }
 
+#[derive(serde::Serialize)]
+struct HetRecord {
+    sample_name: String,
+    count_hets: u32,
+}
+
 pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) -> Result<()> {
     // Load VCF header and determine ploidy
     let (header, ploidy) = get_vcf_header_and_ploidy(&args.vcf)?;
@@ -119,14 +125,20 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
     let index_seqs = index_header.reference_sequence_names();
 
     let pop_map = if let Some(pop_file) = &args.population_file {
-        PopulationMapping::from_path(pop_file, Some(header.sample_names()))?
+        let file = File::open(&pop_file).with_context(|| {
+            format!(
+                "Failed to open population file at path: {}",
+                pop_file.as_str()
+            )
+        })?;
+        PopulationMapping::from_path(file, Some(header.sample_names()))?
     } else {
         // Default mapping: 1 population, all samples in the same population
-        PopulationMapping::default(&header)
+        PopulationMapping::default(&header.sample_names())
     };
 
     // Set up sample-to-population mapping, if population file is provided
-    let num_populations = pop_map.num_populations;
+    let num_populations = pop_map.num_populations();
 
     let pop_names = pop_map.get_popname_refs();
 
@@ -194,8 +206,13 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
         None
     };
 
-    // single threaded version for both
-    // threaded too
+    let het_file_path = outdir.join("clam_hets.tsv");
+    let het_file = File::create(&het_file_path)?;
+    let mut het_file_writer = csv::WriterBuilder::new()
+        .delimiter(b'\t')
+        .from_writer(het_file);
+
+    let mut het_counts: HashMap<String, u32> = HashMap::default();
 
     for window in results.iter_mut() {
         for (pop_idx, population) in window.populations.iter().enumerate() {
@@ -206,12 +223,7 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
             } else {
                 0.0 // Handle zero comparisons
             };
-            let pop_names = if let Some(owned_pop_names) = pop_names.clone() {
-                // owned_pop_names is now a fully owned Vec<&str>, cloned from outer pop_names
-                owned_pop_names
-            } else {
-                vec!["pop1"]
-            };
+
             let (chrom, begin, end) = window.get_region_info();
             clam_pi_writer.serialize(PiRecord {
                 population_name: pop_names[pop_idx].to_string(),
@@ -222,14 +234,19 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
                 comparisons: comps,
                 differences: diffs,
             })?;
+
+            for (name, count) in population
+                .sample_names
+                .iter()
+                .zip(&population.count_het_sites)
+            {
+                het_counts
+                    .entry(name.clone())
+                    .and_modify(|e| *e += count)
+                    .or_insert(*count);
+            }
         }
         if let Some(dxy_writer) = clam_dxy_writer.as_mut() {
-            let pop_names = if let Some(owned_pop_names) = pop_names.clone() {
-                // owned_pop_names is now a fully owned Vec<&str>, cloned from outer pop_names
-                owned_pop_names
-            } else {
-                vec!["pop1"]
-            };
             let (chrom, begin, end) = window.get_region_info();
             for pop1 in 0..num_populations {
                 for pop2 in (pop1 + 1)..num_populations {
@@ -260,6 +277,12 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
                     }
                 }
             }
+        }
+        for (sample, counts) in het_counts.iter() {
+            het_file_writer.serialize(HetRecord {
+                sample_name: sample.to_owned(),
+                count_hets: *counts,
+            })?;
         }
     }
     Ok(())

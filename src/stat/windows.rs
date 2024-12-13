@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{HashSet, VecDeque};
+use std::iter::zip;
 use std::num::NonZeroUsize;
 use std::ops::Bound;
 use std::path::Path;
@@ -16,7 +17,9 @@ use noodles::vcf::variant::record::AlternateBases;
 use noodles::{tabix, vcf};
 
 use super::callable::D4CallableSites;
+use super::alleles::VCFData;
 use crate::utils::{count_combinations, PopulationMapping};
+
 
 pub trait RegionExt {
     fn start_as_u32(&self) -> u32;
@@ -55,12 +58,17 @@ pub struct Population {
     pub alts: u32,
     pub within_diffs: u32,
     pub within_comps: u32,
+    pub sample_names: Vec<String>,
+    pub count_het_sites: Vec<u32>,
 }
 
 impl Population {
-    pub fn new(name: String) -> Self {
+    pub fn new(name: String, sample_names: Vec<String>) -> Self {
+        let count_het_sites: Vec<u32> = Vec::with_capacity(sample_names.len());
         Self {
             name,
+            sample_names,
+            count_het_sites,
             ..Default::default()
         }
     }
@@ -94,12 +102,21 @@ impl Window {
             .map(|(region, site)| {
                 let populations: Vec<Population> = population_info
                     .get_popname_refs()
-                    .unwrap_or(vec!["pop1"])
                     .iter()
-                    .map(|name| Population::new(name.to_string()))
+                    .enumerate()
+                    .map(|(idx, name)| {
+                        Population::new(
+                            name.to_string(),
+                            population_info
+                                .get_sample_refs(idx)
+                                .iter()
+                                .map(|x| x.to_string())
+                                .collect(),
+                        )
+                    })
                     .collect();
                 let population_combinations =
-                    count_combinations(population_info.num_populations as u32, 2);
+                    count_combinations(population_info.num_populations() as u32, 2);
 
                 let (dxy_comps, dxy_diffs) = if population_combinations > 0 {
                     (
@@ -168,7 +185,7 @@ impl Window {
         }
     }
 
-    pub fn update_counts(&mut self, counts: Vec<[u32; 2]>) {
+    pub fn update_allele_counts(&mut self, counts: Vec<[u32; 2]>) {
         if counts.len() >= 2 {
             for pop1 in 0..counts.len() {
                 let pop1_vals = counts[pop1];
@@ -199,6 +216,42 @@ impl Window {
                 }
             }
         }
+    }
+    pub fn update_het_counts(&mut self, het_counts: Vec<Vec<u32>>) {
+        self.populations
+            .iter_mut()
+            .zip(het_counts.into_iter())
+            .for_each(|(population, counts)| {
+                population
+                    .count_het_sites
+                    .iter_mut()
+                    .zip(counts.into_iter())
+                    .for_each(|(site_count, count)| {
+                        *site_count += count;
+                    });
+            });
+    }
+    fn count_alleles(
+        &mut self,
+        record: &vcf::Record,
+        header: &vcf::Header,
+        population_info: &PopulationMapping,
+        samples_in_roh: HashSet<String>,
+    ) -> Result<()> {
+        let mut counts = VCFData::new(population_info.get_sample_counts_per_population());
+
+        super::alleles::count_alleles(
+            record,
+            header,
+            population_info,
+            &mut counts,
+            samples_in_roh,
+        )?;
+
+        self.update_allele_counts(counts.allele_counts);
+        self.update_het_counts(counts.het_counts);
+
+        Ok(())
     }
 }
 
@@ -279,12 +332,11 @@ pub fn process_windows<P: AsRef<Path>>(
                 } {
                     trace!("Worker {} aquired window", i);
 
-                    let sample_map = &pop_info.samp_idx_to_pop_idx;
+                    
                     let population_names = pop_info.get_popname_refs();
-                    let sample_name_to_samp_idx = &pop_info.sample_name_to_sample_idx;
 
                     let mut d4_reader = if let Some(ref path) = d4_path {
-                        Some(D4CallableSites::from_file(&population_names, path)?)
+                        Some(D4CallableSites::from_file(&Some(population_names), path)?)
                     } else {
                         None
                     };
@@ -319,13 +371,13 @@ pub fn process_windows<P: AsRef<Path>>(
                         let record = result?;
                         let start = record.variant_start().unwrap().unwrap().get();
 
-                        let samples_in_roh: HashSet<usize> =
+                        let samples_in_roh: HashSet<String> =
                             if let Some(ref tabix_query) = roh_tabix_query {
                                 tabix_query
                                     .iter()
                                     .filter_map(|(sample, interval)| {
                                         if interval.contains(&(start as u32)) {
-                                            sample_name_to_samp_idx.get(sample).copied()
+                                            Some(sample.to_owned())
                                         // Get index and copy value if it exists
                                         } else {
                                             None
@@ -342,17 +394,18 @@ pub fn process_windows<P: AsRef<Path>>(
                         };
 
                         if should_process_site && record.alternate_bases().len() <= 1 {
-                            let num_pops = pop_info.num_populations;
-                            let mut counts_vec: Vec<[u32; 2]> = vec![[0; 2]; num_pops];
-                            super::alleles::count_alleles(
-                                &record,
-                                &header,
-                                &sample_map,
-                                &mut counts_vec,
-                                samples_in_roh,
-                            )?;
-                            trace!("Counts: {:?}", counts_vec);
-                            window.update_counts(counts_vec);
+                            window.count_alleles(&record, &header, &pop_info, samples_in_roh);
+                            // let num_pops = pop_info.num_populations();
+                            // let mut counts_vec: Vec<[u32; 2]> = vec![[0; 2]; num_pops];
+                            // super::alleles::count_alleles(
+                            //     &record,
+                            //     &header,
+                            //     &pop_info,
+                            //     &mut counts_vec,
+                            //     samples_in_roh,
+                            // )?;
+                            // trace!("Counts: {:?}", counts_vec);
+                            // window.update_counts(counts_vec);
                         } else {
                             // Skip the site
                             sites_skipped.insert(start as u32);

@@ -134,7 +134,7 @@ impl D4Reader {
         &self,
         loci_args: &LociArgs,
         chrom_regions: Vec<ChromRegion>,
-        sample_refs: Option<Vec<String>>, // Updated to Vec<String>
+        sample_refs: Option<Vec<String>>, 
     ) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
         let output_counts = !loci_args.no_counts;
         debug!("output_counts: {output_counts}");
@@ -180,7 +180,7 @@ pub fn read_threshold_file<P: AsRef<Path>>(
     threshold_file: P,
 ) -> Result<HashMap<String, (f64, f64)>> {
     let file = File::open(&threshold_file).expect(&format!(
-        "Failed to open population file: {}",
+        "Failed to open threshold file: {}",
         threshold_file.as_ref().display()
     ));
     let mut reader = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
