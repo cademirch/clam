@@ -1,6 +1,5 @@
 use std::cmp::Ordering;
 use std::collections::{HashSet, VecDeque};
-use std::iter::zip;
 use std::num::NonZeroUsize;
 use std::ops::Bound;
 use std::path::Path;
@@ -16,10 +15,9 @@ use noodles::core::Region;
 use noodles::vcf::variant::record::AlternateBases;
 use noodles::{tabix, vcf};
 
-use super::callable::D4CallableSites;
 use super::alleles::VCFData;
+use super::callable::D4CallableSites;
 use crate::utils::{count_combinations, PopulationMapping};
-
 
 pub trait RegionExt {
     fn start_as_u32(&self) -> u32;
@@ -332,7 +330,6 @@ pub fn process_windows<P: AsRef<Path>>(
                 } {
                     trace!("Worker {} aquired window", i);
 
-                    
                     let population_names = pop_info.get_popname_refs();
 
                     let mut d4_reader = if let Some(ref path) = d4_path {
@@ -394,20 +391,8 @@ pub fn process_windows<P: AsRef<Path>>(
                         };
 
                         if should_process_site && record.alternate_bases().len() <= 1 {
-                            window.count_alleles(&record, &header, &pop_info, samples_in_roh);
-                            // let num_pops = pop_info.num_populations();
-                            // let mut counts_vec: Vec<[u32; 2]> = vec![[0; 2]; num_pops];
-                            // super::alleles::count_alleles(
-                            //     &record,
-                            //     &header,
-                            //     &pop_info,
-                            //     &mut counts_vec,
-                            //     samples_in_roh,
-                            // )?;
-                            // trace!("Counts: {:?}", counts_vec);
-                            // window.update_counts(counts_vec);
+                            window.count_alleles(&record, &header, &pop_info, samples_in_roh)?;
                         } else {
-                            // Skip the site
                             sites_skipped.insert(start as u32);
                         }
                     }
