@@ -3,7 +3,7 @@ mod stat;
 mod utils;
 
 use std::fs::{create_dir_all, File};
-use std::path::{PathBuf, Path};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
