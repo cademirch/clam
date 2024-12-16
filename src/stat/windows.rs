@@ -16,7 +16,7 @@ use noodles::vcf::variant::record::AlternateBases;
 use noodles::{tabix, vcf};
 
 use super::alleles::VCFData;
-use super::callable::D4CallableSites;
+use super::callable::*;
 use crate::utils::{count_combinations, PopulationMapping};
 
 pub trait RegionExt {
@@ -49,6 +49,12 @@ impl RegionExt for Region {
     }
 }
 
+#[derive(Debug)]
+pub struct Chunk {
+    region: Region,
+    windows: Vec<Window>,
+}
+
 #[derive(Debug, Default)]
 pub struct Population {
     pub name: String,
@@ -63,6 +69,7 @@ pub struct Population {
 impl Population {
     pub fn new(name: String, sample_names: Vec<String>) -> Self {
         let count_het_sites: Vec<u32> = Vec::with_capacity(sample_names.len());
+
         Self {
             name,
             sample_names,
@@ -76,10 +83,15 @@ impl Population {
 pub struct Window {
     pub region: Region,
     pub populations: Vec<Population>,
-    pub dxy_comps: Option<Vec<u32>>,
-    pub dxy_diffs: Option<Vec<u32>>,
-    pub sites: Option<HashSet<u32>>, // for specifiying specific sites in this window we are only interersted in
+    pub dxy_stats: DxyStats,
+    pub sites: HashSet<u32>,
     pub ploidy: u32,
+}
+
+#[derive(Debug, Default)]
+pub struct DxyStats {
+    pub comparisons: Vec<u32>,
+    pub differences: Vec<u32>,
 }
 
 impl Window {
@@ -89,16 +101,18 @@ impl Window {
         sites: Option<Vec<HashSet<u32>>>,
         ploidy: u32,
     ) -> VecDeque<Self> {
-        let sites_iter = match sites {
-            Some(sites_vec) => sites_vec.into_iter().map(Some).collect::<Vec<_>>(),
-            None => vec![None; regions.len()],
+        let sites_iter = sites.unwrap_or_else(|| vec![HashSet::new(); regions.len()]);
+        let dxy_size = if population_info.num_populations() >= 2 {
+            count_combinations(population_info.num_populations() as u32, 2) as usize
+        } else {
+            0
         };
 
         regions
             .into_iter()
-            .zip(sites_iter.into_iter()) // Pair regions with corresponding sites (or None)
-            .map(|(region, site)| {
-                let populations: Vec<Population> = population_info
+            .zip(sites_iter)
+            .map(|(region, sites)| {
+                let populations = population_info
                     .get_popname_refs()
                     .iter()
                     .enumerate()
@@ -108,42 +122,33 @@ impl Window {
                             population_info
                                 .get_sample_refs(idx)
                                 .iter()
-                                .map(|x| x.to_string())
+                                .map(ToString::to_string)
                                 .collect(),
                         )
                     })
                     .collect();
-                let population_combinations =
-                    count_combinations(population_info.num_populations() as u32, 2);
-
-                let (dxy_comps, dxy_diffs) = if population_combinations > 0 {
-                    (
-                        Some(Vec::<u32>::with_capacity(population_combinations as usize)),
-                        Some(Vec::<u32>::with_capacity(population_combinations as usize)),
-                    )
-                } else {
-                    (None, None)
-                };
 
                 Self {
                     region,
                     populations,
-                    dxy_comps,
-                    dxy_diffs,
-                    sites: site, // This can be Some(HashSet) or None
+                    dxy_stats: DxyStats {
+                        comparisons: vec![0; dxy_size],
+                        differences: vec![0; dxy_size],
+                    },
+                    sites,
                     ploidy,
                 }
             })
-            .collect() // Collect the iterator into a VecDeque<Window>
+            .collect()
     }
 
     pub fn get_region_info(&self) -> (&str, u32, u32) {
         let chrom = self.region.name_as_str();
         let start = self.region.start_as_u32();
         let end = self.region.end_as_u32();
-
         (chrom, start, end)
     }
+
     pub fn get_pair_index(&self, pop1: usize, pop2: usize) -> usize {
         if pop1 < pop2 {
             pop1 * (self.populations.len() - 1) - (pop1 * (pop1 + 1) / 2) + pop2 - 1
@@ -151,36 +156,31 @@ impl Window {
             pop2 * (self.populations.len() - 1) - (pop2 * (pop2 + 1) / 2) + pop1 - 1
         }
     }
+
     pub fn update_dxy_diffs(&mut self, pop1: usize, pop2: usize, diffs: u32, comps: u32) {
-        let pair_index = self.get_pair_index(pop1, pop2);
-
-        if let Some(dxy_diffs) = &mut self.dxy_diffs {
-            dxy_diffs[pair_index] += diffs;
-        }
-
-        if let Some(dxy_comps) = &mut self.dxy_comps {
-            dxy_comps[pair_index] += comps;
-        }
+        let idx = self.get_pair_index(pop1, pop2);
+        self.dxy_stats.differences[idx] += diffs;
+        self.dxy_stats.comparisons[idx] += comps;
     }
+
     pub fn get_population_mut(&mut self, population_idx: usize) -> Option<&mut Population> {
-        if let Some(population) = self.populations.get_mut(population_idx) {
-            Some(population)
-        } else {
-            None
-        }
+        self.populations.get_mut(population_idx)
     }
+
     pub fn update_population(&mut self, population_idx: usize, values: [u32; 2]) {
-        if let Some(population) = self.get_population_mut(population_idx) {
-            let gts = values[0] + values[1];
-            let diffs = values[0] * values[1];
-            let comps = count_combinations(gts, 2);
-            population.refs += values[0];
-            population.alts += values[1];
-            population.within_diffs += diffs;
-            population.within_comps += comps;
-        } else {
-            panic!("Invalid population index: {}", population_idx);
-        }
+        let population = self
+            .populations
+            .get_mut(population_idx)
+            .unwrap_or_else(|| panic!("Invalid population index: {}", population_idx));
+
+        let gts = values[0] + values[1];
+        let diffs = values[0] * values[1];
+        let comps = count_combinations(gts, 2);
+
+        population.refs += values[0];
+        population.alts += values[1];
+        population.within_diffs += diffs;
+        population.within_comps += comps;
     }
 
     pub fn update_allele_counts(&mut self, counts: Vec<[u32; 2]>) {
@@ -188,45 +188,31 @@ impl Window {
             for pop1 in 0..counts.len() {
                 let pop1_vals = counts[pop1];
                 self.update_population(pop1, pop1_vals);
+
                 for pop2 in (pop1 + 1)..counts.len() {
                     let pop2_vals = counts[pop2];
                     self.update_population(pop2, pop2_vals);
+
                     let diffs = (pop1_vals[0] * pop2_vals[1]) + (pop1_vals[1] * pop2_vals[0]);
                     let comps = (pop1_vals[0] + pop2_vals[1]) * (pop1_vals[1] + pop2_vals[0]);
                     self.update_dxy_diffs(pop1, pop2, diffs, comps);
                 }
             }
         } else {
-            self.update_population(0, counts[0]); // only 1 population
+            self.update_population(0, counts[0]);
         }
     }
-    fn update_comparisons(&mut self, within_comps: &[u32], dxy_comps: &Option<Vec<u32>>) {
-        for (pop_idx, within_comp) in within_comps.iter().enumerate() {
-            if let Some(population) = self.get_population_mut(pop_idx) {
-                population.within_comps = *within_comp;
-            }
-        }
 
-        if let Some(dxy_comps) = dxy_comps {
-            if let Some(ref mut self_dxy_comps) = self.dxy_comps {
-                for (comp_idx, dxy_comp) in dxy_comps.iter().enumerate() {
-                    self_dxy_comps[comp_idx] = *dxy_comp;
-                }
-            }
-        }
-    }
     pub fn update_het_counts(&mut self, het_counts: Vec<Vec<u32>>) {
         self.populations
             .iter_mut()
-            .zip(het_counts.into_iter())
+            .zip(het_counts)
             .for_each(|(population, counts)| {
                 population
                     .count_het_sites
                     .iter_mut()
-                    .zip(counts.into_iter())
-                    .for_each(|(site_count, count)| {
-                        *site_count += count;
-                    });
+                    .zip(counts)
+                    .for_each(|(site_count, count)| *site_count += count);
             });
     }
     fn count_alleles(
@@ -250,6 +236,16 @@ impl Window {
         self.update_het_counts(counts.het_counts);
 
         Ok(())
+    }
+
+    fn update_comparisons_d4(&mut self, within_comps: &[u32], dxy_comps: &[u32]) {
+        for (pop_idx, within_comp) in within_comps.iter().enumerate() {
+            if let Some(population) = self.get_population_mut(pop_idx) {
+                population.within_comps = *within_comp;
+            }
+        }
+
+        self.dxy_stats.comparisons = dxy_comps.to_vec();
     }
 }
 
@@ -285,7 +281,7 @@ impl Eq for Window {}
 
 pub fn process_windows<P: AsRef<Path>>(
     vcf_path: P,
-    d4_path: Option<P>,
+    callable_path: Option<P>,
     roh_path: Option<P>,
     worker_count: NonZeroUsize,
     windows: VecDeque<Window>,
@@ -304,13 +300,14 @@ pub fn process_windows<P: AsRef<Path>>(
     };
     let start_time = Instant::now();
     info!("Processing {} regions...", num_windows);
+
     thread::scope(|scope| {
         for i in 0..worker_count.get() {
             trace!("Spawned worker {}", i);
             let work_queue = Arc::clone(&work_queue);
             let res = Arc::clone(&res);
             let vcf_path = vcf_path.as_ref();
-            let d4_path = d4_path.as_ref().map(|p| p.as_ref().to_path_buf());
+            let callable_path = callable_path.as_ref().map(|p| p.as_ref().to_path_buf());
             let roh_path = roh_path.as_ref().map(|p| p.as_ref().to_path_buf());
             let bar = bar.clone();
             let pop_info = population_info.clone();
@@ -331,9 +328,19 @@ pub fn process_windows<P: AsRef<Path>>(
                     trace!("Worker {} aquired window", i);
 
                     let population_names = pop_info.get_popname_refs();
-
-                    let mut d4_reader = if let Some(ref path) = d4_path {
-                        Some(D4CallableSites::from_file(&Some(population_names), path)?)
+                    
+                    let mut callable_sites = if let Some(ref path) = callable_path {
+                        let extension = path.extension().and_then(|ext| ext.to_str());
+                        match extension {
+                            Some("d4") => Some(CallableSites::D4(D4CallableSites::from_file(
+                                &Some(pop_info.get_popname_refs()),
+                                &path,
+                            )?)),
+                            Some("gz") | Some("bed.gz") => {
+                                Some(CallableSites::Bed(BedCallableSites::from_file(path, pop_info.get_sample_counts_per_population())?))
+                            }
+                            _ => bail!("Unsupported callable sites file format"),
+                        }
                     } else {
                         None
                     };
@@ -385,10 +392,8 @@ pub fn process_windows<P: AsRef<Path>>(
                                 HashSet::with_capacity(0)
                             };
 
-                        let should_process_site = match &window.sites {
-                            Some(sites) => sites.contains(&(start as u32)),
-                            None => true,
-                        };
+                        let should_process_site =
+                            window.sites.is_empty() || window.sites.contains(&(start as u32));
 
                         if should_process_site && record.alternate_bases().len() <= 1 {
                             window.count_alleles(&record, &header, &pop_info, samples_in_roh)?;
@@ -396,7 +401,7 @@ pub fn process_windows<P: AsRef<Path>>(
                             sites_skipped.insert(start as u32);
                         }
                     }
-                    if let Some(reader) = d4_reader.as_mut() {
+                    if let Some(reader) = callable_sites.as_mut() {
                         let query_d4_time = Instant::now();
                         let (chrom, window_begin, window_end) = &window.get_region_info();
 
@@ -413,7 +418,7 @@ pub fn process_windows<P: AsRef<Path>>(
                                     i,
                                     query_d4_time.elapsed()
                                 );
-                                window.update_comparisons(&within, &dxy);
+                                window.update_comparisons_d4(&within, &dxy);
                             }
                             Err(e) => {
                                 bail!(

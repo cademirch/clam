@@ -147,14 +147,12 @@ fn main() -> Result<()> {
                         pop_file.as_str()
                     )
                 })?;
-                let population_map = utils::PopulationMapping::from_path(
-                    file,
-                    None,
-                )?;
+                let population_map = utils::PopulationMapping::from_path(file, None)?;
                 let mut temp_file_paths = Vec::with_capacity(population_map.num_populations());
 
                 for samples in population_map.get_samples_per_population() {
-                    let sample_names: Vec<String> = samples.iter().map(|&s| s.to_string()).collect();
+                    let sample_names: Vec<String> =
+                        samples.iter().map(|&s| s.to_string()).collect();
                     let res = d4_reader.run_tasks(
                         &loci_args,
                         chrom_regions.clone(),
