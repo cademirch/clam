@@ -86,7 +86,7 @@ pub struct StatArgs {
     pub exclude_file: Option<Utf8PathBuf>,
 
     /// Path to RoH file.
-    #[arg(long = "roh-file", conflicts_with("callable_sites"))]
+    #[arg(long = "roh-file")]
     pub roh_file: Option<Utf8PathBuf>,
 }
 
