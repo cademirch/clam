@@ -2,15 +2,15 @@ mod loci;
 mod stat;
 mod utils;
 
-use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use std::fs::{create_dir_all, File};
+use std::path::PathBuf;
 
-use log::{info, warn};
+use anyhow::{Context, Result};
+use camino::Utf8PathBuf;
+use clap::{Parser, Subcommand};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use indicatif_log_bridge::LogWrapper;
-
-use std::fs::create_dir_all;
-use std::path::{Path, PathBuf};
+use log::{info, warn};
 
 #[derive(Debug, Parser)]
 #[command(name = "clam")]
@@ -59,11 +59,13 @@ fn main() -> Result<()> {
     let progress_bar = if args.quiet {
         None
     } else {
-        let bar = ProgressBar::no_length().with_style(ProgressStyle::with_template(
-            "{spinner:.green} [{wide_bar:.cyan/blue}] {percent}% done.",
-        )
-        .unwrap()
-        .progress_chars("#>-"));
+        let bar = ProgressBar::no_length().with_style(
+            ProgressStyle::with_template(
+                "{spinner:.green} [{wide_bar:.cyan/blue}] {percent}% done.",
+            )
+            .unwrap()
+            .progress_chars("#>-"),
+        );
         Some(multi.add(bar))
     };
 
@@ -138,24 +140,35 @@ fn main() -> Result<()> {
                 .collect();
 
             if populations {
-                let population_map = utils::PopulationMapping::from_path(
-                    loci_args.population_file.as_ref().unwrap(),
-                )?;
-                let mut temp_file_paths = Vec::with_capacity(population_map.num_populations);
+                let pop_file: &Utf8PathBuf = loci_args.population_file.as_ref().unwrap();
+                let file = File::open(&pop_file).with_context(|| {
+                    format!(
+                        "Failed to open population file at path: {}",
+                        pop_file.as_str()
+                    )
+                })?;
+                let population_map = utils::PopulationMapping::from_path(file, None)?;
+                let mut temp_file_paths = Vec::with_capacity(population_map.num_populations());
 
-                for samples in population_map.pop_idx_to_sample_names.iter() {
+                for samples in population_map.get_samples_per_population() {
+                    let sample_names: Vec<String> =
+                        samples.iter().map(|&s| s.to_string()).collect();
                     let res = d4_reader.run_tasks(
                         &loci_args,
                         chrom_regions.clone(),
-                        Some(samples.clone()),
+                        Some(sample_names),
                     )?;
-                    temp_file_paths.push(loci::write_d4_parallel::<PathBuf>(res, chroms.clone(), None)?);
+                    temp_file_paths.push(loci::write_d4_parallel::<PathBuf>(
+                        res,
+                        chroms.clone(),
+                        None,
+                    )?);
                 }
 
                 loci::merge_d4_files(
                     outfile.clone().into_std_path_buf(),
                     temp_file_paths,
-                    population_map.get_popname_refs().unwrap(),
+                    population_map.get_popname_refs(),
                 )?;
             } else {
                 let res = d4_reader.run_tasks(&loci_args, chrom_regions.clone(), None)?;

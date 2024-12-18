@@ -1,28 +1,19 @@
+use std::panic;
+use std::path::Path;
+use std::time::Instant;
 
-use super::{CallableRegion, add_filters_to_chroms, Thresholds, ChromRegion};
 use anyhow::{bail, Context, Ok, Result};
-use d4::{
-    ptab::PTablePartitionWriter,
-    stab::SecondaryTablePartWriter,
-    task::{Task, TaskOutputVec, TaskPartition},
-    Chrom, D4FileBuilder, D4FileMerger, D4FileWriter, D4MatrixReader, D4TrackReader, Dictionary,
-    MultiTrackReader,
-};
-use log::{debug, info, trace, warn};
-use std::{
-    collections::{HashMap, HashSet},
-    panic,
-    path::Path,
-    time::Instant,
-};
+use d4::task::{Task, TaskPartition};
+use d4::{D4MatrixReader, D4TrackReader, MultiTrackReader};
+use log::{info, trace};
+
+use super::{CallableRegion, ChromRegion};
 
 pub struct TaskPart {
     parent_region: (String, u32, u32),
     thresholds: (f64, f64),
     count_sum: Vec<(u32, u32)>,
 }
-
-
 
 impl<T: Iterator<Item = i32> + ExactSizeIterator> TaskPartition<T> for TaskPart {
     type ParentType = TaskParent;
@@ -115,7 +106,9 @@ impl<T: Iterator<Item = i32> + ExactSizeIterator> Task<T> for TaskParent {
                 self.mean_thresholds.0,
                 self.mean_thresholds.1
             );
-            if self.output_counts || ((self.mean_thresholds.0 < mean && mean < self.mean_thresholds.1) && prop >= self.depth_proportion)
+            if self.output_counts
+                || ((self.mean_thresholds.0 < mean && mean < self.mean_thresholds.1)
+                    && prop >= self.depth_proportion)
             {
                 if let Some(ref mut region) = current_region {
                     // check if current_region is not none
@@ -156,8 +149,6 @@ impl<T: Iterator<Item = i32> + ExactSizeIterator> Task<T> for TaskParent {
     }
 }
 
-
-
 pub fn prepare_tracks_from_file<P: AsRef<Path>>(
     d4_file_path: P,
     samples: Option<Vec<String>>,
@@ -168,7 +159,10 @@ pub fn prepare_tracks_from_file<P: AsRef<Path>>(
             if let Some(path) = p {
                 let track_name = path.to_str().unwrap_or("");
                 // Check if any sample matches the track name
-                if let Some(sample) = samples.iter().find(|sample| track_name.contains(sample.as_str())) {
+                if let Some(sample) = samples
+                    .iter()
+                    .find(|sample| track_name.contains(sample.as_str()))
+                {
                     found.push(sample.clone()); // Push the sample name to found as a String
                     true
                 } else {
@@ -202,7 +196,6 @@ pub fn prepare_tracks_from_file<P: AsRef<Path>>(
     Ok(tracks)
 }
 
-
 pub fn run_tasks_on_tracks(
     tracks: Vec<D4TrackReader>,
     regions: Vec<ChromRegion>,
@@ -214,7 +207,6 @@ pub fn run_tasks_on_tracks(
 
     let num_tracks = tracks.len();
     let mut reader = D4MatrixReader::new(tracks).unwrap();
-    
 
     let mut tasks = vec![];
 
@@ -250,8 +242,7 @@ pub fn run_tasks_on_tracks(
 mod tests {
 
     use super::*;
-    use log::debug;
-    use std::collections::HashMap;
+
     fn init() {
         let _ = env_logger::builder()
             .target(env_logger::Target::Stdout)
@@ -273,7 +264,6 @@ mod tests {
             output_counts: output_counts,
         }
     }
-    
 
     #[test]
     fn combine_output_counts_false_adjacent_regions_different_counts() {

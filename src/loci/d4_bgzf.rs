@@ -1,13 +1,18 @@
-use super::{CallableRegion, ChromRegion};
-use anyhow::{bail, Context, Result};
+use std::collections::HashMap;
+use std::fs::File;
+use std::path::Path;
+use std::thread;
+use std::time::Instant;
+
+use anyhow::{Context, Result};
 use crossbeam::channel::{bounded, Receiver, Sender};
-use d4::ssio::D4TrackView;
-use d4::{find_tracks, index::D4IndexCollection, ssio::D4TrackReader, Chrom};
+use d4::find_tracks;
+use d4::index::D4IndexCollection;
+use d4::ssio::{D4TrackReader, D4TrackView};
 use log::{info, trace, warn};
 use noodles::bgzf::{self, IndexedReader};
-use rayon::prelude::*;
-use std::time::Instant;
-use std::{collections::HashMap, fs::File, path::Path, thread};
+
+use super::{CallableRegion, ChromRegion};
 
 const CHUNK_SIZE: u32 = 10_000_000;
 
@@ -67,7 +72,7 @@ impl BGZID4MatrixReader {
     }
     pub fn from_merged<P: AsRef<Path>>(src: P, track_names: Option<Vec<&str>>) -> Result<Self> {
         let indexed_reader = build_bgzf_reader(src.as_ref())?;
-        
+
         if let Some(track_names) = track_names {
             let mut found: Vec<&str> = vec![]; // Store found sample names as String
             let tracker = |p: Option<&Path>| {
@@ -126,7 +131,7 @@ impl BGZID4MatrixReader {
         begin: u32,
         end: u32,
     ) -> Result<Vec<D4TrackView<IndexedReader<File>>>> {
-        let mut views: Vec<_> = self
+        let views: Vec<_> = self
             .readers
             .iter_mut()
             .map(|track| track.inner_mut().get_view(chrom, begin, end).unwrap())
@@ -409,4 +414,3 @@ pub fn run_bgzf_tasks<P: AsRef<Path>>(
 
     Ok(regions)
 }
-

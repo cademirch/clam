@@ -1,70 +1,134 @@
-use super::*;
 use anyhow::{bail, Context, Result};
-use crossbeam::channel::{bounded, Receiver, Sender};
-use fnv::FnvHashMap;
-use noodles::bgzf;
-use noodles::core::Region;
-use noodles::tabix;
-use noodles::vcf::{
-    self,
-    variant::record::{
-        samples::{keys::key, series::Value, Series},
-        AlternateBases,
-    },
-};
+use std::iter::zip;
+use noodles::vcf::variant::record::samples::keys::key;
+use noodles::vcf::variant::record::samples::series::Value;
+use noodles::vcf::variant::record::samples::Series;
+use noodles::vcf::{self};
 
-use ::log::{debug, info};
-use indicatif::{ProgressBar, ProgressStyle};
-use std::num::NonZeroUsize;
-use std::{fs::File, path::Path, thread};
+use super::*;
 
+enum Homozygous {
+    Ref,
+    Alt
+}
+enum Genotype {
+    Homozygous(Homozygous),
+    Heterozygous,
+    Missing // All alleles missing 
+}
 
-pub type ProcessedRecord = (String, usize, usize, Option<Vec<[u32; 2]>>); //chrom idx, window_idx, position, allele counts
+pub struct VCFData {
+    pub allele_counts: Vec<[u32;2]>,
+    pub het_counts: Vec<Vec<u32>>,
+
+} 
+
+impl VCFData {
+    pub fn new(num_samples_per_population: Vec<usize>) -> Self {
+        let allele_counts: Vec<[u32; 2]> = vec![[0; 2]; num_samples_per_population.len()];
+        let het_counts = num_samples_per_population.iter().map(|count| vec![0; *count]).collect();
+
+        Self{
+            allele_counts,
+            het_counts
+        }
+    }
+}
+
 
 /// Count alleles in a single vcf record
 pub fn count_alleles(
     record: &vcf::Record,
     header: &vcf::Header,
-    sample_to_pop: &FnvHashMap<usize, usize>,
-    counts: &mut Vec<[u32; 2]>,
+    population_info: &PopulationMapping,
+    vcfdata: &mut VCFData,
+    samples_in_roh: HashSet<String>,
 ) -> Result<()> {
     let samples = record.samples();
+    let sample_names = header.sample_names().iter();
     let gt_series = samples
         .select(key::GENOTYPE)
         .ok_or_else(|| anyhow!("Malformed variant record: {:?}", record))?;
 
-    for (sample_idx, value) in gt_series.iter(&header).enumerate() {
+    for (sample_name, value) in zip(sample_names, gt_series.iter(&header)) {
         let Some(Value::Genotype(genotype)) = value? else {
             bail!(
-                "Invalid GT value for sample at index {}, in variant record: {:?}",
-                sample_idx,
+                "Invalid GT value for sample {}, in variant record: {:?}",
+                sample_name,
                 record
             )
         };
-
+        
+        let (population_idx, internal_idx) = population_info.lookup_sample_name(sample_name)?;
+        
+        let mut ref_count = 0;
+        let mut alt_count = 0;
+        
         for result in genotype.iter() {
             let allele = result.with_context(|| {
                 format!(
-                    "Failed to parse alleles for sample at index {}, in variant record: {:?}",
-                    sample_idx, record
+                    "Failed to parse alleles for sample at {}, in variant record: {:?}",
+                    sample_name, record
                 )
             })?;
 
             let (position, _) = allele;
 
-            let pop_idx = sample_to_pop
-                .get(&sample_idx)
-                .ok_or_else(|| anyhow!("Unknown population for sample index {}", sample_idx))?;
-
             match position {
-                Some(0) => counts[*pop_idx][0] += 1, // Reference allele
-                Some(1) => counts[*pop_idx][1] += 1, // Alternate allele
-                None => (),                          // Missing allele
+                Some(0) => ref_count += 1,
+                Some(1) => alt_count += 1,
+                None => (),
                 _ => bail!(
-                    "Unexpected allele value in sample index {}: {:?}",
-                    sample_idx,
+                    "Unexpected allele value in sample {}: {:?}",
+                    sample_name,
                     position
                 ),
+            }
+        }
+
+        let genotype = match (ref_count, alt_count) {
+            (0, 0) => Genotype::Missing,
+            (0, _) => Genotype::Homozygous(Homozygous::Alt), 
+            (_, 0) => Genotype::Homozygous(Homozygous::Ref), 
+            _ => Genotype::Heterozygous,                    
+        };
+
+        if samples_in_roh.contains(sample_name) {
+            trace!(
+                "ROH sample: {}: ref:{} alt: {}",
+                sample_name,
+                ref_count,
+                alt_count
+            );
+        
+            match genotype {
+                Genotype::Homozygous(Homozygous::Ref) => vcfdata.allele_counts[population_idx][0] += 1, // Increment reference count
+                Genotype::Homozygous(Homozygous::Alt) => vcfdata.allele_counts[population_idx][1] += 1, // Increment alternate count
+                Genotype::Heterozygous => {
+                    trace!(
+                        "Sample {} in ROH but heterozygous (ref:{} alt:{})",
+                        sample_name,
+                        ref_count,
+                        alt_count
+                    );
+                }
+                Genotype::Missing => {
+                    trace!(
+                        "Sample {} in ROH but missing genotype (ref:{} alt:{})",
+                        sample_name,
+                        ref_count,
+                        alt_count
+                    );
+                }
+            }
+        } else {
+            vcfdata.allele_counts[population_idx][0] += ref_count;
+            vcfdata.allele_counts[population_idx][1] += alt_count;
+
+            
+            if matches!(genotype, Genotype::Heterozygous) {
+                trace!("het_counts: {:?}, internal_idx: {}", vcfdata.het_counts, internal_idx);
+                vcfdata.het_counts[population_idx][internal_idx] += 1; // Increment het count outside ROH
             }
         }
     }
@@ -72,233 +136,53 @@ pub fn count_alleles(
     Ok(())
 }
 
-
-
-// pub fn process_single_region<P: AsRef<Path>>(
-//     region_idx: usize,
-//     region: Region,
-//     vcf: &P,
-//     tbi: &P,
-//     samp_idx_to_pop_idx: &FnvHashMap<usize, usize>,
-//     processed_tx: &Sender<ProcessedRecord>,
-// ) -> Result<()> {
-//     let mut rdr = File::open(vcf.as_ref())
-//         .map(bgzf::Reader::new)
-//         .map(vcf::io::Reader::new)?;
-
-//     let index = tabix::read(tbi.as_ref()).context("Failed to read .tbi file")?;
-
-//     let header = rdr.read_header()?;
-
-//     let query = rdr.query(&header, &index, &region)?;
-//     trace!(
-//         "Worker processing region {}, began iterating query",
-//         region_idx
-//     );
-//     for result in query {
-//         let record = result?;
-//         let mut counts = None;
-
-//         if record.alternate_bases().len() <= 1 {
-//             let num_pops = samp_idx_to_pop_idx.values().max().map_or(0, |&v| v + 1);
-//             let mut counts_vec: Vec<[u32; 2]> = vec![[0; 2]; num_pops];
-//             count_alleles(&record, &header, &samp_idx_to_pop_idx, &mut counts_vec)?;
-//             counts = Some(counts_vec);
-//         }
-
-//         let chrom = record.reference_sequence_name().to_string();
-//         let start = record.variant_start().unwrap().unwrap().get();
-//         processed_tx
-//             .send((chrom, region_idx, start, counts))
-//             .unwrap();
-//     }
-
-//     Ok(())
-// }
-
-// pub fn update_windows_for_record(
-//     window_idx: usize,
-//     start: usize,
-//     counts: Option<Vec<[u32; 2]>>,
-//     windows: &mut Vec<WindowedData>,
-// ) -> Result<()> {
-//     // Ensure the window index is within bounds
-//     let windowed_data = windows
-//         .get_mut(window_idx)
-//         .ok_or_else(|| anyhow!("Window index {} is out of bounds", window_idx))?;
-
-//     let should_update_counts = if let Some(sites) = &windowed_data.sites {
-//         sites.contains(&(start as u32))
-//     } else {
-//         true // If `sites` is `None`, allow updating counts
-//     };
-//     trace!(
-//         "Should update counts: {}, window idx: {}, startpos: {}, counts: {:?}",
-//         should_update_counts,
-//         window_idx,
-//         start,
-//         counts
-//     );
-//     if should_update_counts {
-//         if let Some(counts) = counts {
-//             // Update population counts
-//             for (pop_idx, vals) in counts.iter().enumerate() {
-//                 debug!("Updating popidx: {} with values: {:?}", pop_idx, vals);
-//                 windowed_data.update_population(pop_idx, *vals);
-//             }
-
-//             // Update dxy differences if we have at least two populations
-//             if counts.len() >= 2 {
-//                 for pop1 in 0..counts.len() {
-//                     for pop2 in (pop1 + 1)..counts.len() {
-//                         let pop1_vals = counts[pop1];
-//                         let pop2_vals = counts[pop2];
-
-//                         let diffs = (pop1_vals[0] * pop2_vals[1]) + (pop1_vals[1] * pop2_vals[0]);
-//                         let comps = (pop1_vals[0] + pop2_vals[1]) * (pop1_vals[1] + pop2_vals[0]);
-//                         windowed_data.update_dxy_diffs(pop1, pop2, diffs, comps);
-//                     }
-//                 }
-//             }
-//         } else {
-//             // If `counts` is `None`, mark `start` as skipped
-//             windowed_data
-//                 .sites_skipped
-//                 .insert(start.try_into().unwrap());
-//         }
-//     }
-
-//     Ok(())
-// }
-// pub fn process<P: AsRef<Path>>(
-//     worker_count: NonZeroUsize,
-//     regions: Vec<Region>,
-//     vcf: P,
-//     tbi: P,
-//     samp_idx_to_pop_idx: FnvHashMap<usize, usize>,
-//     mut windows: Vec<WindowedData>,
-//     quiet: bool,
-// ) -> Result<Vec<WindowedData>> {
-//     let (region_tx, region_rx) = bounded(worker_count.get());
-//     let (processed_tx, processed_rx) = bounded(worker_count.get());
-//     let num_regions = regions.len();
-//     info!("Processing {} regions.", num_regions);
-//     let start_time = std::time::Instant::now();
-//     let bar = if quiet {
-//         None
-//     } else {
-//         let bar = ProgressBar::new(num_regions as u64);
-//         bar.set_style(ProgressStyle::with_template("{spinner:.green} [{wide_bar:.cyan/blue}] {percent}% done.")
-//         .unwrap()
-//         .progress_chars("#>-"));
-//     Some(bar)
-    
-//     };
-
-//     thread::scope(|scope| {
-//         scope.spawn(move || {
-//             for (region_idx, region) in regions.into_iter().enumerate() {
-//                 debug!("Sending region {} to region_tx", region_idx);
-//                 region_tx.send((region_idx, region)).unwrap();
-//             }
-//             drop(region_tx);
-//         });
-
-//         for i in 0..worker_count.get() {
-//             let region_rx = region_rx.clone();
-//             let processed_tx = processed_tx.clone();
-//             let vcf_path = vcf.as_ref().to_path_buf();
-//             let tbi_path = tbi.as_ref().to_path_buf();
-//             let samp_idx_to_pop_idx = samp_idx_to_pop_idx.clone();
-//             let bar = bar.as_ref();
-
-//             scope.spawn(move || -> Result<()> {
-//                 let mut counter = 0;
-//                 while let Ok((region_idx, region)) = region_rx.recv() {
-//                     debug!("Worker {} processing region {}", i, region_idx);
-//                     process_single_region(
-//                         region_idx,
-//                         region,
-//                         &vcf_path,
-//                         &tbi_path,
-//                         &samp_idx_to_pop_idx,
-//                         &processed_tx,
-//                     )?;
-//                     counter += 1;
-
-//                     if counter >= num_regions / 100 {
-//                         if let Some(bar) = bar {
-//                             bar.inc((num_regions/100) as u64);
-//                         }
-//                         counter = 0;
-//                     }
-//                 }
-
-//                 if let Some(bar) = bar {
-//                     bar.inc(counter as u64);
-//                 }
-
-//                 Ok(())
-//             });
-//         }
-//         drop(processed_tx);
-
-//         while let Ok((_, window_idx, start, counts)) = processed_rx.recv() {
-//             update_windows_for_record(window_idx, start, counts, &mut windows).unwrap();
-//         }
-//     });
-
-//     if let Some(bar) = bar {
-//         bar.finish();
-//     }
-//     info!("Processed {} regions in {:#?}", num_regions, start_time.elapsed());
-//     Ok(windows)
-// }
-
 #[cfg(test)]
 mod tests {
-    use super::windows::*;
-    use super::*;
-    use anyhow::Result;
-    use fnv::FnvHashMap;
-    use noodles::core::Region;
-    use noodles::vcf::io::Reader;
-    use std::path::PathBuf;
-    use std::str::FromStr;
+    use std::io::Cursor;
 
-    #[test]
-    fn test_run() -> Result<()> {
-        let vcf_path = PathBuf::from_str("tests/data/stat/diploid/small.vcf.gz");
-        let tbi_path = PathBuf::from_str("tests/data/stat/diploid/small.vcf.gz.tbi");
-        Ok(())
+    use anyhow::Result;
+    
+    use noodles::vcf::io::Reader;
+    use noodles::vcf::Header;
+
+    use super::*;
+
+    fn create_population_mapping(header: &Header, pop_data: &str) -> PopulationMapping {
+        let pop_data_cursor = Cursor::new(pop_data);
+        PopulationMapping::from_path(pop_data_cursor, Some(header.sample_names()))
+            .expect("Failed to create PopulationMapping")
     }
 
     #[test]
     fn test_count_alleles_single_population() -> Result<()> {
-        let data: &str = concat!(
+        let vcf_data: &str = concat!(
             "##fileformat=VCFv4.3\n",
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample1\tsample2\n",
-            "sq0\t1\t.\tA\tG\t.\tPASS\t.\tGT\t0/0\t0/1"
+            "sq0\t1\t.\tA\tG\t.\tPASS\t.\tGT\t0/0\t0/1\n"
         );
-        let data = data.as_bytes();
 
-        let mut sample_to_pop = FnvHashMap::default();
-        sample_to_pop.insert(0, 0);
-        sample_to_pop.insert(1, 0);
+        let pop_data: &str = "sample\tpopulation_name\nsample1\tpop0\nsample2\tpop0\n";
 
-        let mut reader = Reader::new(data);
-        let actual_header = reader.read_header()?;
+        let vcf_cursor = Cursor::new(vcf_data);
+        let mut reader = Reader::new(vcf_cursor);
+        let header = reader.read_header()?;
+
+        let population_mapping = create_population_mapping(&header, pop_data);
 
         for result in reader.records() {
             let record = result?;
-            // Initialize counts with shape (num_pops, 5)
-            let mut counts: Vec<[u32; 2]> = vec![[0; 2]; 1];
+            let mut counts = VCFData::new(population_mapping.get_sample_counts_per_population());
 
-            // Pass the counts array to count_alleles
-            count_alleles(&record, &actual_header, &sample_to_pop, &mut counts)?;
+            count_alleles(
+                &record,
+                &header,
+                &population_mapping,
+                &mut counts,
+                HashSet::new(),
+            )?;
 
-            assert_eq!(counts[0][0], 3); // ref alleles
-            assert_eq!(counts[0][1], 1); // alt alleles
+            assert_eq!(counts.allele_counts[0][0], 3); // 2 from sample1, 1 from sample2
+            assert_eq!(counts.allele_counts[0][1], 1); // 1 from sample2
         }
 
         Ok(())
@@ -306,30 +190,35 @@ mod tests {
 
     #[test]
     fn test_count_alleles_haploid_single_population() -> Result<()> {
-        let data: &str = concat!(
+        let vcf_data: &str = concat!(
             "##fileformat=VCFv4.3\n",
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample1\tsample2\n",
-            "sq0\t1\t.\tA\tG\t.\tPASS\t.\tGT\t0\t1"
+            "sq0\t1\t.\tA\tG\t.\tPASS\t.\tGT\t0\t1\n"
         );
-        let data = data.as_bytes();
 
-        let mut sample_to_pop = FnvHashMap::default();
-        sample_to_pop.insert(0, 0);
-        sample_to_pop.insert(1, 0);
+        let pop_data: &str = "sample\tpopulation_name\nsample1\tpop0\nsample2\tpop0\n";
 
-        let mut reader = Reader::new(data);
-        let actual_header = reader.read_header()?;
+        let vcf_cursor = Cursor::new(vcf_data);
+        let mut reader = Reader::new(vcf_cursor);
+        let header = reader.read_header()?;
+
+        let population_mapping = create_population_mapping(&header, pop_data);
 
         for result in reader.records() {
             let record = result?;
-            // Initialize counts with shape (num_pops, 5)
-            let mut counts: Vec<[u32; 2]> = vec![[0; 2]; 1];
+            trace!("{:?}", population_mapping.get_sample_counts_per_population());
+            let mut counts = VCFData::new(population_mapping.get_sample_counts_per_population());
 
-            // Pass the counts array to count_alleles
-            count_alleles(&record, &actual_header, &sample_to_pop, &mut counts)?;
+            count_alleles(
+                &record,
+                &header,
+                &population_mapping,
+                &mut counts,
+                HashSet::new(),
+            )?;
 
-            assert_eq!(counts[0][0], 1); // ref alleles
-            assert_eq!(counts[0][1], 1); // alt alleles
+            assert_eq!(counts.allele_counts[0][0], 1); // 1 from sample1
+            assert_eq!(counts.allele_counts[0][1], 1); // 1 from sample2
         }
 
         Ok(())
@@ -337,35 +226,98 @@ mod tests {
 
     #[test]
     fn test_count_alleles_two_populations() -> Result<()> {
-        let data: &str = concat!(
+        let vcf_data: &str = concat!(
             "##fileformat=VCFv4.3\n",
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample1\tsample2\n",
-            "sq0\t1\t.\tA\tG\t.\tPASS\t.\tGT\t0/0\t0/1"
+            "sq0\t1\t.\tA\tG\t.\tPASS\t.\tGT\t0/0\t0/1\n"
         );
-        let data = data.as_bytes();
 
-        let mut sample_to_pop = FnvHashMap::default();
-        sample_to_pop.insert(0, 0);
-        sample_to_pop.insert(1, 1);
+        let pop_data: &str = "sample\tpopulation_name\nsample1\tpop0\nsample2\tpop1\n";
 
-        let mut reader = Reader::new(data);
-        let actual_header = reader.read_header()?;
+        let vcf_cursor = Cursor::new(vcf_data);
+        let mut reader = Reader::new(vcf_cursor);
+        let header = reader.read_header()?;
+
+        let population_mapping = create_population_mapping(&header, pop_data);
 
         for result in reader.records() {
             let record = result?;
-            // Initialize counts with shape (num_pops, 5)
-            let mut counts: Vec<[u32; 2]> = vec![[0; 2]; 2];
+            let mut counts = VCFData::new(population_mapping.get_sample_counts_per_population());
+            trace!("{:?}", population_mapping.get_sample_counts_per_population());
+            count_alleles(
+                &record,
+                &header,
+                &population_mapping,
+                &mut counts,
+                HashSet::new(),
+            )?;
 
-            // Pass the counts array to count_alleles
-            count_alleles(&record, &actual_header, &sample_to_pop, &mut counts)?;
+            // Population 0
+            assert_eq!(counts.allele_counts[0][0], 2); // 2 from sample1
+            assert_eq!(counts.allele_counts[0][1], 0); // 0 from sample1
+            assert_eq!(counts.het_counts[0][0], 0); 
+            
+            // Population 1
+            assert_eq!(counts.allele_counts[1][0], 1); // 1 from sample2
+            assert_eq!(counts.allele_counts[1][1], 1); // 1 from sample2
+            assert_eq!(counts.het_counts[1][0], 1);
+        }
 
-            //pop0
-            assert_eq!(counts[0][0], 2); // ref alleles
-            assert_eq!(counts[0][1], 0); // alt alleles
+        Ok(())
+    }
 
-            //pop1
-            assert_eq!(counts[1][0], 1); // ref alleles
-            assert_eq!(counts[1][1], 1); // alt alleles
+    #[test]
+    fn test_count_alleles_with_roh() -> Result<()> {
+        let vcf_data: &str = concat!(
+            "##fileformat=VCFv4.3\n",
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample1\tsample2\n",
+            "sq0\t1\t.\tA\tG\t.\tPASS\t.\tGT\t0/0\t0/1\n",
+            "sq0\t2\t.\tA\tG\t.\tPASS\t.\tGT\t1/1\t0/1\n",
+            "sq0\t3\t.\tA\tG\t.\tPASS\t.\tGT\t0/1\t0/1\n"
+        );
+
+        let pop_data: &str = "sample\tpopulation_name\nsample1\tpop0\nsample2\tpop0\n";
+
+        let roh_samples: HashSet<String> = vec!["sample1".to_string()].into_iter().collect(); // Only sample1 is in ROH
+
+        let vcf_cursor = Cursor::new(vcf_data);
+        let mut reader = Reader::new(vcf_cursor);
+        let header = reader.read_header()?;
+
+        let population_mapping = create_population_mapping(&header, pop_data);
+
+        for result in reader.records() {
+            let record = result?;
+            trace!("{:?}", population_mapping.get_sample_counts_per_population());
+            let mut counts = VCFData::new(population_mapping.get_sample_counts_per_population());
+
+            count_alleles(
+                &record,
+                &header,
+                &population_mapping,
+                &mut counts,
+                roh_samples.clone(),
+            )?;
+
+            // Assertions depend on the record and ROH status
+            match record.variant_start().unwrap().unwrap().get() {
+                1 => {
+                    assert_eq!(counts.allele_counts[0][0], 2); // sample1 contributes 2 ref alleles
+                    assert_eq!(counts.allele_counts[0][1], 1); // sample2 contributes 1 alt allele
+                    
+                }
+                2 => {
+                    assert_eq!(counts.allele_counts[0][0], 1); // sample2 contributes 1 ref allele
+                    assert_eq!(counts.allele_counts[0][1], 2); // sample1 contributes 2 alt alleles
+                }
+
+                3 => {
+                    // sample1 should be zero het counts bc in roh
+                    assert_eq!(counts.het_counts[0][0], 0); 
+                    
+                }
+                _ => panic!("Unexpected position in VCF"),
+            }
         }
 
         Ok(())

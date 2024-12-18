@@ -1,16 +1,157 @@
-use anyhow::{Context, Ok, Result};
-use d4::ssio::{D4TrackReader, D4TrackView};
-use log::{debug, trace};
 use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
+
+use anyhow::{Context, Ok, Result};
+use bstr::BString;
 use d4::find_tracks;
+use d4::ssio::{D4TrackReader, D4TrackView};
+use indexmap::IndexSet;
+use log::{debug, trace};
+use noodles::bed;
+use noodles::bgzf::{self as bgzf, VirtualPosition};
+use noodles::core::{Position, Region};
+use noodles::csi::{self as csi, BinningIndex, Index};
+use noodles::tabix;
+
+
+#[derive(Debug)]
+pub struct QueryResult(pub Vec<u32>, pub Vec<u32>, pub u32);
+
+pub enum CallableSites {
+    D4(D4CallableSites),
+    Bed(BedCallableSites),
+}
+
+impl CallableSites {
+    pub fn query(
+        &mut self,
+        chrom: &str,
+        begin: u32,
+        end: u32,
+        ploidy: u32,
+        skip_sites: &HashSet<u32>,
+    ) -> Result<QueryResult> {
+        match self {
+            CallableSites::D4(reader) => reader.query(chrom, begin-1, end, ploidy, skip_sites),
+            CallableSites::Bed(reader) => reader.query(chrom, begin, end, ploidy, skip_sites),
+        }
+    }
+}
+
+pub struct BedCallableSites {
+    decoder: bgzf::Reader<File>,
+    index: csi::binning_index::Index<Vec<VirtualPosition>>,
+    contigs: IndexSet<String>,
+    num_samples: Vec<usize>,
+}
+
+impl BedCallableSites {
+    pub fn from_file<P: AsRef<Path>>(src: P, num_samples: Vec<usize>) -> Result<Self> {
+        let index_src = format!("{}.tbi", src.as_ref().display());
+        let index =
+            tabix::read(&index_src).context(format!("Couldn't open index: {:?}", &index_src))?;
+
+        let header = index.header().expect("missing tabix header");
+        let contigs = header.reference_sequence_names().clone();
+
+        let decoder = bgzf::reader::Builder.build_from_path(src)?;
+
+        Ok(BedCallableSites {
+            decoder,
+            index,
+            contigs,
+            num_samples,
+        })
+    }
+
+    pub fn query(
+        &mut self,
+        chrom: &str,
+        begin: u32,
+        end: u32,
+        ploidy: u32,
+        skip_sites: &HashSet<u32>,
+    ) -> Result<QueryResult> {
+        let begin_pos = Position::new(begin as usize).context("Invalid start position")?;
+        let end_pos = Position::new(end as usize).context("Invalid end position")?;
+        let contig_id = self
+            .contigs
+            .get_index_of(chrom)
+            .context("Invalid contig name")?;
+        let region = Region::new(BString::from(chrom), begin_pos..=end_pos);
+        let chunks = self.index.query(contig_id, region.interval())?;
+        let query = csi::io::Query::new(&mut self.decoder, chunks);
+
+        let mut reader = bed::io::Reader::<3, _>::new(query);
+        let mut record = bed::Record::default();
+
+        let mut within_comps = vec![0; self.num_samples.len()];
+        let mut dxy_comps = if self.num_samples.len() > 1 {
+            vec![0; self.num_samples.len() * (self.num_samples.len() - 1) / 2]
+        } else {
+            vec![0]
+        };
+        let mut callable_sites = 0;
+        while reader.read_record(&mut record)? != 0 {
+            let record_start = record.feature_start()?;
+            let record_end = record.feature_end().expect("missing feature end")?;
+            let record_interval = (record_start..=record_end).into();
+
+            if !region.interval().intersects(record_interval) {
+                continue;
+            }
+
+            let overlap_start = std::cmp::max(record_start.get(), begin as usize);
+            let overlap_end = std::cmp::min(record_end.get(), end as usize);
+            let sites = if skip_sites.is_empty() {
+                overlap_end - overlap_start + 1
+            } else {
+                (overlap_start..=overlap_end)
+                    .filter(|&pos| !skip_sites.contains(&(pos as u32)))
+                    .count()
+            };
+            callable_sites += sites as u32;
+            for (pop_idx, &num_samples) in self.num_samples.iter().enumerate() {
+                let haps = ploidy * num_samples as u32;
+                trace!(
+                    "Popidx: {} haps: {}, sites: {}, olstart: {}, olend: {}",
+                    pop_idx,
+                    haps,
+                    sites,
+                    overlap_start,
+                    overlap_end
+                );
+                let within_comp = if haps > 1 {
+                    (haps as u64 * (haps as u64 - 1) / 2) as u32
+                } else {
+                    0
+                };
+                within_comps[pop_idx] += within_comp * sites as u32;
+            }
+
+            if self.num_samples.len() > 1 {
+                let mut comb_idx = 0;
+                for i in 0..self.num_samples.len() {
+                    let haps_i = ploidy * self.num_samples[i] as u32;
+                    for j in (i + 1)..self.num_samples.len() {
+                        let haps_j = ploidy * self.num_samples[j] as u32;
+                        dxy_comps[comb_idx] += (haps_i * haps_j) * sites as u32;
+                        comb_idx += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(QueryResult(within_comps, dxy_comps, callable_sites))
+    }
+}
 pub struct D4CallableSites {
     readers: Vec<D4TrackReader<File>>,
 }
 
 impl D4CallableSites {
-    pub fn from_file<P: AsRef<Path>>(pops: Option<Vec<&str>>, d4_file: P) -> Result<Self> {
+    pub fn from_file<P: AsRef<Path>>(pops: &Option<Vec<&str>>, d4_file: P) -> Result<Self> {
         let d4_file_path = d4_file.as_ref();
         let mut readers: Vec<D4TrackReader<File>> = Vec::new();
 
@@ -53,53 +194,7 @@ impl D4CallableSites {
         trace!("Created D4CallableSites");
         Ok(D4CallableSites { readers })
     }
-    // pub fn query_counts(&mut self, chrom: &str, begin: u32, end: u32, ploidy: u32,) -> Result<Vec<Vec<u32>>> {
-    //     // Initialize a 2D vector with default values of 0
-    //     let adjusted_begin = begin - 1;
-    //     let mut within_comps = vec![vec![0; (end - adjusted_begin) as usize]; self.readers.len()];
-    
-    //     // Create views for the specified region
-    //     let mut views: Vec<D4TrackView<File>> = self
-    //         .readers
-    //         .iter_mut()
-    //         .map(|reader| reader.get_view(chrom, adjusted_begin, end).unwrap())
-    //         .collect();
-    
-    //     // Iterate through the range of positions
-    //     for pos in adjusted_begin..end {
-    //         // Get the callable individuals (values) for each population at this position
-    //         let values: Vec<u32> = views
-    //             .iter_mut()
-    //             .map(|view| {
-    //                 // Get the next reported position and value
-    //                 let (reported_pos, value) = view.next().unwrap().unwrap();
-    
-    //                 // Ensure the reported position matches the current position
-    //                 debug!(
-    //                     "reported_pos: {}, pos: {}, value: {}",
-    //                     reported_pos, pos, value
-    //                 );
-    //                 assert_eq!(reported_pos, pos);
-    
-    //                 value as u32
-    //             })
-    //             .collect();
-    
-    //         // Populate the results vector with values for each population
-    //         for (pop_idx, &callable_indvs) in values.iter().enumerate() {
-    //             let haps = ploidy * callable_indvs;
-    //             let within_comp = if haps > 1 {
-    //                 (haps as u64 * (haps as u64 - 1) / 2) as u32
-    //             } else {
-    //                 0
-    //             };
-    //             within_comps[pop_idx] += within_comp;
-    //         }
-    //     }
-    
-    //     Ok(res)
-    // }
-    
+
     pub fn query(
         &mut self,
         chrom: &str,
@@ -107,8 +202,9 @@ impl D4CallableSites {
         end: u32,
         ploidy: u32,
         skip_sites: &HashSet<u32>,
-    ) -> Result<(Vec<u32>, Option<Vec<u32>>)> {
+    ) -> Result<QueryResult> {
         let num_pops = self.readers.len();
+
         let mut views: Vec<D4TrackView<File>> = self
             .readers
             .iter_mut()
@@ -116,7 +212,7 @@ impl D4CallableSites {
             .collect();
 
         let mut within_comps: Vec<u32> = vec![0; num_pops];
-
+        let mut callable_sites = 0;
         let num_pop_combs = if num_pops > 1 {
             num_pops * (num_pops - 1) / 2
         } else {
@@ -124,31 +220,42 @@ impl D4CallableSites {
         };
 
         let mut dxy_comps = if num_pop_combs > 0 {
-            Some(vec![0; num_pop_combs])
+            vec![0; num_pop_combs]
         } else {
-            None
+            vec![0]
         };
 
         for pos in begin..end {
             // Get the callable individuals (values) for each population at this position
+            let mut any_callable = false;
             let values: Vec<u32> = views
                 .iter_mut()
                 .map(|view| {
                     let (reported_pos, value) = view.next().unwrap().unwrap();
-                    
                     assert_eq!(reported_pos, pos);
-                    value as u32
+                    let value = value as u32;
+                    if value != 0 {
+                        any_callable = true;
+                    }
+                    value
                 })
                 .collect();
-            if skip_sites.contains(&pos) {
-                // do this here so that view iterators are advanced still
+    
+            if skip_sites.contains(&pos) || !any_callable {
                 continue;
             }
+            
+            callable_sites += 1;
 
             // Calculate within-population comparisons
             for (pop_idx, &callable_indvs) in values.iter().enumerate() {
                 let haps = ploidy * callable_indvs;
-                trace!("Ploidy: {}, Callable Indvs: {}, Callable haplotypes: {}", ploidy, callable_indvs, haps);
+                trace!(
+                    "Ploidy: {}, Callable Indvs: {}, Callable haplotypes: {}",
+                    ploidy,
+                    callable_indvs,
+                    haps
+                );
                 let within_comp = if haps > 1 {
                     (haps as u64 * (haps as u64 - 1) / 2) as u32
                 } else {
@@ -158,7 +265,7 @@ impl D4CallableSites {
             }
 
             // Calculate between-population (dxy) comparisons
-            if let Some(ref mut dxy_comps) = dxy_comps {
+            if num_pop_combs > 0 {
                 let mut comb_idx = 0;
                 for i in 0..num_pops {
                     let haps_i = ploidy * values[i];
@@ -174,17 +281,19 @@ impl D4CallableSites {
             "Callable Sites - {}:{}-{} {:?}",
             chrom, begin, end, within_comps
         );
-        Ok((within_comps, dxy_comps))
+        Ok(QueryResult(within_comps, dxy_comps, callable_sites))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serde::Deserialize;
     use std::collections::HashSet;
     use std::fs::File;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    use serde::Deserialize;
+
+    use super::*;
 
     #[derive(Debug, Deserialize)]
     struct PopsTruthRecord {
@@ -216,9 +325,9 @@ mod tests {
     fn test_one_site() -> Result<()> {
         init();
         let fp = Path::new("tests/data/stat/diploid/no_pops_callable_sites.d4");
-        let mut d4callable = D4CallableSites::from_file(None, fp)?;
+        let mut d4callable = D4CallableSites::from_file(&None, fp)?;
 
-        let (within_comps, _) = d4callable.query(
+        let QueryResult(within_comps, _,_) = d4callable.query(
             "chr1",
             74,
             75,
@@ -239,11 +348,11 @@ mod tests {
             .delimiter(b'\t')
             .from_reader(truth_fp);
         let fp = Path::new("tests/data/stat/diploid/no_pops_callable_sites.d4");
-        let mut d4callable = D4CallableSites::from_file(None, fp)?;
+        let mut d4callable = D4CallableSites::from_file(&None, fp)?;
 
         for result in reader.deserialize() {
             let record: NoPopsTruthRecord = result?;
-            let (within_comps, _) = d4callable.query(
+            let QueryResult(within_comps, _,_) = d4callable.query(
                 &record.chrom,
                 record.start,
                 record.end,
@@ -268,12 +377,12 @@ mod tests {
             .delimiter(b'\t')
             .from_reader(truth_fp);
         let fp = Path::new("tests/data/stat/diploid/no_pops_callable_sites.d4");
-        let mut d4callable = D4CallableSites::from_file(None, fp)?;
+        let mut d4callable = D4CallableSites::from_file(&None, fp)?;
         let mut skip_sites = HashSet::new();
         skip_sites.insert(10 as u32);
         for result in reader.deserialize() {
             let mut record: NoPopsTruthRecord = result?;
-            let (within_comps, _) =
+            let QueryResult(within_comps, _, _) =
                 d4callable.query(&record.chrom, record.start, record.end, 2, &skip_sites)?;
             if record.start <= 10 && record.end >= 10 {
                 record.within_comp -= 120;
@@ -296,11 +405,11 @@ mod tests {
             .from_reader(truth_fp);
         let fp = Path::new("tests/data/stat/diploid/pops_callable_sites.d4");
         let pops = ["pop0", "pop1"].to_vec();
-        let mut d4callable = D4CallableSites::from_file(Some(pops), fp)?;
+        let mut d4callable = D4CallableSites::from_file(&Some(pops), fp)?;
 
         for result in reader.deserialize() {
             let record: PopsTruthRecord = result?;
-            let (within_comps, dxy_comps) = d4callable.query(
+            let QueryResult(within_comps, dxy_comps, _) = d4callable.query(
                 &record.chrom,
                 record.start,
                 record.end,
@@ -319,14 +428,27 @@ mod tests {
                 record.chrom, record.start, record.end
             );
 
-            assert!(dxy_comps.is_some());
-            let dxy_comps = dxy_comps.unwrap();
             assert_eq!(
                 dxy_comps[0], record.dxy,
                 "Mismatch in dxy for range {}:{}-{}",
                 record.chrom, record.start, record.end
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_bed_query() -> Result<()> {
+        init();
+        let test_path = PathBuf::from("tests/data/stat/callable_sites.bed.gz");
+        let num_samples = vec![5, 3]; // Two populations with 5 and 3 samples
+        let mut reader = BedCallableSites::from_file(test_path, num_samples)?;
+
+        // Test chr1:50-150 (overlaps first region)
+        let QueryResult(within, dxy, _) = reader.query("chr1", 50, 150, 2, &HashSet::new())?;
+        assert_eq!(within, vec![2295, 765]); // pop1 10 haplotypes = 10c2 = 45 * 100 =
+        
+
         Ok(())
     }
 }
