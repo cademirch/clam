@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use super::build_vcf_reader;
 use anyhow::{Context, Result};
 use bstr::BString;
@@ -8,16 +6,6 @@ use noodles::core::{Position, Region};
 use fnv::FnvHashMap;
 
 const MIN_CHUNK_SIZE: usize = 100_000;
-pub struct Chunk {
-    pub region: Region,
-    windows: Vec<Region>,
-}
-
-impl Chunk {
-    pub fn num_windows(&self) -> usize {
-        self.windows.len()
-    }
-}
 
 pub fn create_chunks(
     seqlens: FnvHashMap<String, usize>,
@@ -71,10 +59,6 @@ pub fn create_chunks(
                 // No variants - increase chunk size to skip sparse regions faster
                 current_chunk_size = (current_chunk_size * 2).min(*length);
             }
-
-            // if !windows.is_empty() {
-            //     chunks.push(Chunk { region, windows });
-            // }
 
             current_pos += current_chunk_size;
         }

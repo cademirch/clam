@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::ops::Bound;
 use std::path::Path;
@@ -16,7 +16,9 @@ use noodles::vcf::variant::record::AlternateBases;
 use noodles::{tabix, vcf};
 
 use super::alleles::VCFData;
+use super::build_vcf_reader;
 use super::callable::*;
+use super::output::{DxyRecord, HetRecord, PiRecord};
 use crate::utils::{count_combinations, PopulationMapping};
 
 pub trait RegionExt {
@@ -49,12 +51,6 @@ impl RegionExt for Region {
     }
 }
 
-#[derive(Debug)]
-pub struct Chunk {
-    region: Region,
-    windows: Vec<Window>,
-}
-
 #[derive(Debug, Default)]
 pub struct Population {
     pub name: String,
@@ -68,7 +64,7 @@ pub struct Population {
 
 impl Population {
     pub fn new(name: String, sample_names: Vec<String>) -> Self {
-        let count_het_sites: Vec<u32> = Vec::with_capacity(sample_names.len());
+        let count_het_sites: Vec<u32> = vec![0; sample_names.len()];
 
         Self {
             name,
@@ -76,6 +72,41 @@ impl Population {
             count_het_sites,
             ..Default::default()
         }
+    }
+
+    pub fn het_counts_map(&self) -> HashMap<String, u32> {
+        self.sample_names
+            .iter()
+            .zip(self.count_het_sites.iter())
+            .map(|(name, &count)| (name.clone(), count))
+            .collect()
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn calc_pi(&self) -> f32 {
+        if self.within_comps > 0 {
+            self.within_diffs as f32 / self.within_comps as f32
+        } else {
+            f32::MIN
+        }
+    }
+
+    pub fn het_counts(&self) -> &Vec<u32> {
+        &self.count_het_sites
+    }
+
+    pub fn to_pi_record(&self, chrom: &str, begin: u32, end: u32) -> PiRecord {
+        let pi = self.calc_pi();
+        PiRecord::new(
+            &self.name,
+            chrom,
+            begin,
+            end,
+            pi,
+            self.within_comps,
+            self.within_diffs,
+        )
     }
 }
 
@@ -86,6 +117,7 @@ pub struct Window {
     pub dxy_stats: DxyStats,
     pub sites: HashSet<u32>,
     pub ploidy: u32,
+    pub callable_sites: u32,
 }
 
 #[derive(Debug, Default)]
@@ -137,9 +169,56 @@ impl Window {
                     },
                     sites,
                     ploidy,
+                    callable_sites: 0,
                 }
             })
             .collect()
+    }
+    pub fn to_dxy_records(&self) -> Vec<DxyRecord> {
+        let mut records = Vec::new();
+        let (chrom, start, end) = self.get_region_info();
+        let pop_names: Vec<&str> = self.populations.iter().map(|x| x.name()).collect();
+        for i in 0..pop_names.len() {
+            for j in (i + 1)..pop_names.len() {
+                let idx = self.get_pair_index(i, j);
+                let dxy = if self.dxy_stats.comparisons[idx] > 0 {
+                    self.dxy_stats.differences[idx] as f32 / self.dxy_stats.comparisons[idx] as f32
+                } else {
+                    f32::MIN
+                };
+
+                records.push(DxyRecord::new(
+                    pop_names[i],
+                    pop_names[j],
+                    chrom,
+                    start,
+                    end,
+                    dxy,
+                    self.dxy_stats.comparisons[idx],
+                    self.dxy_stats.differences[idx],
+                ));
+            }
+        }
+
+        records
+    }
+
+    pub fn to_pi_records(&self) -> Vec<PiRecord> {
+        let (chrom, start, end) = self.get_region_info();
+        self.populations.iter().map(|x| x.to_pi_record(chrom, start, end)).collect()
+    }
+
+    pub fn to_het_record(&self) -> HetRecord {
+        let (chrom, start, end) = self.get_region_info();
+
+        // Combine het counts from all populations into one map
+        let samples: HashMap<String, u32> = self
+            .populations
+            .iter()
+            .flat_map(|pop| pop.het_counts_map())
+            .collect();
+
+        HetRecord::new(chrom, start, end, self.callable_sites, samples)
     }
 
     pub fn get_region_info(&self) -> (&str, u32, u32) {
@@ -238,13 +317,13 @@ impl Window {
         Ok(())
     }
 
-    fn update_comparisons_d4(&mut self, within_comps: &[u32], dxy_comps: &[u32]) {
+    fn update_comparisons_d4(&mut self, within_comps: &[u32], dxy_comps: &[u32], callable_sites: u32) {
         for (pop_idx, within_comp) in within_comps.iter().enumerate() {
             if let Some(population) = self.get_population_mut(pop_idx) {
                 population.within_comps = *within_comp;
             }
         }
-
+        self.callable_sites = callable_sites;
         self.dxy_stats.comparisons = dxy_comps.to_vec();
     }
 }
@@ -314,21 +393,14 @@ pub fn process_windows<P: AsRef<Path>>(
 
             scope.spawn(move || -> Result<()> {
                 trace!("Worker {} starting...", i);
+                let (mut vcf_reader, header) = build_vcf_reader(vcf_path)?;
 
-                let mut vcf_reader =
-                    vcf::io::indexed_reader::Builder::default().build_from_path(vcf_path)?;
-
-                let header = vcf_reader.read_header()?;
-
-                // actual work loop
                 while let Some(mut window) = {
                     let mut queue = work_queue.lock().unwrap();
                     queue.pop_front()
                 } {
                     trace!("Worker {} aquired window", i);
 
-                    let population_names = pop_info.get_popname_refs();
-                    
                     let mut callable_sites = if let Some(ref path) = callable_path {
                         let extension = path.extension().and_then(|ext| ext.to_str());
                         match extension {
@@ -337,9 +409,15 @@ pub fn process_windows<P: AsRef<Path>>(
                                 &path,
                             )?)),
                             Some("gz") | Some("bed.gz") => {
-                                Some(CallableSites::Bed(BedCallableSites::from_file(path, pop_info.get_sample_counts_per_population())?))
+                                Some(CallableSites::Bed(BedCallableSites::from_file(
+                                    path,
+                                    pop_info.get_sample_counts_per_population(),
+                                )?))
                             }
-                            _ => bail!("Unsupported callable sites file format"),
+                            _ => bail!(
+                                "Unsupported callable sites file format: {}",
+                                &path.display()
+                            ),
                         }
                     } else {
                         None
@@ -407,18 +485,18 @@ pub fn process_windows<P: AsRef<Path>>(
 
                         match reader.query(
                             chrom,
-                            *window_begin - 1,
+                            *window_begin,
                             *window_end,
                             window.ploidy,
                             &sites_skipped,
                         ) {
-                            Ok((within, dxy)) => {
+                            Ok(QueryResult(within, dxy, callable_sites)) => {
                                 trace!(
                                     "Worker {} queried callable counts d4 in: {:#?}",
                                     i,
                                     query_d4_time.elapsed()
                                 );
-                                window.update_comparisons_d4(&within, &dxy);
+                                window.update_comparisons_d4(&within, &dxy, callable_sites);
                             }
                             Err(e) => {
                                 bail!(

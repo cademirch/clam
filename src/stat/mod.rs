@@ -1,9 +1,11 @@
 pub mod alleles;
 pub mod callable;
-pub mod windows;
 pub mod chunks;
+pub mod output;
+pub mod windows;
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::format;
 use std::fs::File;
 use std::num::NonZeroUsize;
 use std::ops::Bound;
@@ -16,6 +18,7 @@ use bstr::{BString, ByteSlice};
 use camino::Utf8PathBuf;
 use clap::{ArgGroup, Parser};
 use fnv::FnvHashMap;
+use indexmap::IndexSet;
 use log::{debug, info, trace, warn};
 use noodles::bgzf::Reader;
 use noodles::core::{Position, Region};
@@ -27,9 +30,9 @@ use noodles::vcf::variant::record::samples::series::Value;
 use noodles::vcf::variant::record::samples::Series;
 use noodles::vcf::{self};
 use windows::Window;
-use callable::*;
 
 use crate::utils::{get_exclude_chromosomes, read_bed_regions, PopulationMapping};
+use output::create_output_file;
 
 #[derive(Parser, Debug, Clone)]
 #[command(about = "Calculate population genetic statistics from VCF using callable sites.")]
@@ -119,7 +122,12 @@ struct HetRecord {
 }
 
 fn build_vcf_reader(path: impl AsRef<Path>) -> Result<(IndexedReader<Reader<File>>, vcf::Header)> {
-    let mut reader = vcf::io::indexed_reader::Builder::default().build_from_path(path.as_ref())?;
+    let mut reader = vcf::io::indexed_reader::Builder::default()
+        .build_from_path(path.as_ref())
+        .context(format!(
+            "Failed to read VCF file: {}",
+            &path.as_ref().display()
+        ))?;
     let header = reader
         .read_header()
         .with_context(|| "Failed to read VCF header")?;
@@ -127,18 +135,14 @@ fn build_vcf_reader(path: impl AsRef<Path>) -> Result<(IndexedReader<Reader<File
 }
 
 pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) -> Result<()> {
-    // Load VCF header and determine ploidy
     let (header, ploidy) = get_vcf_header_and_ploidy(&args.vcf)?;
 
     let tbi_path = &args.vcf.with_extension("gz.tbi");
-    if !tbi_path.exists() {
-        bail!("Couldn't find tabix index: {}", tbi_path);
-    }
     let index = noodles::tabix::read(tbi_path)
         .context(format!("Failed to read tabix file: {}", tbi_path.as_str()))?;
     let index_header = index.header().context("Tabix file missing header")?;
     let index_seqs = index_header.reference_sequence_names();
-    optimize_chunks(args.vcf.clone(), tbi_path.clone())?;
+
     let pop_map = if let Some(pop_file) = &args.population_file {
         let file = File::open(&pop_file).with_context(|| {
             format!(
@@ -148,62 +152,35 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
         })?;
         PopulationMapping::from_path(file, Some(header.sample_names()))?
     } else {
-        // Default mapping: 1 population, all samples in the same population
         PopulationMapping::default(&header.sample_names())
     };
 
-    // Set up sample-to-population mapping, if population file is provided
     let num_populations = pop_map.num_populations();
-
     let pop_names = pop_map.get_popname_refs();
-
-    // Get sequence lengths for regions based on VCF header
-    let mut seqlens = seqlens_vcf(&header)?;
-    seqlens.retain(|key, _| index_seqs.contains(key));
     let exclude_chroms = get_exclude_chromosomes(&args.exclude, &args.exclude_file)?;
+    let seqlens = seqlens_vcf(&header, &exclude_chroms, &index_seqs)?;
 
-    // Modify `seqlens` in place if `exclude_chroms` has elements
-    if !exclude_chroms.is_empty() {
-        seqlens.retain(|contig, _| !exclude_chroms.contains(contig));
-    }
-
-
-    // let chunks = ;
-
-    // let mut num_windows = 0;
-
-    // for chunk in chunks.iter(){
-    //     let wins = chunk.num_windows();
-    //     debug!("Chunk: {} has {} windows", chunk.region, wins);
-    //     num_windows += wins
-    // }
-
-    // debug!("Total chunked windows: {}",  num_windows);
-    // panic!();
-    let regions = if let Some(regions_file) = args.regions_file.clone() {
-        read_bed_regions(regions_file)?
-    } else if let Some(window_size) = args.window_size {
-        chunks::create_chunks(seqlens.clone(), args.vcf.clone(), window_size)?
-    } else {
-        bail!("Either regions or windows are required!")
+    let regions = match (args.regions_file.clone(), args.window_size) {
+        (Some(regions_file), _) => read_bed_regions(regions_file)?,
+        (None, Some(window_size)) => {
+            chunks::create_chunks(seqlens.clone(), args.vcf.clone(), window_size)?
+        }
+        _ => bail!("Either regions or windows are required!"),
     };
 
-    let sites = if let Some(sites_file) = args.sites_file {
-        let sites_regions = read_bed_regions(sites_file)?;
-        let sites_mapp = sites_map(sites_regions)?;
-        Some(make_region_sites_binary_search(&regions, sites_mapp)?)
-    } else {
-        None
+    let sites = match args.sites_file {
+        Some(sites_file) => {
+            let sites_regions = read_bed_regions(sites_file)?;
+            let sites_map = sites_map(sites_regions)?;
+            Some(make_region_sites_binary_search(&regions, sites_map)?)
+        }
+        None => None,
     };
 
-    // Set up windows from regions
     let windows = Window::from_regions(regions, &pop_map, sites, ploidy as u32);
 
-    // Define worker count from threads argument
     let worker_count = args.threads;
 
-
-    // Process the VCF data
     info!("Starting VCF processing...");
     let mut results = windows::process_windows(
         args.vcf,
@@ -217,103 +194,39 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
 
     let outdir = args.outdir.unwrap_or_else(|| Utf8PathBuf::from("."));
 
-    // Create the clam_pi.tsv file
-    let clam_pi_path = outdir.join("clam_pi.tsv");
-    let clam_pi_file = File::create(&clam_pi_path)?;
-    let mut clam_pi_writer = csv::WriterBuilder::new()
-        .delimiter(b'\t')
-        .from_writer(clam_pi_file);
-    // Conditionally create the clam_dxy.tsv file
-    let mut clam_dxy_writer = if num_populations >= 2 {
-        let clam_dxy_path = outdir.join("clam_dxy.tsv");
-        let clam_dxy_file = File::create(&clam_dxy_path)?;
-        let clam_dxy_writer = csv::WriterBuilder::new()
-            .delimiter(b'\t')
-            .from_writer(clam_dxy_file);
-        Some(clam_dxy_writer)
+    let mut pi_writer = create_output_file(&outdir, "clam_pi.tsv", false)?;
+    let mut dxy_writer = if num_populations > 1 {
+        Some(create_output_file(&outdir, "clam_dxy.tsv", false)?)
     } else {
         None
     };
+    let mut het_writer = create_output_file(&outdir, "clam_het.tsv", true)?;
 
-    let het_file_path = outdir.join("clam_hets.tsv");
-    let het_file = File::create(&het_file_path)?;
-    let mut het_file_writer = csv::WriterBuilder::new()
-        .delimiter(b'\t')
-        .from_writer(het_file);
+    for (idx, window) in results.iter_mut().enumerate() {
+        for pi_record in window.to_pi_records() {
+            pi_writer.serialize(pi_record)?;
+        }
 
-    let mut het_counts: HashMap<String, u32> = HashMap::default();
-
-    for window in results.iter_mut() {
-        for (pop_idx, population) in window.populations.iter().enumerate() {
-            let comps = population.within_comps;
-            let diffs = population.within_diffs;
-            let pi = if comps > 0 {
-                diffs as f32 / comps as f32
-            } else {
-                0.0 // Handle zero comparisons
-            };
-
-            let (chrom, begin, end) = window.get_region_info();
-            clam_pi_writer.serialize(PiRecord {
-                population_name: pop_names[pop_idx].to_string(),
-                chrom: chrom.to_string(),
-                start: begin,
-                end: end,
-                pi: pi,
-                comparisons: comps,
-                differences: diffs,
-            })?;
-
-            for (name, count) in population
-                .sample_names
-                .iter()
-                .zip(&population.count_het_sites)
-            {
-                het_counts
-                    .entry(name.clone())
-                    .and_modify(|e| *e += count)
-                    .or_insert(*count);
+        if let Some(ref mut dxy_writer) = dxy_writer {
+            for dxy_record in window.to_dxy_records() {
+                dxy_writer.serialize(dxy_record)?;
             }
         }
-        // if let Some(dxy_writer) = clam_dxy_writer.as_mut() {
-        //     let (chrom, begin, end) = window.get_region_info();
-        //     for pop1 in 0..num_populations {
-        //         for pop2 in (pop1 + 1)..num_populations {
-        //             // Get the index for this population pair
-        //             let pair_idx = window.get_pair_index(pop1, pop2);
 
-        //             // Retrieve comparisons and differences for DXY calculation
-        //             if let (Some(comps), Some(diffs)) = (
-        //                 window.dxy_comps.as_ref().and_then(|c| c.get(pair_idx)),
-        //                 window.dxy_diffs.as_ref().and_then(|d| d.get(pair_idx)),
-        //             ) {
-        //                 let dxy_value = if *comps > 0 {
-        //                     *diffs as f32 / *comps as f32
-        //                 } else {
-        //                     0.0 // Handle zero comparisons
-        //                 };
-
-        //                 dxy_writer.serialize(DxyRecord {
-        //                     population1_name: pop_names[pop1].to_string(),
-        //                     population2_name: pop_names[pop2].to_string(),
-        //                     chrom: chrom.to_string(),
-        //                     start: begin,
-        //                     end: end,
-        //                     dxy: dxy_value,
-        //                     comparisons: *comps,
-        //                     differences: *diffs,
-        //                 })?;
-        //             }
-        //         }
-        //     }
-        // }
-        for (sample, counts) in het_counts.iter() {
-            het_file_writer.serialize(HetRecord {
-                sample_name: sample.to_owned(),
-                count_hets: *counts,
-            })?;
+        let het_record = window.to_het_record();
+        if idx == 0 {
+            let mut header = vec!["chrom", "begin", "end", "callable_sites"];
+            header.extend(het_record.sample_names.iter().map(|s| s.as_str()));
+            het_writer.write_record(&header)?;
         }
+        het_writer.serialize(het_record)?;
     }
+
+    pi_writer.flush()?;
+    if let Some(ref mut dxy_writer) = dxy_writer {
+        dxy_writer.flush()?;
+    }
+    het_writer.flush()?;
     Ok(())
 }
 
@@ -368,7 +281,11 @@ pub fn regions_from_seqlens(
     Ok(windows)
 }
 
-pub fn seqlens_vcf(header: &vcf::Header) -> Result<FnvHashMap<String, usize>> {
+pub fn seqlens_vcf(
+    header: &vcf::Header,
+    exclude: &HashSet<String>,
+    index_seqs: &IndexSet<String>,
+) -> Result<FnvHashMap<String, usize>> {
     let mut res = FnvHashMap::default();
 
     let contigs = header.contigs();
@@ -385,7 +302,10 @@ pub fn seqlens_vcf(header: &vcf::Header) -> Result<FnvHashMap<String, usize>> {
             return Err(anyhow!("Contig {} has no length specified", name));
         }
     }
-
+    res.retain(|key, _| index_seqs.contains(key));
+    if !exclude.is_empty() {
+        res.retain(|contig, _| !exclude.contains(contig));
+    }
     Ok(res)
 }
 fn make_region_sites_binary_search(
@@ -496,24 +416,26 @@ pub fn get_vcf_header_and_ploidy<P: AsRef<Path>>(vcf_path: P) -> Result<(vcf::He
     Ok((header.clone(), ploidy))
 }
 
-
 pub fn optimize_chunks<P: AsRef<Path>>(vcf_path: P, tbi_path: P) -> Result<()> {
     let (mut reader, header) = build_vcf_reader(vcf_path.as_ref())?;
 
-    let index = noodles::tabix::read(tbi_path.as_ref())
-        .context(format!("Failed to read tabix file: {:?}", tbi_path.as_ref().display()))?;
+    let index = noodles::tabix::read(tbi_path.as_ref()).context(format!(
+        "Failed to read tabix file: {:?}",
+        tbi_path.as_ref().display()
+    ))?;
     let index_header = index.header().context("Tabix file missing header")?;
     let index_seqs = index_header.reference_sequence_names();
-    
+
     for (idx, reference_seq) in index.reference_sequences().iter().enumerate() {
         if let Some(metadata) = reference_seq.metadata() {
             let mapped_records = metadata.mapped_record_count();
             let contig_name = index_seqs.get_index(idx).unwrap();
-            debug!("Contig: {}. Mapped record count: {}",contig_name, mapped_records );
+            debug!(
+                "Contig: {}. Mapped record count: {}",
+                contig_name, mapped_records
+            );
         }
     }
-
-
 
     Ok(())
 }
