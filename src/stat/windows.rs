@@ -88,7 +88,7 @@ impl Population {
         if self.within_comps > 0 {
             self.within_diffs as f32 / self.within_comps as f32
         } else {
-            f32::MIN
+            f32::NAN
         }
     }
 
@@ -184,7 +184,7 @@ impl Window {
                 let dxy = if self.dxy_stats.comparisons[idx] > 0 {
                     self.dxy_stats.differences[idx] as f32 / self.dxy_stats.comparisons[idx] as f32
                 } else {
-                    f32::MIN
+                    f32::NAN
                 };
 
                 records.push(DxyRecord::new(
@@ -405,7 +405,7 @@ pub fn process_windows<P: AsRef<Path>>(
                         let extension = path.extension().and_then(|ext| ext.to_str());
                         match extension {
                             Some("d4") => Some(CallableSites::D4(D4CallableSites::from_file(
-                                &Some(pop_info.get_popname_refs()),
+                                pop_info.get_popname_refs(),
                                 &path,
                             )?)),
                             Some("gz") | Some("bed.gz") => {
@@ -424,21 +424,25 @@ pub fn process_windows<P: AsRef<Path>>(
                     };
 
                     let roh_tabix_query = if let Some(ref path) = roh_path {
+                        trace!("Roh path: {}", &path.display());
                         let mut tabix_records = vec![];
                         let mut reader =
                             tabix::io::indexed_reader::Builder::default().build_from_path(path)?;
+                        trace!("roh region: {}", &window.region);
                         let query = reader.query(&window.region)?;
                         for result in query {
                             let record = result?;
                             let fields: Vec<&str> = record.as_ref().split("\t").collect();
+                            trace!("roh fields: {:?}", fields);
                             if let (Some(start), Some(end), Some(sample)) =
                                 (fields.get(1), fields.get(2), fields.get(3))
                             {
-                                let mut start: u32 = start.parse()?;
+                                let start: u32 = start.parse()?;
                                 let end: u32 = end.parse()?;
-                                start += 1;
+                                
+                                trace!("Roh: region:{}, start:{}, end:{}, sample:{}", &window.region, start, end, sample);
                                 tabix_records
-                                    .push((sample.to_string(), std::ops::Range { start, end }));
+                                    .push((sample.to_string(), start..=end));
                             }
                         }
                         Some(tabix_records)
@@ -455,6 +459,7 @@ pub fn process_windows<P: AsRef<Path>>(
 
                         let samples_in_roh: HashSet<String> =
                             if let Some(ref tabix_query) = roh_tabix_query {
+                                trace!("Tabix results: {:?}", tabix_query);
                                 tabix_query
                                     .iter()
                                     .filter_map(|(sample, interval)| {
@@ -469,7 +474,7 @@ pub fn process_windows<P: AsRef<Path>>(
                             } else {
                                 HashSet::with_capacity(0)
                             };
-
+                        trace!("Samples in roh: {:?}", samples_in_roh);
                         let should_process_site =
                             window.sites.is_empty() || window.sites.contains(&(start as u32));
 

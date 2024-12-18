@@ -151,11 +151,11 @@ pub struct D4CallableSites {
 }
 
 impl D4CallableSites {
-    pub fn from_file<P: AsRef<Path>>(pops: &Option<Vec<&str>>, d4_file: P) -> Result<Self> {
+    pub fn from_file<P: AsRef<Path>>(pops: Vec<&str>, d4_file: P) -> Result<Self> {
         let d4_file_path = d4_file.as_ref();
         let mut readers: Vec<D4TrackReader<File>> = Vec::new();
 
-        if let Some(pops) = pops {
+        if pops.len() > 1 {
             readers.reserve(pops.len());
             let mut found: Vec<&str> = vec![]; // Store found sample names as String
             let mut tracker = |p: Option<&Path>| {
@@ -204,12 +204,14 @@ impl D4CallableSites {
         skip_sites: &HashSet<u32>,
     ) -> Result<QueryResult> {
         let num_pops = self.readers.len();
-
+        trace!("querying d4 {}:{}-{}",chrom, begin, end);
         let mut views: Vec<D4TrackView<File>> = self
             .readers
             .iter_mut()
             .map(|x| x.get_view(chrom, begin, end).unwrap())
             .collect();
+
+        trace!("views: {}", views.len());
 
         let mut within_comps: Vec<u32> = vec![0; num_pops];
         let mut callable_sites = 0;
@@ -227,20 +229,23 @@ impl D4CallableSites {
 
         for pos in begin..end {
             // Get the callable individuals (values) for each population at this position
+            
             let mut any_callable = false;
             let values: Vec<u32> = views
                 .iter_mut()
                 .map(|view| {
                     let (reported_pos, value) = view.next().unwrap().unwrap();
+                    trace!("reported_pos:{}, pos:{}, value:{}", reported_pos, pos, value);
                     assert_eq!(reported_pos, pos);
                     let value = value as u32;
                     if value != 0 {
                         any_callable = true;
                     }
+                    
                     value
                 })
                 .collect();
-    
+            
             if skip_sites.contains(&pos) || !any_callable {
                 continue;
             }
@@ -278,8 +283,8 @@ impl D4CallableSites {
             }
         }
         debug!(
-            "Callable Sites - {}:{}-{} {:?}",
-            chrom, begin, end, within_comps
+            "Callable Sites - {}:{}-{} {:?}, {}",
+            chrom, begin, end, within_comps, callable_sites
         );
         Ok(QueryResult(within_comps, dxy_comps, callable_sites))
     }
@@ -325,7 +330,7 @@ mod tests {
     fn test_one_site() -> Result<()> {
         init();
         let fp = Path::new("tests/data/stat/diploid/no_pops_callable_sites.d4");
-        let mut d4callable = D4CallableSites::from_file(&None, fp)?;
+        let mut d4callable = D4CallableSites::from_file(Vec::<&str>::default(), fp)?;
 
         let QueryResult(within_comps, _,_) = d4callable.query(
             "chr1",
@@ -348,7 +353,7 @@ mod tests {
             .delimiter(b'\t')
             .from_reader(truth_fp);
         let fp = Path::new("tests/data/stat/diploid/no_pops_callable_sites.d4");
-        let mut d4callable = D4CallableSites::from_file(&None, fp)?;
+        let mut d4callable = D4CallableSites::from_file(Vec::<&str>::default(), fp)?;
 
         for result in reader.deserialize() {
             let record: NoPopsTruthRecord = result?;
@@ -377,7 +382,7 @@ mod tests {
             .delimiter(b'\t')
             .from_reader(truth_fp);
         let fp = Path::new("tests/data/stat/diploid/no_pops_callable_sites.d4");
-        let mut d4callable = D4CallableSites::from_file(&None, fp)?;
+        let mut d4callable = D4CallableSites::from_file(Vec::<&str>::default(), fp)?;
         let mut skip_sites = HashSet::new();
         skip_sites.insert(10 as u32);
         for result in reader.deserialize() {
@@ -405,7 +410,7 @@ mod tests {
             .from_reader(truth_fp);
         let fp = Path::new("tests/data/stat/diploid/pops_callable_sites.d4");
         let pops = ["pop0", "pop1"].to_vec();
-        let mut d4callable = D4CallableSites::from_file(&Some(pops), fp)?;
+        let mut d4callable = D4CallableSites::from_file(pops, fp)?;
 
         for result in reader.deserialize() {
             let record: PopsTruthRecord = result?;
