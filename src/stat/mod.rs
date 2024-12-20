@@ -161,7 +161,10 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
     let seqlens = seqlens_vcf(&header, &exclude_chroms, &index_seqs)?;
 
     let regions = match (args.regions_file.clone(), args.window_size) {
-        (Some(regions_file), _) => read_bed_regions(regions_file)?,
+        (Some(regions_file), _) => read_bed_regions(regions_file)?
+            .into_iter()
+            .map(|r| (r, true))
+            .collect::<Vec<(Region, bool)>>(),
         (None, Some(window_size)) => {
             chunks::create_chunks(seqlens.clone(), args.vcf.clone(), window_size)?
         }
@@ -172,7 +175,10 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
         Some(sites_file) => {
             let sites_regions = read_bed_regions(sites_file)?;
             let sites_map = sites_map(sites_regions)?;
-            Some(make_region_sites_binary_search(&regions, sites_map)?)
+            Some(make_region_sites_binary_search(
+                &regions.iter().map(|x| x.0.clone()).collect::<Vec<_>>(),
+                sites_map,
+            )?)
         }
         None => None,
     };
@@ -194,13 +200,13 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
 
     let outdir = args.outdir.unwrap_or_else(|| Utf8PathBuf::from("."));
 
-    let mut pi_writer = create_output_file(&outdir, "clam_pi.tsv", false)?;
+    let mut pi_writer = create_output_file(&outdir, "clam_pi.tsv")?;
     let mut dxy_writer = if num_populations > 1 {
-        Some(create_output_file(&outdir, "clam_dxy.tsv", false)?)
+        Some(create_output_file(&outdir, "clam_dxy.tsv")?)
     } else {
         None
     };
-    let mut het_writer = create_output_file(&outdir, "clam_het.tsv", true)?;
+    let mut het_writer = create_output_file(&outdir, "clam_het.tsv")?;
 
     for (idx, window) in results.iter_mut().enumerate() {
         for pi_record in window.to_pi_records() {
@@ -213,13 +219,9 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
             }
         }
 
-        let het_record = window.to_het_record();
-        if idx == 0 {
-            let mut header = vec!["chrom", "begin", "end", "callable_sites"];
-            header.extend(het_record.sample_names.iter().map(|s| s.as_str()));
-            het_writer.write_record(&header)?;
+        for het_record in window.to_het_records() {
+            het_writer.serialize(het_record)?;
         }
-        het_writer.serialize(het_record)?;
     }
 
     pi_writer.flush()?;

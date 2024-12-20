@@ -60,26 +60,40 @@ pub struct Population {
     pub within_comps: u32,
     pub sample_names: Vec<String>,
     pub count_het_sites: Vec<u32>,
+    pub bases_in_roh: Vec<u32>,
 }
 
 impl Population {
     pub fn new(name: String, sample_names: Vec<String>) -> Self {
         let count_het_sites: Vec<u32> = vec![0; sample_names.len()];
+        let bases_in_roh = count_het_sites.clone();
 
         Self {
             name,
             sample_names,
             count_het_sites,
+            bases_in_roh,
             ..Default::default()
         }
     }
 
-    pub fn het_counts_map(&self) -> HashMap<String, u32> {
-        self.sample_names
-            .iter()
-            .zip(self.count_het_sites.iter())
-            .map(|(name, &count)| (name.clone(), count))
-            .collect()
+    pub fn to_het_records(&self, chrom: &str, start: u32, end: u32, callable_bases: u32) -> Vec<HetRecord> {
+        let mut records = Vec::with_capacity(self.sample_names.len());
+        
+        for i in 0..self.sample_names.len() {
+            let record = HetRecord::new(
+                chrom,
+                start,
+                end,
+                callable_bases,
+                self.bases_in_roh[i],
+                &self.sample_names[i],
+                self.count_het_sites[i],
+            );
+            records.push(record);
+        }
+        
+        records
     }
     pub fn name(&self) -> &str {
         &self.name
@@ -118,6 +132,7 @@ pub struct Window {
     pub sites: HashSet<u32>,
     pub ploidy: u32,
     pub callable_sites: u32,
+    should_query: bool,
 }
 
 #[derive(Debug, Default)]
@@ -128,7 +143,7 @@ pub struct DxyStats {
 
 impl Window {
     pub fn from_regions(
-        regions: Vec<Region>,
+        regions: Vec<(Region, bool)>,
         population_info: &PopulationMapping,
         sites: Option<Vec<HashSet<u32>>>,
         ploidy: u32,
@@ -143,7 +158,7 @@ impl Window {
         regions
             .into_iter()
             .zip(sites_iter)
-            .map(|(region, sites)| {
+            .map(|((region, should_query), sites)| {
                 let populations = population_info
                     .get_popname_refs()
                     .iter()
@@ -170,6 +185,7 @@ impl Window {
                     sites,
                     ploidy,
                     callable_sites: 0,
+                    should_query,
                 }
             })
             .collect()
@@ -205,20 +221,28 @@ impl Window {
 
     pub fn to_pi_records(&self) -> Vec<PiRecord> {
         let (chrom, start, end) = self.get_region_info();
-        self.populations.iter().map(|x| x.to_pi_record(chrom, start, end)).collect()
+        self.populations
+            .iter()
+            .map(|x| x.to_pi_record(chrom, start, end))
+            .collect()
     }
 
-    pub fn to_het_record(&self) -> HetRecord {
+    pub fn to_het_records(&self) -> Vec<HetRecord> {
+        
         let (chrom, start, end) = self.get_region_info();
-
-        // Combine het counts from all populations into one map
-        let samples: HashMap<String, u32> = self
-            .populations
+        
+        
+        self.populations
             .iter()
-            .flat_map(|pop| pop.het_counts_map())
-            .collect();
-
-        HetRecord::new(chrom, start, end, self.callable_sites, samples)
+            .flat_map(|pop| {
+                pop.to_het_records(
+                    chrom,
+                    start,
+                    end,
+                    self.callable_sites
+                )
+            })
+            .collect()
     }
 
     pub fn get_region_info(&self) -> (&str, u32, u32) {
@@ -317,7 +341,12 @@ impl Window {
         Ok(())
     }
 
-    fn update_comparisons_d4(&mut self, within_comps: &[u32], dxy_comps: &[u32], callable_sites: u32) {
+    fn update_comparisons_d4(
+        &mut self,
+        within_comps: &[u32],
+        dxy_comps: &[u32],
+        callable_sites: u32,
+    ) {
         for (pop_idx, within_comp) in within_comps.iter().enumerate() {
             if let Some(population) = self.get_population_mut(pop_idx) {
                 population.within_comps = *within_comp;
@@ -439,10 +468,16 @@ pub fn process_windows<P: AsRef<Path>>(
                             {
                                 let start: u32 = start.parse()?;
                                 let end: u32 = end.parse()?;
-                                
-                                trace!("Roh: region:{}, start:{}, end:{}, sample:{}", &window.region, start, end, sample);
-                                tabix_records
-                                    .push((sample.to_string(), start..=end));
+
+                                trace!(
+                                    "Roh: region:{}, start:{}, end:{}, sample:{}",
+                                    &window.region,
+                                    start,
+                                    end,
+                                    sample
+                                );
+
+                                tabix_records.push((sample.to_string(), start..=end));
                             }
                         }
                         Some(tabix_records)
@@ -453,35 +488,42 @@ pub fn process_windows<P: AsRef<Path>>(
                     let query = vcf_reader.query(&header, &window.region)?;
                     let mut sites_skipped: HashSet<u32> = HashSet::new();
 
-                    for result in query {
-                        let record = result?;
-                        let start = record.variant_start().unwrap().unwrap().get();
+                    if window.should_query {
+                        for result in query {
+                            let record = result?;
+                            let start = record.variant_start().unwrap().unwrap().get();
 
-                        let samples_in_roh: HashSet<String> =
-                            if let Some(ref tabix_query) = roh_tabix_query {
-                                trace!("Tabix results: {:?}", tabix_query);
-                                tabix_query
-                                    .iter()
-                                    .filter_map(|(sample, interval)| {
-                                        if interval.contains(&(start as u32)) {
-                                            Some(sample.to_owned())
-                                        // Get index and copy value if it exists
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect() // Collect results into a HashSet
+                            let samples_in_roh: HashSet<String> =
+                                if let Some(ref tabix_query) = roh_tabix_query {
+                                    trace!("Tabix results: {:?}", tabix_query);
+                                    tabix_query
+                                        .iter()
+                                        .filter_map(|(sample, interval)| {
+                                            if interval.contains(&(start as u32)) {
+                                                Some(sample.to_owned())
+                                            // Get index and copy value if it exists
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect() // Collect results into a HashSet
+                                } else {
+                                    HashSet::with_capacity(0)
+                                };
+                            trace!("Samples in roh: {:?}", samples_in_roh);
+                            let should_process_site =
+                                window.sites.is_empty() || window.sites.contains(&(start as u32));
+
+                            if should_process_site && record.alternate_bases().len() <= 1 {
+                                window.count_alleles(
+                                    &record,
+                                    &header,
+                                    &pop_info,
+                                    samples_in_roh,
+                                )?;
                             } else {
-                                HashSet::with_capacity(0)
-                            };
-                        trace!("Samples in roh: {:?}", samples_in_roh);
-                        let should_process_site =
-                            window.sites.is_empty() || window.sites.contains(&(start as u32));
-
-                        if should_process_site && record.alternate_bases().len() <= 1 {
-                            window.count_alleles(&record, &header, &pop_info, samples_in_roh)?;
-                        } else {
-                            sites_skipped.insert(start as u32);
+                                sites_skipped.insert(start as u32);
+                            }
                         }
                     }
                     if let Some(reader) = callable_sites.as_mut() {
@@ -510,6 +552,14 @@ pub fn process_windows<P: AsRef<Path>>(
                                     e
                                 );
                             }
+                        }
+                    }
+
+                    if let Some(roh) = roh_tabix_query {
+                        for (sample, range) in roh {
+                            let (pop_idx, sample_idx) = pop_info.lookup_sample_name(&sample)?;
+                            window.get_population_mut(pop_idx).unwrap().bases_in_roh[sample_idx] =
+                                range.end() - range.start()
                         }
                     }
                     {
