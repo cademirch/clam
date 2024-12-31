@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashSet,HashMap};
 use std::fs::File;
 use std::path::Path;
 use std::thread;
@@ -44,7 +44,7 @@ impl BGZID4TrackReader {
         let ic = D4IndexCollection::from_root_container(&track_root);
 
         if ic.is_err() {
-            warn!("SFI index not found, query times may be slow!")
+            warn!("SFI index not found for D4 file: {}, this will result in slower performance. You can create the index by running d4tools index build {}", &src.as_ref().display(), &src.as_ref().display())
         }
 
         Ok(Self { inner: d4_reader })
@@ -62,12 +62,33 @@ pub struct BGZID4MatrixReader {
 }
 
 impl BGZID4MatrixReader {
-    pub fn from_paths<P: AsRef<Path>>(paths: Vec<P>) -> Result<Self> {
-        let readers: Result<Vec<_>> = paths
+    pub fn from_paths<P: AsRef<Path>>(paths: Vec<P>, track_names: Option<Vec<&str>>) -> Result<Self> {
+        
+        let track_name_set: Option<HashSet<_>> = track_names.map(|names| names.into_iter().collect());
+    
+        
+        let filtered_paths: Vec<_> = paths
+            .into_iter()
+            .filter(|path| {
+                if let Some(ref names) = track_name_set {
+                    
+                    if let Some(file_name) = path.as_ref().file_name().and_then(|n| n.to_str()) {
+                        return names.contains(file_name);
+                    }
+                    false
+                } else {
+                    
+                    true
+                }
+            })
+            .collect();
+    
+        // Create readers from the filtered paths
+        let readers: Result<Vec<_>> = filtered_paths
             .into_iter()
             .map(|p| BGZID4TrackReader::from_path(p, None))
             .collect();
-
+    
         Ok(Self { readers: readers? })
     }
     pub fn from_merged<P: AsRef<Path>>(src: P, track_names: Option<Vec<&str>>) -> Result<Self> {
@@ -292,8 +313,28 @@ pub fn run_bgzf_tasks<P: AsRef<Path>>(
                         .collect::<Vec<&str>>()
                 });
 
-                let mut matrix_rdr = BGZID4MatrixReader::from_merged(d4_file, track_names)
-                    .expect("Failed to create BgzfD4MatrixReader");
+                let mut matrix_rdr = if let Some(extension) = Path::new(&d4_file).extension().and_then(|e| e.to_str()) {
+                    match extension {
+                        "gz" => {
+                            BGZID4MatrixReader::from_merged(d4_file, track_names)
+                                .expect("Failed to create BgzfD4MatrixReader from merged")
+                        }
+                        "txt" => {
+                            // Assuming the file contains a list of paths, read the paths
+                            let paths = std::fs::read_to_string(&d4_file)
+                                .expect("Failed to read paths from txt file")
+                                .lines()
+                                .map(|line| line.trim().to_string())
+                                .collect::<Vec<_>>();
+                
+                            BGZID4MatrixReader::from_paths(paths, track_names)
+                                .expect("Failed to create BgzfD4MatrixReader from paths")
+                        }
+                        _ => panic!("Unsupported file extension: {}", extension),
+                    }
+                } else {
+                    panic!("File does not have a valid extension");
+                };
                 let tid = thread::current().id();
 
                 // Process each region received from the region channel

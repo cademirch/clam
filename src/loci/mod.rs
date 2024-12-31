@@ -97,6 +97,7 @@ pub struct LociArgs {
     /// Path to file with chromosomes to exclude, one per line
     #[arg(long = "exclude-file", conflicts_with("exclude"))]
     pub exclude_file: Option<Utf8PathBuf>,
+    
 }
 
 impl LociArgs {
