@@ -521,6 +521,7 @@ pub fn process_windows<P: AsRef<Path>>(
                                     &pop_info,
                                     samples_in_roh,
                                 )?;
+                                sites_skipped.insert(start as u32); // skip this site in callable 
                             } else {
                                 sites_skipped.insert(start as u32);
                             }
