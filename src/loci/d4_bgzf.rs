@@ -62,29 +62,9 @@ pub struct BGZID4MatrixReader {
 }
 
 impl BGZID4MatrixReader {
-    pub fn from_paths<P: AsRef<Path>>(paths: Vec<P>, track_names: Option<Vec<&str>>) -> Result<Self> {
-        
-        let track_name_set: Option<HashSet<_>> = track_names.map(|names| names.into_iter().collect());
-    
-        
-        let filtered_paths: Vec<_> = paths
-            .into_iter()
-            .filter(|path| {
-                if let Some(ref names) = track_name_set {
-                    
-                    if let Some(file_name) = path.as_ref().file_name().and_then(|n| n.to_str()) {
-                        return names.contains(file_name);
-                    }
-                    false
-                } else {
-                    
-                    true
-                }
-            })
-            .collect();
-    
-        // Create readers from the filtered paths
-        let readers: Result<Vec<_>> = filtered_paths
+    pub fn from_paths<P: AsRef<Path>>(paths: Vec<P>) -> Result<Self> {
+        // Create readers from the provided paths
+        let readers: Result<Vec<_>> = paths
             .into_iter()
             .map(|p| BGZID4TrackReader::from_path(p, None))
             .collect();
@@ -320,14 +300,31 @@ pub fn run_bgzf_tasks<P: AsRef<Path>>(
                                 .expect("Failed to create BgzfD4MatrixReader from merged")
                         }
                         "txt" => {
-                            // Assuming the file contains a list of paths, read the paths
+                            // Read paths from the .txt file
                             let paths = std::fs::read_to_string(&d4_file)
                                 .expect("Failed to read paths from txt file")
                                 .lines()
                                 .map(|line| line.trim().to_string())
                                 .collect::<Vec<_>>();
                 
-                            BGZID4MatrixReader::from_paths(paths, track_names)
+                            // Filter paths based on track_names if provided
+                            let filtered_paths: Vec<_> = if let Some(track_names) = &track_names {
+                                let track_name_set: HashSet<_> = track_names.iter().cloned().collect();
+                                paths
+                                    .into_iter()
+                                    .filter(|path| {
+                                        if let Some(file_name) = Path::new(path).file_name().and_then(|n| n.to_str()) {
+                                            track_name_set.contains(file_name)
+                                        } else {
+                                            false
+                                        }
+                                    })
+                                    .collect()
+                            } else {
+                                paths
+                            };
+                
+                            BGZID4MatrixReader::from_paths(filtered_paths)
                                 .expect("Failed to create BgzfD4MatrixReader from paths")
                         }
                         _ => panic!("Unsupported file extension: {}", extension),
