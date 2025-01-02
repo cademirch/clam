@@ -3,6 +3,7 @@ mod stat;
 mod utils;
 
 use std::fs::{create_dir_all, File};
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -100,7 +101,16 @@ fn main() -> Result<()> {
 
             let exclude_chrs =
                 utils::get_exclude_chromosomes(&loci_args.exclude, &loci_args.exclude_file)?;
-            let gzipped = loci_args.infile.extension().unwrap() == "gz";
+            let gzipped = match loci_args.infile.extension() {
+                Some("gz") => true, // Match "gz" extension
+                _ => false,         // Any other extension or no extension
+            };
+
+            let txtfile = match loci_args.infile.extension() {
+                Some("txt") => true, // Match "txt" extension
+                _ => false,          // Any other extension or no extension
+            };
+
             let populations = loci_args.population_file.is_some();
 
             let bed_out = loci_args.no_counts;
@@ -124,6 +134,16 @@ fn main() -> Result<()> {
                     loci_args.infile.clone(),
                     None,
                 )?)
+            } else if txtfile {
+                let file_path = loci_args.infile.clone().into_std_path_buf();
+                let file = File::open(&file_path)?;
+                let mut lines = BufReader::new(file)
+                    .lines()
+                    .map(|line| line.expect("failed to read line"));
+                let first_path = lines.next().context("No data in file of files (fof)")?;
+                let first_path_buf = PathBuf::from(first_path);
+                let pathvec = vec![first_path_buf];
+                loci::D4Reader::Bgzf(loci::d4_bgzf::BGZID4MatrixReader::from_paths(pathvec)?)
             } else {
                 loci::D4Reader::D4(d4::D4TrackReader::open_first_track(
                     loci_args.infile.clone().into_std_path_buf(),
