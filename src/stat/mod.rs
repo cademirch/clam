@@ -162,11 +162,9 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
 
     let regions = match (args.regions_file.clone(), args.window_size) {
         (Some(regions_file), _) => read_bed_regions(regions_file)?
-            .into_iter()
-            .map(|r| (r, true))
-            .collect::<Vec<(Region, bool)>>(),
+            ,
         (None, Some(window_size)) => {
-            chunks::create_chunks(seqlens.clone(), args.vcf.clone(), window_size)?
+            regions_from_seqlens(window_size, seqlens, args.vcf.clone())?
         }
         _ => bail!("Either regions or windows are required!"),
     };
@@ -176,7 +174,7 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
             let sites_regions = read_bed_regions(sites_file)?;
             let sites_map = sites_map(sites_regions)?;
             Some(make_region_sites_binary_search(
-                &regions.iter().map(|x| x.0.clone()).collect::<Vec<_>>(),
+                &regions,
                 sites_map,
             )?)
         }

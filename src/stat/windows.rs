@@ -77,9 +77,15 @@ impl Population {
         }
     }
 
-    pub fn to_het_records(&self, chrom: &str, start: u32, end: u32, callable_bases: u32) -> Vec<HetRecord> {
+    pub fn to_het_records(
+        &self,
+        chrom: &str,
+        start: u32,
+        end: u32,
+        callable_bases: u32,
+    ) -> Vec<HetRecord> {
         let mut records = Vec::with_capacity(self.sample_names.len());
-        
+
         for i in 0..self.sample_names.len() {
             let record = HetRecord::new(
                 chrom,
@@ -92,7 +98,7 @@ impl Population {
             );
             records.push(record);
         }
-        
+
         records
     }
     pub fn name(&self) -> &str {
@@ -132,7 +138,6 @@ pub struct Window {
     pub sites: HashSet<u32>,
     pub ploidy: u32,
     pub callable_sites: u32,
-    should_query: bool,
 }
 
 #[derive(Debug, Default)]
@@ -143,7 +148,7 @@ pub struct DxyStats {
 
 impl Window {
     pub fn from_regions(
-        regions: Vec<(Region, bool)>,
+        regions: Vec<Region>,
         population_info: &PopulationMapping,
         sites: Option<Vec<HashSet<u32>>>,
         ploidy: u32,
@@ -158,7 +163,7 @@ impl Window {
         regions
             .into_iter()
             .zip(sites_iter)
-            .map(|((region, should_query), sites)| {
+            .map(|(region, sites)| {
                 let populations = population_info
                     .get_popname_refs()
                     .iter()
@@ -185,7 +190,6 @@ impl Window {
                     sites,
                     ploidy,
                     callable_sites: 0,
-                    should_query,
                 }
             })
             .collect()
@@ -228,20 +232,11 @@ impl Window {
     }
 
     pub fn to_het_records(&self) -> Vec<HetRecord> {
-        
         let (chrom, start, end) = self.get_region_info();
-        
-        
+
         self.populations
             .iter()
-            .flat_map(|pop| {
-                pop.to_het_records(
-                    chrom,
-                    start,
-                    end,
-                    self.callable_sites
-                )
-            })
+            .flat_map(|pop| pop.to_het_records(chrom, start, end, self.callable_sites))
             .collect()
     }
 
@@ -488,45 +483,39 @@ pub fn process_windows<P: AsRef<Path>>(
                     let query = vcf_reader.query(&header, &window.region)?;
                     let mut sites_skipped: HashSet<u32> = HashSet::new();
 
-                    if window.should_query {
-                        for result in query {
-                            let record = result?;
-                            let start = record.variant_start().unwrap().unwrap().get();
+                    for result in query {
+                        let record = result?;
+                        let start = record.variant_start().unwrap().unwrap().get();
 
-                            let samples_in_roh: HashSet<String> =
-                                if let Some(ref tabix_query) = roh_tabix_query {
-                                    trace!("Tabix results: {:?}", tabix_query);
-                                    tabix_query
-                                        .iter()
-                                        .filter_map(|(sample, interval)| {
-                                            if interval.contains(&(start as u32)) {
-                                                Some(sample.to_owned())
-                                            // Get index and copy value if it exists
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .collect() // Collect results into a HashSet
-                                } else {
-                                    HashSet::with_capacity(0)
-                                };
-                            trace!("Samples in roh: {:?}", samples_in_roh);
-                            let should_process_site =
-                                window.sites.is_empty() || window.sites.contains(&(start as u32));
-
-                            if should_process_site && record.alternate_bases().len() <= 1 {
-                                window.count_alleles(
-                                    &record,
-                                    &header,
-                                    &pop_info,
-                                    samples_in_roh,
-                                )?;
-                                sites_skipped.insert(start as u32); // skip this site in callable 
+                        let samples_in_roh: HashSet<String> =
+                            if let Some(ref tabix_query) = roh_tabix_query {
+                                trace!("Tabix results: {:?}", tabix_query);
+                                tabix_query
+                                    .iter()
+                                    .filter_map(|(sample, interval)| {
+                                        if interval.contains(&(start as u32)) {
+                                            Some(sample.to_owned())
+                                        // Get index and copy value if it exists
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect() // Collect results into a HashSet
                             } else {
-                                sites_skipped.insert(start as u32);
-                            }
+                                HashSet::with_capacity(0)
+                            };
+                        trace!("Samples in roh: {:?}", samples_in_roh);
+                        let should_process_site =
+                            window.sites.is_empty() || window.sites.contains(&(start as u32));
+
+                        if should_process_site && record.alternate_bases().len() <= 1 {
+                            window.count_alleles(&record, &header, &pop_info, samples_in_roh)?;
+                            sites_skipped.insert(start as u32); // skip this site in callable
+                        } else {
+                            sites_skipped.insert(start as u32);
                         }
                     }
+
                     if let Some(reader) = callable_sites.as_mut() {
                         let query_d4_time = Instant::now();
                         let (chrom, window_begin, window_end) = &window.get_region_info();
