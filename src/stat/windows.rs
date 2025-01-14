@@ -18,7 +18,7 @@ use noodles::{tabix, vcf};
 use super::alleles::VCFData;
 use super::build_vcf_reader;
 use super::callable::*;
-use super::output::{DxyRecord, HetRecord, PiRecord};
+use super::output::{DxyRecord, FstRecord, HetRecord, PiRecord};
 use crate::utils::{count_combinations, PopulationMapping};
 
 pub trait RegionExt {
@@ -101,6 +101,7 @@ impl Population {
 
         records
     }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -193,6 +194,67 @@ impl Window {
                 }
             })
             .collect()
+    }
+
+    pub fn to_fst_records(&self) -> Vec<FstRecord> {
+        let mut records = Vec::new();
+        let (chrom, start, end) = self.get_region_info();
+        let pop_names: Vec<&str> = self.populations.iter().map(|x| x.name()).collect();
+
+        for i in 0..pop_names.len() {
+            for j in (i + 1)..pop_names.len() {
+                let idx = self.get_pair_index(i, j);
+
+                let within1 = if self.populations[i].within_comps > 0 {
+                    self.populations[i].within_diffs as f32
+                        / self.populations[i].within_comps as f32
+                } else {
+                    f32::NAN
+                };
+                let within2 = if self.populations[j].within_comps > 0 {
+                    self.populations[j].within_diffs as f32
+                        / self.populations[j].within_comps as f32
+                } else {
+                    f32::NAN
+                };
+                let average_within = (within1 + within2) / 2.0;
+
+                let between = if self.dxy_stats.comparisons[idx] > 0 {
+                    self.dxy_stats.differences[idx] as f32 / self.dxy_stats.comparisons[idx] as f32
+                } else {
+                    f32::NAN
+                };
+
+                let numerator = if average_within.is_nan() || between.is_nan() {
+                    f32::NAN
+                } else {
+                    between - average_within
+                };
+                let denominator = between;
+
+                let fst = if denominator > 0.0 {
+                    numerator / denominator
+                } else {
+                    f32::NAN
+                };
+
+                let numerator_u32 = (numerator * self.dxy_stats.comparisons[idx] as f32) as u32;
+                let denominator_u32 = self.dxy_stats.comparisons[idx];
+
+                records.push(FstRecord::new(
+                    pop_names[i],
+                    pop_names[j],
+                    chrom,
+                    start,
+                    end,
+                    fst,
+                    numerator_u32,
+                    denominator_u32,
+                ));
+            }
+        }
+
+        records
     }
     pub fn to_dxy_records(&self) -> Vec<DxyRecord> {
         let mut records = Vec::new();
@@ -321,15 +383,19 @@ impl Window {
         samples_in_roh: HashSet<String>,
     ) -> Result<()> {
         let mut counts = VCFData::new(population_info.get_sample_counts_per_population());
-
-        super::alleles::count_alleles(
+        trace!("Calling alleles::count_alleles...");
+        let result = super::alleles::count_alleles(
             record,
             header,
             population_info,
             &mut counts,
             samples_in_roh,
-        )?;
-
+        );
+        match result {
+            Ok(_) => trace!("alleles::count_alleles completed successfully."),
+            Err(e) => log::error!("alleles::count_alleles failed: {:?}", e),
+        }
+        trace!("allele counts: {:?}", counts.allele_counts);
         self.update_allele_counts(counts.allele_counts);
         self.update_het_counts(counts.het_counts);
 

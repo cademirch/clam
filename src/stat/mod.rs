@@ -150,7 +150,9 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
                 pop_file.as_str()
             )
         })?;
-        PopulationMapping::from_path(file, Some(header.sample_names()))?
+        let pop_map = PopulationMapping::from_path(file, Some(header.sample_names()))?;
+        pop_map.validate_sample_coverage(header.sample_names())?;
+        pop_map
     } else {
         PopulationMapping::default(&header.sample_names())
     };

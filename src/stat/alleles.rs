@@ -51,6 +51,7 @@ pub fn count_alleles(
         .ok_or_else(|| anyhow!("Malformed variant record: {:?}", record))?;
 
     for (sample_name, value) in zip(sample_names, gt_series.iter(&header)) {
+        
         let Some(Value::Genotype(genotype)) = value? else {
             bail!(
                 "Invalid GT value for sample {}, in variant record: {:?}",
@@ -59,7 +60,12 @@ pub fn count_alleles(
             )
         };
         
-        let (population_idx, internal_idx) = population_info.lookup_sample_name(sample_name)?;
+        let (population_idx, internal_idx) = match population_info.lookup_sample_name(sample_name) {
+            Ok(indices) => indices,
+            Err(_) => {
+                continue;
+            }
+        };
         
         let mut ref_count = 0;
         let mut alt_count = 0;
@@ -122,17 +128,18 @@ pub fn count_alleles(
                 }
             }
         } else {
+            trace!("refcount: {} alt_count:{}", ref_count, alt_count);
             vcfdata.allele_counts[population_idx][0] += ref_count;
             vcfdata.allele_counts[population_idx][1] += alt_count;
 
             
             if matches!(genotype, Genotype::Heterozygous) {
-                trace!("het_counts: {:?}, internal_idx: {}", vcfdata.het_counts, internal_idx);
+                trace!("het_counts: {:?}", vcfdata.het_counts);
                 vcfdata.het_counts[population_idx][internal_idx] += 1; // Increment het count outside ROH
-            }
-        }
-    }
-
+            };
+        };
+    };
+    trace!("Counts: {:?}", vcfdata.allele_counts);
     Ok(())
 }
 
