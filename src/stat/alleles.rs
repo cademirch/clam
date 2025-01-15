@@ -51,6 +51,7 @@ pub fn count_alleles(
         .ok_or_else(|| anyhow!("Malformed variant record: {:?}", record))?;
 
     for (sample_name, value) in zip(sample_names, gt_series.iter(&header)) {
+        
         let Some(Value::Genotype(genotype)) = value? else {
             bail!(
                 "Invalid GT value for sample {}, in variant record: {:?}",
@@ -59,7 +60,12 @@ pub fn count_alleles(
             )
         };
         
-        let (population_idx, internal_idx) = population_info.lookup_sample_name(sample_name)?;
+        let (population_idx, internal_idx) = match population_info.lookup_sample_name(sample_name) {
+            Ok(indices) => indices,
+            Err(_) => {
+                continue;
+            }
+        };
         
         let mut ref_count = 0;
         let mut alt_count = 0;
@@ -122,17 +128,18 @@ pub fn count_alleles(
                 }
             }
         } else {
+            trace!("refcount: {} alt_count:{}", ref_count, alt_count);
             vcfdata.allele_counts[population_idx][0] += ref_count;
             vcfdata.allele_counts[population_idx][1] += alt_count;
 
             
             if matches!(genotype, Genotype::Heterozygous) {
-                trace!("het_counts: {:?}, internal_idx: {}", vcfdata.het_counts, internal_idx);
+                trace!("het_counts: {:?}", vcfdata.het_counts);
                 vcfdata.het_counts[population_idx][internal_idx] += 1; // Increment het count outside ROH
-            }
-        }
-    }
-
+            };
+        };
+    };
+    trace!("Counts: {:?}", vcfdata.allele_counts);
     Ok(())
 }
 
@@ -161,7 +168,7 @@ mod tests {
             "sq0\t1\t.\tA\tG\t.\tPASS\t.\tGT\t0/0\t0/1\n"
         );
 
-        let pop_data: &str = "sample\tpopulation_name\nsample1\tpop0\nsample2\tpop0\n";
+        let pop_data: &str = "sample1\tpop0\nsample2\tpop0\n";
 
         let vcf_cursor = Cursor::new(vcf_data);
         let mut reader = Reader::new(vcf_cursor);
@@ -196,7 +203,7 @@ mod tests {
             "sq0\t1\t.\tA\tG\t.\tPASS\t.\tGT\t0\t1\n"
         );
 
-        let pop_data: &str = "sample\tpopulation_name\nsample1\tpop0\nsample2\tpop0\n";
+        let pop_data: &str = "sample1\tpop0\nsample2\tpop0\n";
 
         let vcf_cursor = Cursor::new(vcf_data);
         let mut reader = Reader::new(vcf_cursor);
@@ -232,7 +239,7 @@ mod tests {
             "sq0\t1\t.\tA\tG\t.\tPASS\t.\tGT\t0/0\t0/1\n"
         );
 
-        let pop_data: &str = "sample\tpopulation_name\nsample1\tpop0\nsample2\tpop1\n";
+        let pop_data: &str = "sample1\tpop0\nsample2\tpop1\n";
 
         let vcf_cursor = Cursor::new(vcf_data);
         let mut reader = Reader::new(vcf_cursor);
@@ -276,7 +283,7 @@ mod tests {
             "sq0\t3\t.\tA\tG\t.\tPASS\t.\tGT\t0/1\t0/1\n"
         );
 
-        let pop_data: &str = "sample\tpopulation_name\nsample1\tpop0\nsample2\tpop0\n";
+        let pop_data: &str = "sample1\tpop0\nsample2\tpop0\n";
 
         let roh_samples: HashSet<String> = vec!["sample1".to_string()].into_iter().collect(); // Only sample1 is in ROH
 

@@ -299,6 +299,7 @@ pub fn run_bgzf_tasks<P: AsRef<Path>>(
                             BGZID4MatrixReader::from_merged(d4_file, track_names)
                                 .expect("Failed to create BgzfD4MatrixReader from merged")
                         }
+                        // TODO write function to handle this and do error handling n stuff
                         "txt" => {
                             // Read paths from the .txt file
                             let paths = std::fs::read_to_string(&d4_file)
@@ -306,24 +307,22 @@ pub fn run_bgzf_tasks<P: AsRef<Path>>(
                                 .lines()
                                 .map(|line| line.trim().to_string())
                                 .collect::<Vec<_>>();
-                
+                            trace!("FOF Paths: {:?}", paths);
                             // Filter paths based on track_names if provided
                             let filtered_paths: Vec<_> = if let Some(track_names) = &track_names {
+                                trace!("FOF Track Names: {:?}", track_names);
                                 let track_name_set: HashSet<_> = track_names.iter().cloned().collect();
                                 paths
                                     .into_iter()
                                     .filter(|path| {
-                                        if let Some(file_name) = Path::new(path).file_name().and_then(|n| n.to_str()) {
-                                            track_name_set.contains(file_name)
-                                        } else {
-                                            false
-                                        }
+                                        track_name_set.iter().any(|track_name| path.contains(track_name))
                                     })
                                     .collect()
                             } else {
                                 paths
                             };
-                
+                            
+                            trace!("Filtered paths: {:?}", filtered_paths);
                             BGZID4MatrixReader::from_paths(filtered_paths)
                                 .expect("Failed to create BgzfD4MatrixReader from paths")
                         }

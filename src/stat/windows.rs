@@ -18,7 +18,7 @@ use noodles::{tabix, vcf};
 use super::alleles::VCFData;
 use super::build_vcf_reader;
 use super::callable::*;
-use super::output::{DxyRecord, HetRecord, PiRecord};
+use super::output::{DxyRecord, FstRecord, HetRecord, PiRecord};
 use crate::utils::{count_combinations, PopulationMapping};
 
 pub trait RegionExt {
@@ -101,6 +101,7 @@ impl Population {
 
         records
     }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -135,6 +136,7 @@ pub struct Window {
     pub region: Region,
     pub populations: Vec<Population>,
     pub dxy_stats: DxyStats,
+    pub fst_stats: FstStats,
     pub sites: HashSet<u32>,
     pub ploidy: u32,
     pub callable_sites: u32,
@@ -144,6 +146,42 @@ pub struct Window {
 pub struct DxyStats {
     pub comparisons: Vec<u32>,
     pub differences: Vec<u32>,
+}
+
+impl DxyStats {
+    pub fn dxy(&self, pair_index: usize) -> f32 {
+        if pair_index >= self.differences.len() || pair_index >= self.comparisons.len() {
+            panic!("pair_index out of bounds");
+        }
+
+        let differences = self.differences[pair_index];
+        let comparisons = self.comparisons[pair_index];
+
+        if comparisons > 0 {
+            differences as f32 / comparisons as f32
+        } else {
+            f32::NAN
+        }
+    }
+}
+#[derive(Debug, Default)]
+pub struct FstStats {
+    numerator: Vec<f32>,
+    denominator: Vec<f32>,
+}
+
+impl FstStats {
+    pub fn fst(&self, pop_pair_idx: usize) -> f32 {
+        if self.denominator[pop_pair_idx] > 0.0 {
+            self.numerator[pop_pair_idx] / self.denominator[pop_pair_idx]
+        } else {
+            f32::NAN
+        }
+    }
+}
+
+pub enum FstType {
+    Hudson,
 }
 
 impl Window {
@@ -187,6 +225,10 @@ impl Window {
                         comparisons: vec![0; dxy_size],
                         differences: vec![0; dxy_size],
                     },
+                    fst_stats: FstStats {
+                        numerator: vec![0.0; dxy_size],
+                        denominator: vec![0.0; dxy_size],
+                    },
                     sites,
                     ploidy,
                     callable_sites: 0,
@@ -194,6 +236,32 @@ impl Window {
             })
             .collect()
     }
+
+    pub fn to_fst_records(&self) -> Vec<FstRecord> {
+        let mut records = Vec::new();
+        let (chrom, start, end) = self.get_region_info();
+        let pop_names: Vec<&str> = self.populations.iter().map(|x| x.name()).collect();
+
+        // Iterate over population pairs
+        for i in 0..pop_names.len() {
+            for j in (i + 1)..pop_names.len() {
+                let idx = self.get_pair_index(i, j);
+
+                let fst = self.fst_stats.fst(idx);
+                records.push(FstRecord::new(
+                    pop_names[i],
+                    pop_names[j],
+                    chrom,
+                    start,
+                    end,
+                    fst,
+                ));
+            }
+        }
+
+        records
+    }
+
     pub fn to_dxy_records(&self) -> Vec<DxyRecord> {
         let mut records = Vec::new();
         let (chrom, start, end) = self.get_region_info();
@@ -201,11 +269,7 @@ impl Window {
         for i in 0..pop_names.len() {
             for j in (i + 1)..pop_names.len() {
                 let idx = self.get_pair_index(i, j);
-                let dxy = if self.dxy_stats.comparisons[idx] > 0 {
-                    self.dxy_stats.differences[idx] as f32 / self.dxy_stats.comparisons[idx] as f32
-                } else {
-                    f32::NAN
-                };
+                let dxy = self.dxy_stats.dxy(idx);
 
                 records.push(DxyRecord::new(
                     pop_names[i],
@@ -255,6 +319,31 @@ impl Window {
         }
     }
 
+    pub fn hudson_fst(&mut self, within1: f32, within2: f32, between: f32, pop_pair_idx: usize) {
+        // Calculate the average within-population heterozygosity
+        let average_within = (within1 + within2) / 2.0;
+
+        // If any value is NaN or invalid, skip this position
+        if average_within.is_nan() || between.is_nan() || between <= 0.0 {
+            return;
+        }
+
+        // Calculate and accumulate numerator and denominator separately
+        let numerator = between - average_within;
+        let denominator = between;
+        info!(
+            "window: {:?}, avg_within: {}, btwn: {}, num: {}, den: {}",
+            self.get_region_info(),
+            average_within,
+            between,
+            numerator,
+            denominator
+        );
+
+        self.fst_stats.numerator[pop_pair_idx] += numerator;
+        self.fst_stats.denominator[pop_pair_idx] += denominator;
+    }
+
     pub fn update_dxy_diffs(&mut self, pop1: usize, pop2: usize, diffs: u32, comps: u32) {
         let idx = self.get_pair_index(pop1, pop2);
         self.dxy_stats.differences[idx] += diffs;
@@ -265,7 +354,7 @@ impl Window {
         self.populations.get_mut(population_idx)
     }
 
-    pub fn update_population(&mut self, population_idx: usize, values: [u32; 2]) {
+    pub fn update_population(&mut self, population_idx: usize, values: [u32; 2]) -> f32 {
         let population = self
             .populations
             .get_mut(population_idx)
@@ -274,26 +363,50 @@ impl Window {
         let gts = values[0] + values[1];
         let diffs = values[0] * values[1];
         let comps = count_combinations(gts, 2);
+        info!("update population {}, vals: {:?}, diffs: {} comps: {}, withindiffs: {}, withincomps: {}", population_idx, values, diffs, comps, population.within_diffs, population.within_comps);
 
         population.refs += values[0];
         population.alts += values[1];
         population.within_diffs += diffs;
         population.within_comps += comps;
+
+        if comps > 0 {
+            diffs as f32 / comps as f32
+        } else {
+            f32::NAN
+        }
     }
 
     pub fn update_allele_counts(&mut self, counts: Vec<[u32; 2]>) {
+        trace!("window: {:?} counts: {:?}", self.get_region_info(), counts);
         if counts.len() >= 2 {
+            // First update all populations once
+            let within_values: Vec<f32> = (0..counts.len())
+                .map(|pop_idx| self.update_population(pop_idx, counts[pop_idx]))
+                .collect();
+
+            // Then do FST calculations
             for pop1 in 0..counts.len() {
                 let pop1_vals = counts[pop1];
-                self.update_population(pop1, pop1_vals);
-
                 for pop2 in (pop1 + 1)..counts.len() {
                     let pop2_vals = counts[pop2];
-                    self.update_population(pop2, pop2_vals);
 
+                    let pop1_total = pop1_vals[0] + pop1_vals[1]; // total alleles in pop1
+                    let pop2_total = pop2_vals[0] + pop2_vals[1]; // total alleles in pop2
+
+                    // Number of differences when comparing between populations
                     let diffs = (pop1_vals[0] * pop2_vals[1]) + (pop1_vals[1] * pop2_vals[0]);
-                    let comps = (pop1_vals[0] + pop2_vals[1]) * (pop1_vals[1] + pop2_vals[0]);
+
+                    // Total number of possible comparisons between populations
+                    let comps = pop1_total * pop2_total;
+                    let between = if comps > 0 {
+                        diffs as f32 / comps as f32
+                    } else {
+                        f32::NAN
+                    };
                     self.update_dxy_diffs(pop1, pop2, diffs, comps);
+                    let pair_idx = self.get_pair_index(pop1, pop2);
+                    self.hudson_fst(within_values[pop1], within_values[pop2], between, pair_idx);
                 }
             }
         } else {
@@ -322,13 +435,17 @@ impl Window {
     ) -> Result<()> {
         let mut counts = VCFData::new(population_info.get_sample_counts_per_population());
 
-        super::alleles::count_alleles(
+        let result = super::alleles::count_alleles(
             record,
             header,
             population_info,
             &mut counts,
             samples_in_roh,
-        )?;
+        );
+        match result {
+            Ok(_) => {}
+            Err(e) => log::error!("count_alleles failed: {:?}", e),
+        }
 
         self.update_allele_counts(counts.allele_counts);
         self.update_het_counts(counts.het_counts);

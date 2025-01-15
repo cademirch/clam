@@ -121,3 +121,35 @@ impl DxyRecord {
         }
     }
 }
+
+#[derive(Serialize)]
+pub struct FstRecord {
+    population1_name: String,
+    population2_name: String,
+    chrom: String,
+    start: u32,
+    end: u32,
+    fst: f32,
+    
+}
+
+impl FstRecord {
+    pub fn new(
+        population1_name: &str,
+        population2_name: &str,
+        chrom: &str,
+        start: u32,
+        end: u32,
+        fst: f32,
+        
+    ) -> Self {
+        Self {
+            population1_name: population1_name.to_string(),
+            population2_name: population2_name.to_string(),
+            chrom: chrom.to_string(),
+            start,
+            end,
+            fst,
+        }
+    }
+}

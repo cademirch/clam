@@ -8,6 +8,7 @@ use anyhow::{bail, Context, Result};
 use camino::Utf8PathBuf;
 use fnv::FnvHashMap;
 use indexmap::{indexset, IndexSet};
+use log::warn;
 use noodles::bed;
 use noodles::core::Region;
 use serde::Deserialize;
@@ -66,6 +67,7 @@ impl PopulationMapping {
     ) -> Result<Self> {
         let mut csv_reader = csv::ReaderBuilder::new()
             .delimiter(b'\t')
+            .has_headers(false)
             .from_reader(reader);
 
         let mut population_names = IndexSet::default();
@@ -177,6 +179,34 @@ impl PopulationMapping {
 
     pub fn get_popname_refs(&self) -> Vec<&str> {
         self.population_names.iter().map(String::as_str).collect()
+    }
+    pub fn validate_sample_coverage(&self, vcf_sample_names: &IndexSet<String>) -> Result<()> {
+        // Collect all sample names from the population file
+        let pop_file_samples: IndexSet<_> = self.sample_name_lookup.keys().cloned().collect();
+
+        // Find samples in the population file but not in the VCF header
+        let missing_in_vcf: IndexSet<_> = pop_file_samples.difference(vcf_sample_names).collect();
+
+        // Find samples in the VCF header but not in the population file
+        let missing_in_pop_file: IndexSet<_> =
+            vcf_sample_names.difference(&pop_file_samples).collect();
+
+        if !missing_in_vcf.is_empty() {
+            bail!(
+                "The following samples are in the population file but missing in the VCF header: {:?}",
+                missing_in_vcf
+            );
+        }
+
+        if !missing_in_pop_file.is_empty() {
+            warn!(
+                "The following samples are in the VCF header but missing in the population file: {:?}\nThey will be skipped!",
+                missing_in_pop_file
+            );
+        }
+
+        
+        Ok(())
     }
 }
 
