@@ -67,6 +67,7 @@ impl PopulationMapping {
     ) -> Result<Self> {
         let mut csv_reader = csv::ReaderBuilder::new()
             .delimiter(b'\t')
+            .has_headers(false)
             .from_reader(reader);
 
         let mut population_names = IndexSet::default();

@@ -163,11 +163,8 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
     let seqlens = seqlens_vcf(&header, &exclude_chroms, &index_seqs)?;
 
     let regions = match (args.regions_file.clone(), args.window_size) {
-        (Some(regions_file), _) => read_bed_regions(regions_file)?
-            ,
-        (None, Some(window_size)) => {
-            regions_from_seqlens(window_size, seqlens, args.vcf.clone())?
-        }
+        (Some(regions_file), _) => read_bed_regions(regions_file)?,
+        (None, Some(window_size)) => regions_from_seqlens(window_size, seqlens, args.vcf.clone())?,
         _ => bail!("Either regions or windows are required!"),
     };
 
@@ -175,10 +172,7 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
         Some(sites_file) => {
             let sites_regions = read_bed_regions(sites_file)?;
             let sites_map = sites_map(sites_regions)?;
-            Some(make_region_sites_binary_search(
-                &regions,
-                sites_map,
-            )?)
+            Some(make_region_sites_binary_search(&regions, sites_map)?)
         }
         None => None,
     };
@@ -206,9 +200,14 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
     } else {
         None
     };
+    let mut fst_writer = if num_populations > 1 {
+        Some(create_output_file(&outdir, "clam_fst.tsv")?)
+    } else {
+        None
+    };
     let mut het_writer = create_output_file(&outdir, "clam_het.tsv")?;
 
-    for (idx, window) in results.iter_mut().enumerate() {
+    for (_, window) in results.iter_mut().enumerate() {
         for pi_record in window.to_pi_records() {
             pi_writer.serialize(pi_record)?;
         }
@@ -216,6 +215,12 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
         if let Some(ref mut dxy_writer) = dxy_writer {
             for dxy_record in window.to_dxy_records() {
                 dxy_writer.serialize(dxy_record)?;
+            }
+        }
+
+        if let Some(ref mut fst_writer) = fst_writer {
+            for fst_record in window.to_fst_records() {
+                fst_writer.serialize(fst_record)?;
             }
         }
 

@@ -262,9 +262,9 @@ pub fn write_d4_parallel<P: AsRef<Path>>(
             let mut write_value = |pos: u32, value: i32| {
                 if !primary_encoder.encode(pos as usize, value) {
                     secondary_table.encode(pos, value).unwrap();
-                    trace!("Secondary encode: Wrote {} at {}:{}", value, chrom, pos);
+                    // trace!("Secondary encode: Wrote {} at {}:{}", value, chrom, pos);
                 } else {
-                    trace!("Primary encode: Wrote {} at {}:{}", value, chrom, pos);
+                    // trace!("Primary encode: Wrote {} at {}:{}", value, chrom, pos);
                 }
             };
 

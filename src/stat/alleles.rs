@@ -168,7 +168,7 @@ mod tests {
             "sq0\t1\t.\tA\tG\t.\tPASS\t.\tGT\t0/0\t0/1\n"
         );
 
-        let pop_data: &str = "sample\tpopulation_name\nsample1\tpop0\nsample2\tpop0\n";
+        let pop_data: &str = "sample1\tpop0\nsample2\tpop0\n";
 
         let vcf_cursor = Cursor::new(vcf_data);
         let mut reader = Reader::new(vcf_cursor);
@@ -203,7 +203,7 @@ mod tests {
             "sq0\t1\t.\tA\tG\t.\tPASS\t.\tGT\t0\t1\n"
         );
 
-        let pop_data: &str = "sample\tpopulation_name\nsample1\tpop0\nsample2\tpop0\n";
+        let pop_data: &str = "sample1\tpop0\nsample2\tpop0\n";
 
         let vcf_cursor = Cursor::new(vcf_data);
         let mut reader = Reader::new(vcf_cursor);
@@ -239,7 +239,7 @@ mod tests {
             "sq0\t1\t.\tA\tG\t.\tPASS\t.\tGT\t0/0\t0/1\n"
         );
 
-        let pop_data: &str = "sample\tpopulation_name\nsample1\tpop0\nsample2\tpop1\n";
+        let pop_data: &str = "sample1\tpop0\nsample2\tpop1\n";
 
         let vcf_cursor = Cursor::new(vcf_data);
         let mut reader = Reader::new(vcf_cursor);
@@ -283,7 +283,7 @@ mod tests {
             "sq0\t3\t.\tA\tG\t.\tPASS\t.\tGT\t0/1\t0/1\n"
         );
 
-        let pop_data: &str = "sample\tpopulation_name\nsample1\tpop0\nsample2\tpop0\n";
+        let pop_data: &str = "sample1\tpop0\nsample2\tpop0\n";
 
         let roh_samples: HashSet<String> = vec!["sample1".to_string()].into_iter().collect(); // Only sample1 is in ROH
 

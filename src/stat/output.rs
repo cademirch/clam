@@ -130,8 +130,7 @@ pub struct FstRecord {
     start: u32,
     end: u32,
     fst: f32,
-    numerator: u32,
-    denominator: u32,
+    
 }
 
 impl FstRecord {
@@ -142,8 +141,7 @@ impl FstRecord {
         start: u32,
         end: u32,
         fst: f32,
-        numerator: u32,
-        denominator: u32,
+        
     ) -> Self {
         Self {
             population1_name: population1_name.to_string(),
@@ -152,8 +150,6 @@ impl FstRecord {
             start,
             end,
             fst,
-            numerator,
-            denominator,
         }
     }
 }
