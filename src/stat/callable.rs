@@ -246,7 +246,7 @@ impl D4CallableSites {
                 })
                 .collect();
             
-            if skip_sites.contains(&pos) || !any_callable {
+            if skip_sites.contains(&(pos + 1)) || !any_callable {
                 continue;
             }
             
