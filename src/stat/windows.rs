@@ -461,11 +461,15 @@ impl Window {
     ) {
         for (pop_idx, within_comp) in within_comps.iter().enumerate() {
             if let Some(population) = self.get_population_mut(pop_idx) {
-                population.within_comps = *within_comp;
+                population.within_comps += *within_comp;
             }
         }
         self.callable_sites = callable_sites;
-        self.dxy_stats.comparisons = dxy_comps.to_vec();
+        self.dxy_stats
+            .comparisons
+            .iter_mut()
+            .zip(dxy_comps)
+            .for_each(|(existing, new)| *existing += new);
     }
 }
 
