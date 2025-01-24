@@ -141,7 +141,11 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
     let index = noodles::tabix::read(tbi_path)
         .context(format!("Failed to read tabix file: {}", tbi_path.as_str()))?;
     let index_header = index.header().context("Tabix file missing header")?;
-    let index_seqs = index_header.reference_sequence_names();
+    let index_seqs = index_header
+        .reference_sequence_names()
+        .into_iter()
+        .map(|bs| String::from_utf8_lossy(&bs).into_owned())
+        .collect();
 
     let pop_map = if let Some(pop_file) = &args.population_file {
         let file = File::open(&pop_file).with_context(|| {
