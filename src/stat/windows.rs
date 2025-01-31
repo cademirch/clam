@@ -331,7 +331,7 @@ impl Window {
         // Calculate and accumulate numerator and denominator separately
         let numerator = between - average_within;
         let denominator = between;
-        info!(
+        trace!(
             "window: {:?}, avg_within: {}, btwn: {}, num: {}, den: {}",
             self.get_region_info(),
             average_within,
@@ -363,7 +363,7 @@ impl Window {
         let gts = values[0] + values[1];
         let diffs = values[0] * values[1];
         let comps = count_combinations(gts, 2);
-        info!("update population {}, vals: {:?}, diffs: {} comps: {}, withindiffs: {}, withincomps: {}", population_idx, values, diffs, comps, population.within_diffs, population.within_comps);
+        trace!("update population {}, vals: {:?}, diffs: {} comps: {}, withindiffs: {}, withincomps: {}", population_idx, values, diffs, comps, population.within_diffs, population.within_comps);
 
         population.refs += values[0];
         population.alts += values[1];
