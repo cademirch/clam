@@ -1,5 +1,6 @@
 pub mod d4_bgzf;
 pub mod d4_tasks;
+pub mod counts;
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
