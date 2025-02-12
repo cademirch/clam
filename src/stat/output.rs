@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use csv;
 use serde::Serialize;
 
-use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 

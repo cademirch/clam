@@ -1,20 +1,12 @@
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use anyhow::{bail, Context, Result};
-use camino::Utf8PathBuf;
-use clap::Parser;
-use d4::index::D4IndexCollection;
-use d4::ptab::PTablePartitionWriter;
-use d4::stab::SecondaryTablePartWriter;
-use d4::{Chrom, D4FileBuilder, D4FileMerger, D4FileWriter, Dictionary};
-use log::{debug, trace, warn};
+use anyhow::Result;
+use log::warn;
 use rayon::prelude::*;
 use serde::Deserialize;
-use tempfile::NamedTempFile;
 
 #[derive(Clone)]
 pub enum Thresholds {

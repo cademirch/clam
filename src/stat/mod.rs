@@ -4,8 +4,7 @@ pub mod chunks;
 pub mod output;
 pub mod windows;
 
-use std::collections::{HashMap, HashSet};
-use std::fmt::format;
+use std::collections::HashSet;
 use std::fs::File;
 use std::num::NonZeroUsize;
 use std::ops::Bound;
@@ -93,35 +92,9 @@ pub struct StatArgs {
     pub roh_file: Option<Utf8PathBuf>,
 }
 
-#[derive(serde::Serialize)]
-struct PiRecord {
-    population_name: String,
-    chrom: String,
-    start: u32,
-    end: u32,
-    pi: f32,
-    comparisons: u32,
-    differences: u32,
-}
-#[derive(serde::Serialize)]
-struct DxyRecord {
-    population1_name: String,
-    population2_name: String,
-    chrom: String,
-    start: u32,
-    end: u32,
-    dxy: f32,
-    comparisons: u32,
-    differences: u32,
-}
-
-#[derive(serde::Serialize)]
-struct HetRecord {
-    sample_name: String,
-    count_hets: u32,
-}
-
-pub fn build_vcf_reader(path: impl AsRef<Path>) -> Result<(IndexedReader<Reader<File>>, vcf::Header)> {
+pub fn build_vcf_reader(
+    path: impl AsRef<Path>,
+) -> Result<(IndexedReader<Reader<File>>, vcf::Header)> {
     let mut reader = vcf::io::indexed_reader::Builder::default()
         .build_from_path(path.as_ref())
         .context(format!(
@@ -313,15 +286,15 @@ pub fn seqlens_vcf(
             return Err(anyhow!("Contig {} has no length specified", name));
         }
     }
-    
+
     res.retain(|key, _| index_seqs.contains(key));
-    
+
     if let Some(exclude_set) = exclude {
         if !exclude_set.is_empty() {
             res.retain(|contig, _| !exclude_set.contains(contig));
         }
     }
-    
+
     Ok(res)
 }
 fn make_region_sites_binary_search(
@@ -433,7 +406,7 @@ pub fn get_vcf_header_and_ploidy<P: AsRef<Path>>(vcf_path: P) -> Result<(vcf::He
 }
 
 pub fn optimize_chunks<P: AsRef<Path>>(vcf_path: P, tbi_path: P) -> Result<()> {
-    let (mut reader, header) = build_vcf_reader(vcf_path.as_ref())?;
+    let (reader, header) = build_vcf_reader(vcf_path.as_ref())?;
 
     let index = noodles::tabix::read(tbi_path.as_ref()).context(format!(
         "Failed to read tabix file: {:?}",

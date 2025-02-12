@@ -11,7 +11,7 @@ use log::{debug, trace};
 use noodles::bed;
 use noodles::bgzf::{self as bgzf, VirtualPosition};
 use noodles::core::{Position, Region};
-use noodles::csi::{self as csi, BinningIndex, Index};
+use noodles::csi::{self as csi, BinningIndex};
 use noodles::tabix;
 
 #[derive(Debug)]

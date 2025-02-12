@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::ops::Bound;
 use std::path::Path;
@@ -113,9 +113,7 @@ impl Population {
         }
     }
 
-    pub fn het_counts(&self) -> &Vec<u32> {
-        &self.count_het_sites
-    }
+    
 
     pub fn to_pi_record(&self, chrom: &str, begin: u32, end: u32) -> PiRecord {
         let pi = self.calc_pi();
@@ -180,9 +178,6 @@ impl FstStats {
     }
 }
 
-pub enum FstType {
-    Hudson,
-}
 
 impl Window {
     pub fn from_regions(

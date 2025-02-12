@@ -2,7 +2,6 @@ use super::regions::{CallableRegion, ChromRegion};
 
 use bitvec::prelude::*;
 use std::collections::HashMap;
-use std::ops::Add;
 
 #[derive(Debug, Clone)]
 pub struct ChromosomeCounts {

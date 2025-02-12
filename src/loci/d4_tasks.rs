@@ -7,8 +7,7 @@ use d4::task::{Task, TaskPartition};
 use d4::{D4MatrixReader, D4TrackReader, MultiTrackReader};
 use log::{info, trace};
 
-use super::regions::{CallableRegion, ChromRegion};
-use super::thresholds::Thresholds;
+use super::regions::CallableRegion;
 
 pub struct TaskPart {
     parent_region: (String, u32, u32),
@@ -201,7 +200,7 @@ pub fn get_chrom_regions<P: AsRef<Path>>(
     d4_file_path: P,) -> Result<Vec<(String, u32, u32)>> {
         let tracks: Vec<D4TrackReader> =
             D4TrackReader::open_tracks(d4_file_path, |_| true).context("Failed to open D4 file")?;
-            let mut reader = D4MatrixReader::new(tracks).unwrap();
+            let reader = D4MatrixReader::new(tracks).unwrap();
         let regions = reader.chrom_regions().iter().map(|(chr, begin, end)| (chr.to_string(), *begin, *end)).collect();
         Ok(regions)
     }

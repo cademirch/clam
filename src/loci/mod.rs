@@ -6,24 +6,16 @@ pub mod io;
 pub mod regions;
 pub mod thresholds;
 
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use clap::Parser;
-use d4::index::D4IndexCollection;
-use d4::ptab::PTablePartitionWriter;
-use d4::stab::SecondaryTablePartWriter;
-use d4::{Chrom, D4FileBuilder, D4FileMerger, D4FileWriter, Dictionary};
 use indicatif::ProgressBar;
-use log::{debug, trace, warn};
 use rayon::prelude::*;
-use serde::Deserialize;
-use tempfile::NamedTempFile;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputMode {
@@ -32,14 +24,7 @@ pub enum InputMode {
     MultiGVCF(VecDeque<PathBuf>), // Multiple per-sample GVCF files
 }
 
-// struct ProcessConfig {
-//     per_sample_thresholds: thresholds::Thresholds,
-//     mean_thresholds: thresholds::Thresholds,
-//     exclude_chrs: Option<HashSet<String>>,
-//     outdir: PathBuf,
-//     depth_prop: f64,
-//     population_map: Option<super::utils::PopulationMapping>,
-// }
+
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -310,7 +295,7 @@ fn process_gvcf(
             let res = gvcf::run_tasks(
                 files.clone(),
                 Some(&sample_names),
-                args.clone(),
+                &args,
                 progress_bar.clone(),
             )?;
 
@@ -321,7 +306,7 @@ fn process_gvcf(
             )?);
 
             let population_name = population_map.get_popname_refs()[idx];
-            io::write_bed(
+            let _ = io::write_bed(
                 args.outdir
                     .join(format!("{}_callable_sites.bed", population_name))
                     .as_std_path()
@@ -330,7 +315,7 @@ fn process_gvcf(
             );
         }
 
-        io::merge_d4_files(
+        let _ = io::merge_d4_files(
             args.outdir
                 .join("callable_sites.d4")
                 .as_std_path()
@@ -339,8 +324,8 @@ fn process_gvcf(
             population_map.get_popname_refs(),
         )?;
     } else {
-        let res = gvcf::run_tasks(files, None, args.clone(), progress_bar)?;
-        io::write_d4_parallel::<PathBuf>(
+        let res = gvcf::run_tasks(files, None, &args, progress_bar)?;
+        let _ = io::write_d4_parallel::<PathBuf>(
             &res,
             chroms,
             Some(
@@ -350,7 +335,7 @@ fn process_gvcf(
                     .to_path_buf(),
             ),
         )?;
-        io::write_bed(
+        let _ = io::write_bed(
             args.outdir
                 .join("callable_sites.bed")
                 .as_std_path()
@@ -406,7 +391,7 @@ fn process_multi_d4(
             )?);
 
             let population_name = population_map.get_popname_refs()[idx];
-            io::write_bed(
+            let _ = io::write_bed(
                 args.outdir
                     .join(format!("{}_callable_sites.bed", population_name))
                     .as_std_path()
@@ -415,7 +400,7 @@ fn process_multi_d4(
             );
         }
 
-        io::merge_d4_files(
+        let _ = io::merge_d4_files(
             args.outdir
                 .join("callable_sites.d4")
                 .as_std_path()
@@ -425,7 +410,7 @@ fn process_multi_d4(
         )?;
     } else {
         let res = d4_bgzf::run_tasks(files, None, args.clone(), progress_bar)?;
-        io::write_d4_parallel::<PathBuf>(
+        let _ = io::write_d4_parallel::<PathBuf>(
             &res,
             chroms,
             Some(
@@ -435,7 +420,7 @@ fn process_multi_d4(
                     .to_path_buf(),
             ),
         )?;
-        io::write_bed(
+        let _ = io::write_bed(
             args.outdir
                 .join("callable_sites.bed")
                 .as_std_path()
@@ -477,7 +462,7 @@ fn process_merged_d4(
             )?);
 
             let population_name = population_map.get_popname_refs()[idx];
-            io::write_bed(
+            let _ = io::write_bed(
                 args.outdir
                     .join(format!("{}_callable_sites.bed", population_name))
                     .as_std_path()
@@ -486,7 +471,7 @@ fn process_merged_d4(
             );
         }
 
-        io::merge_d4_files(
+        let _ = io::merge_d4_files(
             args.outdir
                 .join("callable_sites.d4")
                 .as_std_path()
@@ -496,7 +481,7 @@ fn process_merged_d4(
         )?;
     } else {
         let res = d4_tasks::run_tasks_on_tracks(file.clone(), None, args.clone())?;
-        io::write_d4_parallel::<PathBuf>(
+        let _ = io::write_d4_parallel::<PathBuf>(
             &res,
             chroms,
             Some(
@@ -506,7 +491,7 @@ fn process_merged_d4(
                     .to_path_buf(),
             ),
         )?;
-        io::write_bed(
+        let _ = io::write_bed(
             args.outdir
                 .join("callable_sites.bed")
                 .as_std_path()
@@ -516,156 +501,5 @@ fn process_merged_d4(
     }
 
     Ok(())
-   
 }
 
-// pub enum D4Reader {
-//     D4(d4::D4TrackReader),
-//     Bgzf(d4_bgzf::BGZID4MatrixReader),
-// }
-
-// impl D4Reader {
-//     pub fn chrom_regions(
-//         &self,
-//         thresholds: Thresholds,
-//         exclude_chrs: Option<&HashSet<String>>,
-//     ) -> Result<Vec<ChromRegion>> {
-//         match self {
-//             D4Reader::D4(reader) => {
-//                 prepare_chrom_regions(reader.chrom_regions(), thresholds, exclude_chrs)
-//             }
-//             D4Reader::Bgzf(reader) => {
-//                 prepare_chrom_regions(reader.chrom_regions(), thresholds, exclude_chrs)
-//             }
-//         }
-//     }
-
-//     pub fn run_tasks(
-//         &self,
-//         loci_args: &LociArgs,
-//         chrom_regions: Vec<ChromRegion>,
-//         sample_refs: Option<Vec<String>>,
-//         progress_bar: Option<indicatif::ProgressBar>,
-//     ) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
-//         let output_counts = !loci_args.no_counts;
-//         let paths = loci_args.read_filelist(None)?;
-//         match self {
-//             D4Reader::Bgzf(_) => d4_bgzf::run_tasks(
-//                 paths,
-//                 loci_args.threads,
-//                 &chrom_regions,
-//                 (loci_args.mean_depth_min, loci_args.mean_depth_max),
-//                 loci_args.depth_proportion,
-//                 progress_bar,
-//             ),
-//             D4Reader::D4(_) => {
-//                 let tracks = d4_tasks::prepare_tracks_from_file(
-//                     loci_args.infile.clone().unwrap(),
-//                     sample_refs,
-//                 )?;
-//                 d4_tasks::run_tasks_on_tracks(
-//                     tracks,
-//                     chrom_regions,
-//                     (loci_args.mean_depth_min, loci_args.mean_depth_max),
-//                     loci_args.depth_proportion,
-//                     output_counts,
-//                 )
-//             }
-//         }
-//     }
-// }
-
-// pub enum LociMode {
-//     D4,
-//     BGZF,
-//     GVCF,
-// }
-
-// // #[cfg(test)]
-// // mod tests {
-
-// //     use std::collections::HashMap;
-
-// //     use super::*;
-// //     fn init() {
-// //         let _ = env_logger::builder()
-// //             .target(env_logger::Target::Stdout)
-// //             .filter_level(log::LevelFilter::Trace)
-// //             .is_test(true)
-// //             .try_init();
-// //     }
-
-// //     #[test]
-// //     fn test_add_filters_to_chroms_success() {
-// //         // Setup input
-// //         init();
-// //         let d4_chrom_regions = vec![
-// //             ("chr1", 0, 1000),
-// //             ("chr2", 1000, 2000),
-// //             ("chr3", 2000, 3000),
-// //         ];
-// //         let mut filter_map = HashMap::new();
-// //         filter_map.insert("chr1".to_string(), (0.5, 1.5));
-// //         filter_map.insert("chr2".to_string(), (0.1, 0.9));
-// //         filter_map.insert("chr3".to_string(), (0.2, 1.0));
-
-// //         // Expected output
-// //         let expected = vec![
-// //             ("chr1".to_string(), 0, 1000, 0.5, 1.5),
-// //             ("chr2".to_string(), 1000, 2000, 0.1, 0.9),
-// //             ("chr3".to_string(), 2000, 3000, 0.2, 1.0),
-// //         ];
-
-// //         // Call function
-// //         let result = add_filters_to_chroms(d4_chrom_regions, filter_map).unwrap();
-
-// //         // Assert the result matches expected
-// //         assert_eq!(result, expected);
-// //     }
-
-// //     #[test]
-// //     fn test_add_filters_to_chroms_missing_filter() {
-// //         // Setup input with one chromosome missing from the filter map
-// //         let d4_chrom_regions = vec![
-// //             ("chr1", 0, 1000),
-// //             ("chr2", 1000, 2000),
-// //             ("chr3", 2000, 3000),
-// //         ];
-// //         let mut filter_map = HashMap::new();
-// //         filter_map.insert("chr1".to_string(), (0.5, 1.5));
-// //         filter_map.insert("chr2".to_string(), (0.1, 0.9));
-// //         // chr3 is missing in the filter map
-
-// //         // Expected output
-// //         let expected = vec![
-// //             ("chr1".to_string(), 0, 1000, 0.5, 1.5),
-// //             ("chr2".to_string(), 1000, 2000, 0.1, 0.9),
-// //             ("chr3".to_string(), 2000, 3000, 0.0, f64::INFINITY), // Default filter for chr3
-// //         ];
-
-// //         // Call function
-// //         let result = add_filters_to_chroms(d4_chrom_regions, filter_map).unwrap();
-
-// //         // Assert the result matches expected
-// //         assert_eq!(result, expected);
-// //     }
-
-// //     #[test]
-// //     fn test_add_filters_to_chroms_unmatched_filter() {
-// //         // Setup input with an extra chromosome in the filter map
-// //         let d4_chrom_regions = vec![("chr1", 0, 1000), ("chr2", 1000, 2000)];
-// //         let mut filter_map = HashMap::new();
-// //         filter_map.insert("chr1".to_string(), (0.5, 1.5));
-// //         filter_map.insert("chr2".to_string(), (0.1, 0.9));
-// //         filter_map.insert("chrX".to_string(), (0.3, 1.2)); // Unmatched chromosome filter
-
-// //         // Call function, expecting an error
-// //         let result = add_filters_to_chroms(d4_chrom_regions, filter_map);
-
-// //         // Assert the function returns an error due to unmatched chromosome in the filter map
-// //         assert!(result.is_err());
-// //         let err_message = result.unwrap_err().to_string();
-// //         assert!(err_message
-// //             .contains("Filter provided for chromosome 'chrX' not found in D4 chrom regions."));
-// //     }
-// // }

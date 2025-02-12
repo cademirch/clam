@@ -1,11 +1,11 @@
 use super::counts::*;
-use super::regions::{CallableRegion, ChromRegion};
+use super::regions::CallableRegion;
 use super::LociArgs;
 use crate::stat::build_vcf_reader;
-use anyhow::{bail, Result};
+use anyhow::{anyhow, Result, Context};
 use indicatif::ProgressBar;
-use log::warn;
-use log::{info, trace};
+
+use log::{info, trace, warn, error};
 use noodles::bgzf::Reader;
 use noodles::core::Region;
 use noodles::vcf::io::IndexedReader;
@@ -18,7 +18,6 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Instant;
 pub struct GvcfReader {
     inner: IndexedReader<Reader<File>>,
     header: Header,
@@ -43,7 +42,7 @@ impl GvcfReader {
             if let Some(length) = contig.length() {
                 res.push((
                     name.as_str(),
-                    0,                                     // start position
+                    1,                                     // start position
                     length.try_into().unwrap_or(u32::MAX), // convert usize to u32
                 ));
             }
@@ -81,18 +80,20 @@ impl GvcfReader {
 
             let samples = record.samples();
             let Some(format) = samples.select("DP") else {
-                bail!(
+                warn!(
                     "Missing DP format field in file {}\nOffending record: {:?}",
                     self.src.display(),
                     record
                 );
+                continue;
             };
             let Some(Some(Ok(samples_int(dp)))) = format.get(&self.header, 0) else {
-                bail!(
+                warn!(
                     "Missing DP format field in file {}\nOffending record: {:?}",
                     self.src.display(),
                     record
                 );
+                continue;
             };
 
             let array_start = (startpos.get() - 1) as usize;
@@ -122,7 +123,7 @@ impl GvcfReader {
 pub fn run_tasks(
     gvcfs: VecDeque<PathBuf>,
     samples: Option<&[String]>,
-    args: LociArgs,
+    args: &LociArgs,
     progress_bar: Option<ProgressBar>,
 ) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
     let threads = args.threads;
@@ -140,47 +141,73 @@ pub fn run_tasks(
     } else {
         gvcfs
     };
+
     let num_files = files.len();
+    info!("Processing {} files", num_files);
+    let bar = if let Some(bar) = progress_bar {
+        bar.set_length(num_files as u64);
+        Some(bar)
+    } else {
+        None
+    };
+
     let regions = {
-        let reader = GvcfReader::from_path(files.front().unwrap())?;
+        let reader = GvcfReader::from_path(files.front().context("No files to process")?)?;
         super::regions::prepare_chrom_regions(
             reader.chrom_regions(),
             args.get_per_sample_thresholds(),
             args.exclude_chrs.as_ref(),
         )?
     };
-    let work_queue = Arc::new(Mutex::new(files));
 
+    let work_queue = Arc::new(Mutex::new(files));
     let global_counts = Arc::new(Mutex::new(GlobalCounts::new(&regions)));
 
     thread::scope(|scope| {
+        let mut handles = Vec::new();
+        
         for i in 0..threads {
             trace!("Spawned worker {}", i);
             let work_queue = Arc::clone(&work_queue);
             let regions = &regions;
             let accumulator = Arc::clone(&global_counts);
-            let bar = progress_bar.clone();
-            scope.spawn(move || -> Result<()> {
+            let bar = bar.clone();
+            
+            let handle = scope.spawn(move || -> Result<()> {
                 trace!("Worker {} starting...", i);
                 loop {
                     let next_file = {
                         let mut queue = work_queue.lock().unwrap();
                         queue.pop_front()
                     };
-
+                    trace!("Worker {} got file: {:?}", i, next_file);
+                    
                     match next_file {
                         Some(file) => {
                             let mut rdr = GvcfReader::from_path(file)?;
                             for region in regions {
-                                let res = rdr.get_depth(
+                                trace!(
+                                    "Worker {} processing region {}:{}-{}", 
+                                    i, 
+                                    region.chr, 
+                                    region.begin, 
+                                    region.end
+                                );
+                                match rdr.get_depth(
                                     &region.chr,
                                     region.begin,
                                     region.end,
                                     (region.min_filter, region.max_filter),
-                                )?;
-                                {
-                                    let mut accumulator = accumulator.lock().unwrap();
-                                    accumulator.merge(res);
+                                ) {
+                                    Ok(res) => {
+                                        let mut accumulator = accumulator.lock().unwrap();
+                                        accumulator.merge(res);
+                                    },
+                                    Err(e) => {
+                                        error!("Error in get_depth for region {}:{}-{}: {}", 
+                                            region.chr, region.begin, region.end, e);
+                                        return Err(e.into());
+                                    }
                                 }
                             }
                             if let Some(ref bar) = bar {
@@ -192,13 +219,23 @@ pub fn run_tasks(
                 }
                 Ok(())
             });
+            handles.push(handle);
         }
-    });
-
+    
+       
+        for handle in handles {
+            if let Err(e) = handle.join().map_err(|e| anyhow!("Worker paniced: {:?}", e))? {
+                
+                return Err(e);
+            }
+        }
+        Ok(())
+    })?;
+    
     let global_counts = Arc::try_unwrap(global_counts)
         .map_err(|_| anyhow::anyhow!("Failed to unwrap global counts"))?
         .into_inner()
         .map_err(|_| anyhow::anyhow!("Failed to get inner value of global counts"))?;
-
+    
     Ok(global_counts.finalize(min_proportion, mean_thresholds, num_files))
 }

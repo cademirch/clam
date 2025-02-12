@@ -1,15 +1,13 @@
-use super::regions::{CallableRegion, ChromRegion};
+use super::regions::CallableRegion;
 use super::{counts::*, LociArgs};
 use anyhow::{Context, Ok, Result};
-use crossbeam::channel::{bounded, Receiver, Sender};
 use d4::find_tracks;
 use d4::index::D4IndexCollection;
 use d4::ssio::{D4TrackReader, D4TrackView};
 use indicatif::ProgressBar;
-use log::{info, trace, warn};
+use log::{trace, warn};
 use noodles::bgzf::{self, IndexedReader};
 use std::collections::VecDeque;
-use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -100,7 +98,7 @@ impl BGZID4TrackReader {
     ) -> Result<Vec<CallableRegion>> {
         let mut view = self.inner_mut().get_view(chrom, begin, end)?;
         let mut callable_regions = Vec::new();
-        let mut current_region: Option<CallableRegion> = None;
+        let current_region: Option<CallableRegion> = None;
         let mut current_start = None;
         let mut current_value = None;
         let mut add_region = |start: u32, end: u32, value: f64| {

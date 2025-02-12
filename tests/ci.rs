@@ -146,9 +146,9 @@ fn test_merged_pops() -> Result<()> {
     let mut cmd = Command::cargo_bin("clam").unwrap();
     let clam_command = cmd
         .arg("loci")
-        .arg(&input_file)
+        .arg(input_file)
         .arg("-o")
-        .arg(&output_dir)
+        .arg(output_dir)
         .arg("-m")
         .arg("3")
         .arg("-M")
@@ -167,7 +167,7 @@ fn test_merged_pops() -> Result<()> {
     let end = 1000;
     assert!(d4_files_are_equal(
         truth_d4,
-        output_d4.clone(),
+        output_d4,
         chrom,
         begin,
         end
@@ -186,9 +186,9 @@ fn test_merged_no_pops() -> Result<()> {
     let mut cmd = Command::cargo_bin("clam").unwrap();
     let clam_command = cmd
         .arg("loci")
-        .arg(&input_file)
+        .arg(input_file)
         .arg("-o")
-        .arg(&output_dir)
+        .arg(output_dir)
         .arg("-m")
         .arg("3")
         .arg("-M")
@@ -207,7 +207,7 @@ fn test_merged_no_pops() -> Result<()> {
     let end = 1000;
     assert!(d4_files_are_equal(
         truth_d4,
-        output_d4.clone(),
+        output_d4,
         chrom,
         begin,
         end
@@ -227,9 +227,9 @@ fn test_multid4_no_pops() -> Result<()> {
     let clam_command = cmd
         .arg("loci")
         .arg("-f")
-        .arg(&input_file)
+        .arg(input_file)
         .arg("-o")
-        .arg(&output_dir)
+        .arg(output_dir)
         .arg("-m")
         .arg("3")
         .arg("-M")
@@ -247,7 +247,7 @@ fn test_multid4_no_pops() -> Result<()> {
     let end = 1000;
     assert!(d4_files_are_equal(
         truth_d4,
-        output_d4.clone(),
+        output_d4,
         chrom,
         begin,
         end

@@ -2,16 +2,12 @@ mod loci;
 mod stat;
 mod utils;
 
-use std::fs::{create_dir_all, File};
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
 
-use anyhow::{Context, Result};
-use camino::Utf8PathBuf;
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use indicatif_log_bridge::LogWrapper;
-use log::{info, warn};
+use log::info;
 
 #[derive(Debug, Parser)]
 #[command(name = "clam")]

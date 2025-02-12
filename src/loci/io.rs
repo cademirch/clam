@@ -1,18 +1,14 @@
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::regions::{CallableRegion, ChromRegion};
-use anyhow::{bail, Context, Result};
-use camino::Utf8PathBuf;
-use clap::Parser;
+use super::regions::CallableRegion;
+use anyhow::{Context, Result};
 use d4::index::D4IndexCollection;
 use d4::ptab::PTablePartitionWriter;
 use d4::stab::SecondaryTablePartWriter;
 use d4::{Chrom, D4FileBuilder, D4FileMerger, D4FileWriter, Dictionary};
-use log::{debug, trace, warn};
+use log::trace;
 use rayon::prelude::*;
 
 use tempfile::NamedTempFile;
