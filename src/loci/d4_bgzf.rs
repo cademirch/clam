@@ -344,6 +344,7 @@ pub fn run_tasks(
             reader.chrom_regions(),
             args.get_per_sample_thresholds(),
             args.exclude_chrs.as_ref(),
+            args.include_chrs.as_ref()
         )?
     };
 

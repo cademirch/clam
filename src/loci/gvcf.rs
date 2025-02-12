@@ -2,10 +2,10 @@ use super::counts::*;
 use super::regions::CallableRegion;
 use super::LociArgs;
 use crate::stat::build_vcf_reader;
-use anyhow::{anyhow, Result, Context};
+use anyhow::{anyhow, Context, Result};
 use indicatif::ProgressBar;
 
-use log::{info, trace, warn, error};
+use log::{debug, error, info, trace, warn};
 use noodles::bgzf::Reader;
 use noodles::core::Region;
 use noodles::vcf::io::IndexedReader;
@@ -16,6 +16,7 @@ use noodles::vcf::Header;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 pub struct GvcfReader {
@@ -80,7 +81,7 @@ impl GvcfReader {
 
             let samples = record.samples();
             let Some(format) = samples.select("DP") else {
-                warn!(
+                debug!(
                     "Missing DP format field in file {}\nOffending record: {:?}",
                     self.src.display(),
                     record
@@ -88,7 +89,7 @@ impl GvcfReader {
                 continue;
             };
             let Some(Some(Ok(samples_int(dp)))) = format.get(&self.header, 0) else {
-                warn!(
+                debug!(
                     "Missing DP format field in file {}\nOffending record: {:?}",
                     self.src.display(),
                     record
@@ -143,6 +144,7 @@ pub fn run_tasks(
     };
 
     let num_files = files.len();
+
     info!("Processing {} files", num_files);
     let bar = if let Some(bar) = progress_bar {
         bar.set_length(num_files as u64);
@@ -157,43 +159,43 @@ pub fn run_tasks(
             reader.chrom_regions(),
             args.get_per_sample_thresholds(),
             args.exclude_chrs.as_ref(),
+            args.include_chrs.as_ref()
         )?
     };
 
     let work_queue = Arc::new(Mutex::new(files));
     let global_counts = Arc::new(Mutex::new(GlobalCounts::new(&regions)));
-
+    let completed = Arc::new(AtomicUsize::new(0));
     thread::scope(|scope| {
         let mut handles = Vec::new();
-        
+
         for i in 0..threads {
             trace!("Spawned worker {}", i);
             let work_queue = Arc::clone(&work_queue);
             let regions = &regions;
             let accumulator = Arc::clone(&global_counts);
             let bar = bar.clone();
-            
+            let completed = Arc::clone(&completed);
             let handle = scope.spawn(move || -> Result<()> {
                 trace!("Worker {} starting...", i);
                 loop {
-                    let (next_file, remaining) = {
+                    let next_file = {
                         let mut queue = work_queue.lock().unwrap();
-                        let file = queue.pop_front();
-                        let remaining = queue.len();
-                        (file, remaining)
+                        queue.pop_front()
+
                     };
                     trace!("Worker {} got file: {:?}", i, next_file);
-                    
+
                     match next_file {
                         Some(file) => {
                             let start_time = std::time::Instant::now();
                             let mut rdr = GvcfReader::from_path(&file)?;
                             for region in regions {
                                 trace!(
-                                    "Worker {} processing region {}:{}-{}", 
-                                    i, 
-                                    region.chr, 
-                                    region.begin, 
+                                    "Worker {} processing region {}:{}-{}",
+                                    i,
+                                    region.chr,
+                                    region.begin,
                                     region.end
                                 );
                                 match rdr.get_depth(
@@ -205,10 +207,12 @@ pub fn run_tasks(
                                     Ok(res) => {
                                         let mut accumulator = accumulator.lock().unwrap();
                                         accumulator.merge(res);
-                                    },
+                                    }
                                     Err(e) => {
-                                        error!("Error in get_depth for region {}:{}-{}: {}", 
-                                            region.chr, region.begin, region.end, e);
+                                        error!(
+                                            "Error in get_depth for region {}:{}-{}: {}",
+                                            region.chr, region.begin, region.end, e
+                                        );
                                         return Err(e.into());
                                     }
                                 }
@@ -216,13 +220,14 @@ pub fn run_tasks(
                             if let Some(ref bar) = bar {
                                 bar.inc(1);
                             }
+                            let completed_count = completed.fetch_add(1, Ordering::SeqCst);
+                            let remaining = num_files - completed_count - 1;
                             info!(
-                                "Completed {} in {:.2?}. {} files remaining", 
+                                "Completed {} in {:.2?}. {} files remaining",
                                 file.display(),
                                 start_time.elapsed(),
                                 remaining
                             );
-
                         }
                         None => break,
                     }
@@ -231,21 +236,22 @@ pub fn run_tasks(
             });
             handles.push(handle);
         }
-    
-       
+
         for handle in handles {
-            if let Err(e) = handle.join().map_err(|e| anyhow!("Worker paniced: {:?}", e))? {
-                
+            if let Err(e) = handle
+                .join()
+                .map_err(|e| anyhow!("Worker paniced: {:?}", e))?
+            {
                 return Err(e);
             }
         }
         Ok(())
     })?;
-    
+
     let global_counts = Arc::try_unwrap(global_counts)
         .map_err(|_| anyhow::anyhow!("Failed to unwrap global counts"))?
         .into_inner()
         .map_err(|_| anyhow::anyhow!("Failed to get inner value of global counts"))?;
-    
+
     Ok(global_counts.finalize(min_proportion, mean_thresholds, num_files))
 }

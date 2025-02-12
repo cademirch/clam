@@ -219,7 +219,7 @@ pub fn run_tasks_on_tracks<P: AsRef<Path>>(
     let mut reader = D4MatrixReader::new(tracks).unwrap();
 
     let mut tasks = vec![];
-    let regions = super::regions::prepare_chrom_regions(reader.chrom_regions(), args.get_per_sample_thresholds(), args.exclude_chrs.as_ref())?;
+    let regions = super::regions::prepare_chrom_regions(reader.chrom_regions(), args.get_per_sample_thresholds(), args.exclude_chrs.as_ref(), args.include_chrs.as_ref())?;
     for region in regions {
         tasks.push(TaskParent {
             chrom: region.chr.clone(),

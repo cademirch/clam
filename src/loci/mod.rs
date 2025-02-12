@@ -24,8 +24,6 @@ pub enum InputMode {
     MultiGVCF(VecDeque<PathBuf>), // Multiple per-sample GVCF files
 }
 
-
-
 #[derive(Parser, Debug, Clone)]
 #[command(
     author,
@@ -108,9 +106,20 @@ pub struct LociArgs {
     #[arg(long = "exclude-file", conflicts_with("exclude"))]
     pub exclude_file: Option<Utf8PathBuf>,
 
+    /// Comma separated list of chromosomes to include (restrict analysis to)
+    #[arg(short = 'i', value_delimiter = ',', num_args = 1.., conflicts_with("include_file"))]
+    pub include: Option<Vec<String>>,
+
+    /// Path to file with chromosomes to include, one per line
+    #[arg(long = "include-file", conflicts_with("include"))]
+    pub include_file: Option<Utf8PathBuf>,
+
     // Fields that get initialized
     #[arg(skip)]
     pub exclude_chrs: Option<HashSet<String>>,
+
+    #[arg(skip)]
+    pub include_chrs: Option<HashSet<String>>,
 
     #[arg(skip)]
     pub population_map: Option<super::utils::PopulationMapping>,
@@ -132,6 +141,9 @@ impl LociArgs {
         // Initialize excluded chromosomes
         self.exclude_chrs =
             super::utils::get_exclude_chromosomes(&self.exclude, &self.exclude_file)?;
+
+        self.include_chrs =
+            super::utils::get_exclude_chromosomes(&self.include, &self.include_file)?;
 
         // Initialize population mapping if provided
         if let Some(pop_file) = &self.population_file {
@@ -502,4 +514,3 @@ fn process_merged_d4(
 
     Ok(())
 }
-
