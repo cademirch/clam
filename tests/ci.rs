@@ -241,7 +241,7 @@ fn test_multid4_no_pops() -> Result<()> {
 
     let output_d4 = "tests/data/loci/test_no_pops/bgzf/output/callable_sites.d4";
     let truth_d4 = "tests/data/loci/test_no_pops/bgzf/truth_counts.d4";
-
+    let output_bed = "tests/data/loci/test_no_pops/bgzf/output/callable_sites.bed";
     let chrom = "sq0";
     let begin = 0;
     let end = 1000;
@@ -252,6 +252,7 @@ fn test_multid4_no_pops() -> Result<()> {
         begin,
         end
     )?);
+    assert_ne!(PathBuf::from_str(output_bed).unwrap().exists(), true);
     std::fs::remove_dir_all(output_dir)?;
     Ok(())
 }
