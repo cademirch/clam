@@ -97,20 +97,37 @@ impl GvcfReader {
                 continue;
             };
 
+            let Some(format_gq) = samples.select("GQ") else {
+                debug!(
+                    "Missing GQ format field in file {}\nOffending record: {:?}",
+                    self.src.display(),
+                    record
+                );
+                continue;
+            };
+            let Some(Some(Ok(samples_int(gq)))) = format_gq.get(&self.header, 0) else {
+                debug!(
+                    "Missing GQ format field in file {}\nOffending record: {:?}",
+                    self.src.display(),
+                    record
+                );
+                continue;
+            };
             let array_start = (startpos.get() - 1) as usize;
             let array_end = (endpos - 1) as usize;
             trace!(
-                "Record at {}:{}-{} DP={}, END={}",
+                "Record at {}:{}-{} DP={}, END={}, GQ={}",
                 chrom,
                 array_start + 1,
                 array_end + 1,
                 dp,
-                endpos
+                endpos,
+                gq
             );
             for idx in array_start..=array_end {
                 if idx < counts.counts.len() {
                     counts.depth_sums[idx] = dp as u32;
-                    if (dp as f64) >= depth_threshold.0 && (dp as f64) <= depth_threshold.1 {
+                    if gq > 0 && (dp as f64) >= depth_threshold.0 && (dp as f64) <= depth_threshold.1 {
                         counts.counts.set(idx, true);
                     }
                 }
