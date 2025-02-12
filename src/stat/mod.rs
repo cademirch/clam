@@ -90,6 +90,14 @@ pub struct StatArgs {
     /// Path to RoH file.
     #[arg(long = "roh-file")]
     pub roh_file: Option<Utf8PathBuf>,
+
+    /// Comma separated list of chromosomes to include (restrict analysis to)
+    #[arg(short = 'i', value_delimiter = ',', num_args = 1.., conflicts_with("include_file"))]
+    pub include: Option<Vec<String>>,
+
+    /// Path to file with chromosomes to include, one per line
+    #[arg(long = "include-file", conflicts_with("include"))]
+    pub include_file: Option<Utf8PathBuf>,
 }
 
 pub fn build_vcf_reader(
@@ -137,7 +145,13 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
     let num_populations = pop_map.num_populations();
     let pop_names = pop_map.get_popname_refs();
     let exclude_chroms = get_exclude_chromosomes(&args.exclude, &args.exclude_file)?;
-    let seqlens = seqlens_vcf(&header, exclude_chroms.as_ref(), &index_seqs)?;
+    let include_chroms = get_exclude_chromosomes(&args.include, &args.include_file)?;
+    let seqlens = seqlens_vcf(
+        &header,
+        exclude_chroms.as_ref(),
+        include_chroms.as_ref(),
+        &index_seqs,
+    )?;
 
     let regions = match (args.regions_file.clone(), args.window_size) {
         (Some(regions_file), _) => read_bed_regions(regions_file)?,
@@ -268,6 +282,7 @@ pub fn regions_from_seqlens(
 pub fn seqlens_vcf(
     header: &vcf::Header,
     exclude: Option<&HashSet<String>>,
+    include: Option<&HashSet<String>>,
     index_seqs: &IndexSet<String>,
 ) -> Result<FnvHashMap<String, usize>> {
     let mut res = FnvHashMap::default();
@@ -277,6 +292,18 @@ pub fn seqlens_vcf(
         return Err(anyhow!(
             "No contig information found in the header. Please supply fasta index."
         ));
+    }
+
+    // Validate that all included contigs exist in the header
+    if let Some(include_set) = include {
+        for contig in include_set {
+            if !contigs.contains_key(contig) {
+                return Err(anyhow!(
+                    "Included contig '{}' not found in VCF header",
+                    contig
+                ));
+            }
+        }
     }
 
     for (name, contig_map) in contigs {
@@ -289,10 +316,25 @@ pub fn seqlens_vcf(
 
     res.retain(|key, _| index_seqs.contains(key));
 
+    // Apply exclude filter if present
     if let Some(exclude_set) = exclude {
         if !exclude_set.is_empty() {
             res.retain(|contig, _| !exclude_set.contains(contig));
         }
+    }
+
+    // Apply include filter if present
+    if let Some(include_set) = include {
+        if !include_set.is_empty() {
+            res.retain(|contig, _| include_set.contains(contig));
+        }
+    }
+
+    // Check if any contigs remain after filtering
+    if res.is_empty() {
+        return Err(anyhow!(
+            "No contigs remaining after applying include/exclude filters"
+        ));
     }
 
     Ok(res)
