@@ -176,15 +176,18 @@ pub fn run_tasks(
             let handle = scope.spawn(move || -> Result<()> {
                 trace!("Worker {} starting...", i);
                 loop {
-                    let next_file = {
+                    let (next_file, remaining) = {
                         let mut queue = work_queue.lock().unwrap();
-                        queue.pop_front()
+                        let file = queue.pop_front();
+                        let remaining = queue.len();
+                        (file, remaining)
                     };
                     trace!("Worker {} got file: {:?}", i, next_file);
                     
                     match next_file {
                         Some(file) => {
-                            let mut rdr = GvcfReader::from_path(file)?;
+                            let start_time = std::time::Instant::now();
+                            let mut rdr = GvcfReader::from_path(&file)?;
                             for region in regions {
                                 trace!(
                                     "Worker {} processing region {}:{}-{}", 
@@ -213,6 +216,13 @@ pub fn run_tasks(
                             if let Some(ref bar) = bar {
                                 bar.inc(1);
                             }
+                            info!(
+                                "Completed {} in {:.2?}. {} files remaining", 
+                                file.display(),
+                                start_time.elapsed(),
+                                remaining
+                            );
+
                         }
                         None => break,
                     }
