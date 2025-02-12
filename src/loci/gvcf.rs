@@ -61,7 +61,7 @@ impl GvcfReader {
         let mut counts = ChromosomeCounts::new(chrom.to_string(), begin, end);
         let region: Region = format!("{}:{}-{}", chrom, begin, end).parse()?;
         let query = self.inner.query(&self.header, &region)?;
-
+        trace!("Querying GVCF region {}:{}-{}", chrom, begin, end);
         for result in query {
             let record = result?;
             let Some(Ok(startpos)) = record.variant_start() else {
@@ -97,7 +97,14 @@ impl GvcfReader {
 
             let array_start = (startpos.get() - 1) as usize;
             let array_end = (endpos - 1) as usize;
-
+            trace!(
+                "Record at {}:{}-{} DP={}, END={}",
+                chrom,
+                array_start + 1,
+                array_end + 1,
+                dp,
+                endpos
+            );
             for idx in array_start..=array_end {
                 if idx < counts.counts.len() {
                     counts.depth_sums[idx] = dp as u32;
