@@ -47,6 +47,10 @@ pub struct LociArgs {
     #[arg(long = "merged", conflicts_with = "gvcf")]
     pub merged: bool,
 
+    /// Write bed file in addition to D4. Can be slow.
+    #[arg(long = "bed")]
+    pub write_bed: bool,
+
     /// Output directory
     #[arg(short = 'o', required(true))]
     pub outdir: Utf8PathBuf,
@@ -318,13 +322,15 @@ fn process_gvcf(
             )?);
 
             let population_name = population_map.get_popname_refs()[idx];
-            let _ = io::write_bed(
-                args.outdir
-                    .join(format!("{}_callable_sites.bed", population_name))
-                    .as_std_path()
-                    .to_path_buf(),
-                &res,
-            );
+            if args.write_bed {
+                let _ = io::write_bed(
+                    args.outdir
+                        .join(format!("{}_callable_sites.bed", population_name))
+                        .as_std_path()
+                        .to_path_buf(),
+                    &res,
+                );
+            };
         }
 
         let _ = io::merge_d4_files(
@@ -347,13 +353,15 @@ fn process_gvcf(
                     .to_path_buf(),
             ),
         )?;
-        let _ = io::write_bed(
-            args.outdir
-                .join("callable_sites.bed")
-                .as_std_path()
-                .to_path_buf(),
-            &res,
-        )?;
+        if args.write_bed {
+            let _ = io::write_bed(
+                args.outdir
+                    .join("callable_sites.bed")
+                    .as_std_path()
+                    .to_path_buf(),
+                &res,
+            )?;
+        };
     }
 
     Ok(())
@@ -403,13 +411,15 @@ fn process_multi_d4(
             )?);
 
             let population_name = population_map.get_popname_refs()[idx];
-            let _ = io::write_bed(
-                args.outdir
-                    .join(format!("{}_callable_sites.bed", population_name))
-                    .as_std_path()
-                    .to_path_buf(),
-                &res,
-            );
+            if args.write_bed {
+                let _ = io::write_bed(
+                    args.outdir
+                        .join(format!("{}_callable_sites.bed", population_name))
+                        .as_std_path()
+                        .to_path_buf(),
+                    &res,
+                );
+            };
         }
 
         let _ = io::merge_d4_files(
@@ -432,13 +442,15 @@ fn process_multi_d4(
                     .to_path_buf(),
             ),
         )?;
-        let _ = io::write_bed(
-            args.outdir
-                .join("callable_sites.bed")
-                .as_std_path()
-                .to_path_buf(),
-            &res,
-        )?;
+        if args.write_bed {
+            let _ = io::write_bed(
+                args.outdir
+                    .join("callable_sites.bed")
+                    .as_std_path()
+                    .to_path_buf(),
+                &res,
+            )?;
+        };
     }
 
     Ok(())
@@ -474,13 +486,15 @@ fn process_merged_d4(
             )?);
 
             let population_name = population_map.get_popname_refs()[idx];
-            let _ = io::write_bed(
-                args.outdir
-                    .join(format!("{}_callable_sites.bed", population_name))
-                    .as_std_path()
-                    .to_path_buf(),
-                &res,
-            );
+            if args.write_bed {
+                let _ = io::write_bed(
+                    args.outdir
+                        .join(format!("{}_callable_sites.bed", population_name))
+                        .as_std_path()
+                        .to_path_buf(),
+                    &res,
+                );
+            }
         }
 
         let _ = io::merge_d4_files(
