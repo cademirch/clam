@@ -1,10 +1,13 @@
-use super::CallableRegion;
-use super::ChromRegion;
-use std::collections::HashMap;
+use super::regions::{CallableRegion, ChromRegion};
 
-/// Stores counts for each position in a chromosome
+use bitvec::prelude::*;
+use std::collections::HashMap;
+use std::ops::Add;
+
+#[derive(Debug, Clone)]
 pub struct ChromosomeCounts {
-    counts: Vec<u32>,
+    pub counts: BitVec,
+    pub depth_sums: Vec<u32>,
     chrom: String,
     begin: u32,
     end: u32,
@@ -14,143 +17,277 @@ impl ChromosomeCounts {
     pub fn new(chrom: String, begin: u32, end: u32) -> Self {
         let len = (end - begin) as usize;
         Self {
+            counts: bitvec![0; len],
+            depth_sums: vec![0; len],
+            chrom,
+            begin,
+            end,
+        }
+    }
+}
+
+pub struct GlobalCounts {
+    chrom_counts: HashMap<String, AccumulatedCounts>,
+}
+
+pub struct AccumulatedCounts {
+    counts: Vec<u16>,
+    depth_sums: Vec<u32>,
+    chrom: String,
+    begin: u32,
+    end: u32,
+}
+
+impl AccumulatedCounts {
+    fn new(chrom: String, begin: u32, end: u32) -> Self {
+        let len = (end - begin) as usize;
+        Self {
             counts: vec![0; len],
+            depth_sums: vec![0; len],
             chrom,
             begin,
             end,
         }
     }
 
-    pub fn add_regions(&mut self, regions: &[CallableRegion]) {
-        for region in regions {
-            if region.begin >= self.end || region.end <= self.begin {
-                continue;
+    fn add_chromosome_counts(&mut self, counts: ChromosomeCounts) {
+        assert_eq!(self.chrom, counts.chrom);
+        assert_eq!(self.begin, counts.begin);
+        assert_eq!(self.end, counts.end);
+
+        for (i, is_set) in counts.counts.iter().by_vals().enumerate() {
+            if is_set {
+                self.counts[i] = self.counts[i].saturating_add(1);
             }
-            
-            let start_idx = (region.begin.saturating_sub(self.begin)) as usize;
-            let end_idx = ((region.end - self.begin).min(self.counts.len() as u32)) as usize;
-            
-            for count in &mut self.counts[start_idx..end_idx] {
-                *count += 1;
-            }
+        }
+
+        for (acc_depth, &new_depth) in self.depth_sums.iter_mut().zip(counts.depth_sums.iter()) {
+            *acc_depth = acc_depth.saturating_add(new_depth);
         }
     }
 
-    pub fn to_callable_regions(
+    fn to_callable_regions(
         &self,
-        min_proportion: f64,
-        total_samples: usize,
-        output_counts: bool,
+        min_samples: u32,
+        mean_thresolds: (f64, f64),
     ) -> Vec<CallableRegion> {
         let mut regions = Vec::new();
-        let min_samples = if output_counts { 
-            1 
-        } else {
-            (total_samples as f64 * min_proportion).ceil() as u32
-        };
-
         let mut current_start = None;
-        let mut current_count = None;
+        let mut current_stats = None;
 
-        // Helper to add a region to our results
-        let mut add_region = |start: u32, end: u32, count: u32| {
-            if count >= min_samples || output_counts {
+        let mut add_region = |start: u32, end: u32, count: u16, depth_sum: u32| {
+            let mean_depth = if count > 0 {
+                depth_sum as f64 / count as f64
+            } else {
+                0.0
+            };
+
+            if count >= min_samples as u16
+                && mean_depth >= mean_thresolds.0
+                && mean_depth <= mean_thresolds.1
+            {
                 regions.push(CallableRegion {
                     begin: start,
                     end,
-                    count,
+                    count: count as u32,
                 });
             }
         };
 
-        for (i, &count) in self.counts.iter().enumerate() {
+        for (i, (&count, &depth_sum)) in self.counts.iter().zip(self.depth_sums.iter()).enumerate()
+        {
             let pos = self.begin + i as u32;
 
-            match (current_start, current_count) {
-                (Some(start), Some(prev_count)) if count == prev_count => {
-                    // Continue current region
+            match (current_start, current_stats) {
+                (Some(start), Some((prev_count, prev_depth)))
+                    if count == prev_count && depth_sum == prev_depth =>
+                {
                     continue;
                 }
-                (Some(start), Some(prev_count)) => {
-                    // End current region and maybe start new one
-                    add_region(start, pos, prev_count);
+                (Some(start), Some((prev_count, prev_depth))) => {
+                    add_region(start, pos, prev_count, prev_depth);
                     if count > 0 {
                         current_start = Some(pos);
-                        current_count = Some(count);
+                        current_stats = Some((count, depth_sum));
                     } else {
                         current_start = None;
-                        current_count = None;
+                        current_stats = None;
                     }
                 }
                 (None, None) if count > 0 => {
-                    // Start new region
                     current_start = Some(pos);
-                    current_count = Some(count);
+                    current_stats = Some((count, depth_sum));
                 }
                 _ => {}
             }
         }
 
-        // Handle last region if exists
-        if let (Some(start), Some(count)) = (current_start, current_count) {
-            add_region(start, self.end, count);
+        if let (Some(start), Some((count, depth_sum))) = (current_start, current_stats) {
+            add_region(start, self.end, count, depth_sum);
         }
 
         regions
     }
 }
 
-/// Global state for tracking counts across all chromosomes
-pub struct GlobalCounts {
-    chrom_counts: HashMap<String, ChromosomeCounts>,
-    total_samples: usize,
-}
-
 impl GlobalCounts {
     pub fn new(regions: &[ChromRegion]) -> Self {
         let mut chrom_counts = HashMap::new();
-        
+
         for region in regions {
             chrom_counts.insert(
                 region.chr.clone(),
-                ChromosomeCounts::new(region.chr.clone(), region.begin, region.end)
+                AccumulatedCounts::new(region.chr.clone(), region.begin, region.end),
             );
         }
-        
-        Self {
-            chrom_counts,
-            total_samples: 0,
-        }
+
+        Self { chrom_counts }
     }
 
-    pub fn add_sample_regions(&mut self, sample_regions: Vec<(String, Vec<CallableRegion>)>) {
-        self.total_samples += 1;
-        
-        for (chrom, regions) in sample_regions {
-            if let Some(counts) = self.chrom_counts.get_mut(&chrom) {
-                counts.add_regions(&regions);
-            }
+    pub fn merge(&mut self, chromosome_counts: ChromosomeCounts) {
+        if let Some(existing) = self.chrom_counts.get_mut(&chromosome_counts.chrom) {
+            existing.add_chromosome_counts(chromosome_counts);
+        } else {
+            let mut accumulated = AccumulatedCounts::new(
+                chromosome_counts.chrom.clone(),
+                chromosome_counts.begin,
+                chromosome_counts.end,
+            );
+            accumulated.add_chromosome_counts(chromosome_counts);
+            self.chrom_counts
+                .insert(accumulated.chrom.clone(), accumulated);
         }
     }
 
     pub fn finalize(
         self,
         min_proportion: f64,
-        output_counts: bool,
+        mean_thresholds: (f64, f64),
+        total_samples: usize,
     ) -> Vec<(String, u32, Vec<CallableRegion>)> {
-        let mut results: Vec<_> = self.chrom_counts
+        let min_samples = (total_samples as f64 * min_proportion).ceil() as u32;
+
+        let mut results: Vec<_> = self
+            .chrom_counts
             .into_iter()
             .map(|(chrom, counts)| {
-                let regions = counts.to_callable_regions(
-                    min_proportion,
-                    self.total_samples,
-                    output_counts,
-                );
-                (chrom, 0, regions)
+                let begin = counts.begin;
+                let regions = counts.to_callable_regions(min_samples, mean_thresholds);
+                (chrom, begin, regions)
             })
             .collect();
-            
+
         results.sort_by(|a, b| a.0.cmp(&b.0));
         results
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chromosome_counts_new() {
+        let counts = ChromosomeCounts::new("chr1".to_string(), 1000, 2000);
+        assert_eq!(counts.counts.len(), 1000);
+        assert_eq!(counts.depth_sums.len(), 1000);
+        assert!(counts.counts.not_any()); // All bits should be 0
+        assert!(counts.depth_sums.iter().all(|&x| x == 0));
+    }
+
+    #[test]
+    fn test_accumulated_counts_new() {
+        let acc = AccumulatedCounts::new("chr1".to_string(), 1000, 2000);
+        assert_eq!(acc.counts.len(), 1000);
+        assert_eq!(acc.depth_sums.len(), 1000);
+        assert!(acc.counts.iter().all(|&x| x == 0));
+        assert!(acc.depth_sums.iter().all(|&x| x == 0));
+    }
+
+    #[test]
+    fn test_add_chromosome_counts() {
+        let mut acc = AccumulatedCounts::new("chr1".to_string(), 1000, 2000);
+        let mut chrom_counts = ChromosomeCounts::new("chr1".to_string(), 1000, 2000);
+
+        // Set some bits and depths
+        chrom_counts.counts.set(0, true);
+        chrom_counts.counts.set(100, true);
+        chrom_counts.depth_sums[0] = 5;
+        chrom_counts.depth_sums[100] = 10;
+
+        acc.add_chromosome_counts(chrom_counts);
+
+        assert_eq!(acc.counts[0], 1);
+        assert_eq!(acc.counts[100], 1);
+        assert_eq!(acc.depth_sums[0], 5);
+        assert_eq!(acc.depth_sums[100], 10);
+
+        // Test counts don't exceed u16::MAX
+        let mut max_counts = ChromosomeCounts::new("chr1".to_string(), 1000, 2000);
+        max_counts.counts.set(0, true);
+        max_counts.depth_sums[0] = 1;
+
+        for _ in 0..=u16::MAX as usize {
+            acc.add_chromosome_counts(max_counts.clone());
+        }
+
+        assert_eq!(acc.counts[0], u16::MAX);
+    }
+
+    #[test]
+    fn test_global_counts_merge() {
+        let regions = vec![ChromRegion {
+            chr: "chr1".to_string(),
+            begin: 1000,
+            end: 2000,
+            min_filter: 0.0,
+            max_filter: 0.0,
+        }];
+        let mut global = GlobalCounts::new(&regions);
+
+        let mut counts1 = ChromosomeCounts::new("chr1".to_string(), 1000, 2000);
+        counts1.counts.set(50, true); // Position 1050
+        counts1.depth_sums[50] = 5;
+
+        let mut counts2 = ChromosomeCounts::new("chr1".to_string(), 1000, 2000);
+        counts2.counts.set(50, true); // Same position
+        counts2.depth_sums[50] = 3;
+
+        global.merge(counts1);
+        global.merge(counts2);
+
+        let results = global.finalize(0.1, (1.0, f64::MAX), 2); // min_proportion = 0.1 means min_samples = 1
+        assert_eq!(results.len(), 1); // One chromosome
+
+        let (_chrom, _begin, regions) = &results[0];
+        assert!(!regions.is_empty());
+
+        // Find region containing our test position
+        let region = regions.iter().find(|r| r.begin <= 1050 && r.end > 1050);
+        assert!(region.is_some());
+        let region = region.unwrap();
+        assert_eq!(region.count, 2); // Both samples contributed
+    }
+
+    #[test]
+    fn test_callable_regions_filtering() {
+        let mut acc = AccumulatedCounts::new("chr1".to_string(), 1000, 2000);
+
+        // Create regions with different counts and depths
+        acc.counts[0] = 5; // Position 1000
+        acc.depth_sums[0] = 25; // Mean depth 5
+
+        acc.counts[100] = 5; // Position 1100
+        acc.depth_sums[100] = 10; // Mean depth 2
+
+        acc.counts[200] = 2; // Position 1200
+        acc.depth_sums[200] = 10; // Mean depth 5
+
+        // Test with different thresholds
+        let regions1 = acc.to_callable_regions(3, (4.0, f64::MAX)); // Should include pos 1000 only
+        let regions2 = acc.to_callable_regions(3, (1.0, f64::MAX)); // Should include pos 1000 and 1100
+
+        assert_eq!(regions1.len(), 1);
+        assert_eq!(regions2.len(), 2);
     }
 }

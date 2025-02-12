@@ -26,6 +26,7 @@ clap-markdown = "0.1.4"
 indexmap = "2.6.0"
 indicatif = "0.17.9"
 indicatif-log-bridge = "0.2.3"
+bitvec = "1.0.1"
 
 
 [dev-dependencies]

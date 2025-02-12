@@ -1,24 +1,45 @@
+pub mod counts;
 pub mod d4_bgzf;
 pub mod d4_tasks;
-pub mod counts;
+pub mod gvcf;
+pub mod io;
+pub mod regions;
+pub mod thresholds;
 
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result, Context};
+use anyhow::{bail, Context, Result};
 use camino::Utf8PathBuf;
 use clap::Parser;
 use d4::index::D4IndexCollection;
 use d4::ptab::PTablePartitionWriter;
 use d4::stab::SecondaryTablePartWriter;
 use d4::{Chrom, D4FileBuilder, D4FileMerger, D4FileWriter, Dictionary};
+use indicatif::ProgressBar;
 use log::{debug, trace, warn};
 use rayon::prelude::*;
 use serde::Deserialize;
 use tempfile::NamedTempFile;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum InputMode {
+    MergedD4(PathBuf),            // Single merged D4 file
+    MultiD4(VecDeque<PathBuf>),   // Multiple per-sample D4 files
+    MultiGVCF(VecDeque<PathBuf>), // Multiple per-sample GVCF files
+}
+
+// struct ProcessConfig {
+//     per_sample_thresholds: thresholds::Thresholds,
+//     mean_thresholds: thresholds::Thresholds,
+//     exclude_chrs: Option<HashSet<String>>,
+//     outdir: PathBuf,
+//     depth_prop: f64,
+//     population_map: Option<super::utils::PopulationMapping>,
+// }
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -26,15 +47,26 @@ use tempfile::NamedTempFile;
     version,
     about = "Calculate callable sites from depth statistics."
 )]
-
 pub struct LociArgs {
-    /// Path to input D4 file
-    #[arg(required(true))]
-    pub infile: Utf8PathBuf,
+    /// Input files (D4 format by default)
+    #[arg(required_unless_present = "filelist")]
+    pub input: Vec<Utf8PathBuf>,
 
-    /// Output file prefix. The extension will be added automatically based on the `--no-counts` flag.
-    #[arg(required(true))]
-    pub outprefix: Utf8PathBuf,
+    /// Path to file containing list of input files, one per line
+    #[arg(short = 'f', long = "filelist")]
+    pub filelist: Option<Utf8PathBuf>,
+
+    /// Use GVCF format instead of D4
+    #[arg(long = "gvcf")]
+    pub gvcf: bool,
+
+    /// Input is a merged D4 file
+    #[arg(long = "merged", conflicts_with = "gvcf")]
+    pub merged: bool,
+
+    /// Output directory
+    #[arg(short = 'o', required(true))]
+    pub outdir: Utf8PathBuf,
 
     /// Minimum depth to consider site callable per individual
     #[arg(
@@ -49,7 +81,7 @@ pub struct LociArgs {
     #[arg(short = 'M', long = "max-depth", default_value_t = f64::INFINITY, conflicts_with("threshold_file"))]
     pub max_depth: f64,
 
-    /// Proportion of samples passing thresholds at site to consider callable. Ignored when outputting counts.
+    /// Proportion of samples passing thresholds at site to consider callable
     #[arg(
         short = 'd',
         long = "depth-proportion",
@@ -58,7 +90,7 @@ pub struct LociArgs {
     )]
     pub depth_proportion: f64,
 
-    /// Minimum mean depth across all samples at site to consider callable. Ignored when outputting counts.
+    /// Minimum mean depth across all samples at site to consider callable
     #[arg(
         short = 'u',
         long = "min-mean-depth",
@@ -67,17 +99,9 @@ pub struct LociArgs {
     )]
     pub mean_depth_min: f64,
 
-    /// Maximum mean depth across all samples at site to consider callable. Ignored when outputting counts.
+    /// Maximum mean depth across all samples at site to consider callable
     #[arg(short = 'U', long = "max-mean-depth", default_value_t = f64::INFINITY, conflicts_with("population_file"))]
     pub mean_depth_max: f64,
-
-    /// Disable outputting counts; produces a .bed file instead.
-    #[arg(
-        long = "no-counts",
-        default_value_t = false,
-        conflicts_with("population_file")
-    )]
-    pub no_counts: bool,
 
     /// Number of threads to use
     #[arg(short = 't', long = "threads", default_value_t = 1)]
@@ -98,441 +122,550 @@ pub struct LociArgs {
     /// Path to file with chromosomes to exclude, one per line
     #[arg(long = "exclude-file", conflicts_with("exclude"))]
     pub exclude_file: Option<Utf8PathBuf>,
-    
+
+    // Fields that get initialized
+    #[arg(skip)]
+    pub exclude_chrs: Option<HashSet<String>>,
+
+    #[arg(skip)]
+    pub population_map: Option<super::utils::PopulationMapping>,
 }
 
 impl LociArgs {
-    /// Resolve the final output file path with the appropriate extension based on `--no-counts` flag.
-    pub fn resolve_output_file(&self) -> Utf8PathBuf {
-        let mut output_file = self.outprefix.clone();
-        let extension = if self.no_counts { "bed" } else { "d4" };
-        output_file.set_extension(extension);
-        output_file
-    }
-}
+    /// Initialize processing-related fields and set up environment
+    pub fn initialize(&mut self) -> Result<()> {
+        // Set up thread pool
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(self.threads)
+            .build_global()?;
 
-pub enum D4Reader {
-    D4(d4::D4TrackReader),
-    Bgzf(d4_bgzf::BGZID4MatrixReader),
-}
-
-impl D4Reader {
-    pub fn chrom_regions(
-        &self,
-        thresholds: Thresholds,
-        exclude_chrs: Option<&HashSet<String>>,
-    ) -> Result<Vec<ChromRegion>> {
-        match self {
-            D4Reader::D4(reader) => {
-                prepare_chrom_regions(reader.chrom_regions(), thresholds, exclude_chrs)
-            }
-            D4Reader::Bgzf(reader) => {
-                prepare_chrom_regions(reader.chrom_regions(), thresholds, exclude_chrs)
-            }
+        // Setup output directory
+        if !self.outdir.exists() {
+            std::fs::create_dir_all(&self.outdir)?;
         }
-    }
 
-    pub fn run_tasks(
-        &self,
-        loci_args: &LociArgs,
-        chrom_regions: Vec<ChromRegion>,
-        sample_refs: Option<Vec<String>>, 
-    ) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
-        let output_counts = !loci_args.no_counts;
-        debug!("output_counts: {output_counts}");
-        match self {
-            D4Reader::Bgzf(_) => d4_bgzf::run_bgzf_tasks(
-                loci_args.infile.clone(),
-                loci_args.threads,
-                sample_refs.clone(), // Pass Vec<String> directly
-                chrom_regions,
-                (loci_args.mean_depth_min, loci_args.mean_depth_max),
-                loci_args.depth_proportion,
-                output_counts,
-            ),
-            D4Reader::D4(_) => {
-                let tracks =
-                    d4_tasks::prepare_tracks_from_file(loci_args.infile.clone(), sample_refs)?;
-                d4_tasks::run_tasks_on_tracks(
-                    tracks,
-                    chrom_regions,
-                    (loci_args.mean_depth_min, loci_args.mean_depth_max),
-                    loci_args.depth_proportion,
-                    output_counts,
+        // Initialize excluded chromosomes
+        self.exclude_chrs =
+            super::utils::get_exclude_chromosomes(&self.exclude, &self.exclude_file)?;
+
+        // Initialize population mapping if provided
+        if let Some(pop_file) = &self.population_file {
+            let file = File::open(pop_file).with_context(|| {
+                format!(
+                    "Failed to open population file at path: {}",
+                    pop_file.as_str()
                 )
-            }
+            })?;
+            self.population_map = Some(super::utils::PopulationMapping::from_path(file, None)?);
         }
+
+        Ok(())
     }
-}
 
-#[derive(Clone)]
-pub enum Thresholds {
-    Fixed((f64, f64)),                          // For single threshold tuple
-    PerChromosome(HashMap<String, (f64, f64)>), // For chromosome-specific thresholds
-}
+    pub fn get_per_sample_thresholds(&self) -> thresholds::Thresholds {
+        self.threshold_file.as_ref().map_or_else(
+            || thresholds::Thresholds::Fixed((self.min_depth, self.max_depth)),
+            |file| {
+                thresholds::read_threshold_file(file)
+                    .map(thresholds::Thresholds::PerChromosome)
+                    .unwrap_or_else(|_| {
+                        thresholds::Thresholds::Fixed((self.min_depth, self.max_depth))
+                    })
+            },
+        )
+    }
 
-#[derive(Debug, Deserialize)]
-struct ThresholdRecord {
-    chrom: String,
-    min: f64,
-    max: f64,
-}
+    pub fn get_mean_thresholds(&self) -> thresholds::Thresholds {
+        thresholds::Thresholds::Fixed((self.mean_depth_min, self.mean_depth_max))
+    }
 
-pub fn read_threshold_file<P: AsRef<Path>>(
-    threshold_file: P,
-) -> Result<HashMap<String, (f64, f64)>> {
-    let file = File::open(&threshold_file).expect(&format!(
-        "Failed to open threshold file: {}",
-        threshold_file.as_ref().display()
-    ));
-    let mut reader = csv::ReaderBuilder::new().delimiter(b'\t').from_reader(file);
-    let mut filter_map: HashMap<String, (f64, f64)> = HashMap::new();
+    pub fn determine_input_mode(&self) -> Result<InputMode> {
+        let input_files = self.get_input_files(None)?;
 
-    for result in reader.deserialize() {
-        let record: ThresholdRecord = result?;
+        if input_files.is_empty() {
+            anyhow::bail!("At least one input file is required");
+        }
 
-        match filter_map.entry(record.chrom) {
-            Entry::Vacant(entry) => {
-                entry.insert((record.min, record.max));
+        match (self.gvcf, self.merged) {
+            (true, _) => Ok(InputMode::MultiGVCF(input_files)),
+            (false, true) => {
+                if input_files.len() > 1 {
+                    anyhow::bail!("Merged D4 mode expects exactly one input file");
+                }
+                Ok(InputMode::MergedD4(input_files.into_iter().next().unwrap()))
             }
-            Entry::Occupied(mut entry) => {
-                warn!(
-                    "Duplicate chromosome in thresholds file! {} already exists with min: {}, max: {}. Overwriting with new values min: {}, max: {}.",
-                    entry.key(),
-                    entry.get().0,
-                    entry.get().1,
-                    record.min,
-                    record.max
-                );
-                entry.insert((record.min, record.max));
-            }
+            (false, false) => Ok(InputMode::MultiD4(input_files)),
         }
     }
 
-    Ok(filter_map)
-}
+    /// Get all input files from either direct input or filelist
+    pub fn get_input_files(&self, patterns: Option<&[String]>) -> Result<VecDeque<PathBuf>> {
+        let mut paths = VecDeque::new();
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct CallableRegion {
-    pub count: u32,
-    pub begin: u32,
-    pub end: u32,
-}
+        // Handle filelist if provided
+        if let Some(filelist) = &self.filelist {
+            let file = File::open(filelist)
+                .with_context(|| format!("Failed to open filelist: {}", filelist))?;
 
-pub fn merge_d4_files<P: AsRef<Path>>(outpath: P, input: Vec<P>, names: Vec<&str>) -> Result<()> {
-    let mut merger = D4FileMerger::new(outpath);
-    for (file, name) in input.iter().zip(names.iter()) {
-        merger = merger.add_input_with_tag(file, name)
+            let reader = BufReader::new(file);
+
+            for line in reader.lines() {
+                let path = line
+                    .with_context(|| format!("Failed to read line from filelist: {}", filelist))?;
+
+                // Skip empty lines and comments
+                if path.trim().is_empty() || path.starts_with('#') {
+                    continue;
+                }
+
+                let path = PathBuf::from(path);
+
+                // Check if path exists
+                if !path.exists() {
+                    anyhow::bail!("File does not exist: {}", path.display());
+                }
+
+                // If patterns are provided, check if any match
+                if let Some(patterns) = patterns {
+                    let path_str = path.to_string_lossy();
+                    if !patterns.iter().any(|pattern| path_str.contains(pattern)) {
+                        continue;
+                    }
+                }
+
+                paths.push_back(path);
+            }
+        } else {
+            // Handle direct input files
+            for path in &self.input {
+                let path = PathBuf::from(path);
+
+                // Check if path exists
+                if !path.exists() {
+                    anyhow::bail!("File does not exist: {}", path.display());
+                }
+
+                // If patterns are provided, check if any match
+                if let Some(patterns) = patterns {
+                    let path_str = path.to_string_lossy();
+                    if !patterns.iter().any(|pattern| path_str.contains(pattern)) {
+                        continue;
+                    }
+                }
+
+                paths.push_back(path);
+            }
+        }
+
+        if paths.is_empty() {
+            anyhow::bail!("No valid input files found");
+        }
+
+        Ok(paths)
     }
-    merger.merge()?;
+}
+
+pub fn process(mut args: LociArgs, progress_bar: Option<ProgressBar>) -> Result<()> {
+    args.initialize()?;
+
+    match args.determine_input_mode()? {
+        InputMode::MergedD4(file) => process_merged_d4(file, &args, progress_bar),
+        InputMode::MultiD4(files) => process_multi_d4(files, &args, progress_bar),
+        InputMode::MultiGVCF(files) => process_gvcf(files, &args, progress_bar),
+    }
+}
+
+fn process_gvcf(
+    files: VecDeque<PathBuf>,
+    args: &LociArgs,
+    progress_bar: Option<ProgressBar>,
+) -> Result<()> {
+    let chroms: Vec<d4::Chrom> = {
+        let reader = gvcf::GvcfReader::from_path(files.front().unwrap())?;
+        let chrom_regions = reader.chrom_regions();
+        chrom_regions
+            .iter()
+            .map(|r| d4::Chrom {
+                name: r.0.to_string(),
+                size: r.2.try_into().unwrap(),
+            })
+            .collect()
+    };
+
+    if let Some(population_map) = &args.population_map {
+        let progress_bar = if let Some(bar) = progress_bar {
+            bar.set_length(files.len() as u64);
+            Some(bar)
+        } else {
+            None
+        };
+        let mut temp_file_paths = Vec::with_capacity(population_map.num_populations());
+        for (idx, samples) in population_map
+            .get_samples_per_population()
+            .iter()
+            .enumerate()
+        {
+            let sample_names: Vec<String> = samples.iter().map(|&s| s.to_string()).collect();
+
+            let res = d4_bgzf::run_tasks(
+                files.clone(),
+                Some(&sample_names),
+                args.clone(),
+                progress_bar.clone(),
+            )?;
+
+            temp_file_paths.push(io::write_d4_parallel::<PathBuf>(
+                &res,
+                chroms.clone(),
+                None,
+            )?);
+
+            let population_name = population_map.get_popname_refs()[idx];
+            io::write_bed(
+                args.outdir
+                    .join(format!("{}_callable_sites.bed", population_name))
+                    .as_std_path()
+                    .to_path_buf(),
+                &res,
+            );
+        }
+
+        io::merge_d4_files(
+            args.outdir
+                .join("callable_sites.d4")
+                .as_std_path()
+                .to_path_buf(),
+            temp_file_paths,
+            population_map.get_popname_refs(),
+        )?;
+    } else {
+        let res = d4_bgzf::run_tasks(files, None, args.clone(), progress_bar)?;
+        io::write_d4_parallel::<PathBuf>(
+            &res,
+            chroms,
+            Some(
+                args.outdir
+                    .join("callable_sites.d4")
+                    .as_std_path()
+                    .to_path_buf(),
+            ),
+        )?;
+        io::write_bed(
+            args.outdir
+                .join("callable_sites.bed")
+                .as_std_path()
+                .to_path_buf(),
+            &res,
+        )?;
+    }
+
     Ok(())
 }
 
-pub fn write_d4_parallel<P: AsRef<Path>>(
-    regions: Vec<(String, u32, Vec<CallableRegion>)>,
-    chroms: Vec<Chrom>,
-    output_path: Option<P>,
-) -> Result<PathBuf> {
-    // Initialize the D4 file writer
-    let output_path: PathBuf = if let Some(output_path) = output_path {
-        output_path.as_ref().to_path_buf()
-    } else {
-        let temp_file = NamedTempFile::new()?;
-        temp_file.into_temp_path().to_path_buf()
-    };
-
-    let mut builder = D4FileBuilder::new(output_path.clone());
-    builder.append_chrom(chroms.into_iter());
-    builder.set_denominator(1.0);
-    builder.set_dictionary(Dictionary::new_simple_range_dict(0, 1)?);
-
-    // Create the D4 file writer
-    let mut d4_writer: D4FileWriter = builder.create()?;
-    let partitions = d4_writer.parallel_parts(Some(10_000_000))?;
-    trace!("Created {} partitions for writing", partitions.len());
-
-    let partitions_result: Result<()> = partitions
-        .into_par_iter()
-        .map(|(mut partition, mut secondary_table)| {
-            let (chrom, left, right) = partition.region();
-            let chrom = chrom.to_string();
-            let mut primary_encoder = partition.make_encoder();
-            let mut last = left;
-
-            // Encapsulate encoding logic in a closure
-            let mut write_value = |pos: u32, value: i32| {
-                if !primary_encoder.encode(pos as usize, value) {
-                    secondary_table.encode(pos, value).unwrap();
-                    // trace!("Secondary encode: Wrote {} at {}:{}", value, chrom, pos);
-                } else {
-                    // trace!("Primary encode: Wrote {} at {}:{}", value, chrom, pos);
-                }
-            };
-
-            // Process regions within the current partition
-            if let Some((_, begin_offset, region_list)) = regions
-                .iter()
-                .find(|(region_chrom, _, _)| *region_chrom == chrom)
-            {
-                for region in region_list {
-                    let start = region.begin + *begin_offset;
-                    let end = region.end + *begin_offset;
-
-                    if end <= left || start >= right {
-                        // Skip regions outside of the partition bounds
-                        continue;
-                    }
-
-                    // Clip the region to fit within the partition bounds
-                    let clipped_start = start.max(left);
-                    let clipped_end = end.min(right);
-
-                    for pos in last..clipped_start {
-                        write_value(pos, 0);
-                    }
-
-                    for pos in clipped_start..clipped_end {
-                        write_value(pos, region.count as i32);
-                    }
-
-                    last = clipped_end;
-                }
-            }
-
-            // Fill remaining positions with zero
-            for pos in last..right {
-                write_value(pos, 0);
-            }
-
-            // Flush the secondary table
-            secondary_table.flush()?;
-            secondary_table.finish()?;
-            Ok(())
+fn process_multi_d4(
+    files: VecDeque<PathBuf>,
+    args: &LociArgs,
+    progress_bar: Option<ProgressBar>,
+) -> Result<()> {
+    let reader = d4_bgzf::BGZID4TrackReader::from_path(files.front().unwrap(), None)?;
+    let chrom_regions = reader.chrom_regions();
+    let chroms: Vec<d4::Chrom> = chrom_regions
+        .iter()
+        .map(|r| d4::Chrom {
+            name: r.0.to_string(),
+            size: r.2.try_into().unwrap(),
         })
         .collect();
 
-    // Check for any errors during the parallel operation
-    if let Err(e) = partitions_result {
-        return Err(e.into());
-    }
-    
-    drop(d4_writer);
-    log::info!("D4 file writing complete.");
-    
-    let mut index_collection = D4IndexCollection::open_for_write(output_path.clone())
-        .with_context(|| {
-            format!(
-                "Failed to open D4 index collection for writing at {:?}",
-                output_path
-            )
-        })?;
+    if let Some(population_map) = &args.population_map {
+        let progress_bar = if let Some(bar) = progress_bar {
+            bar.set_length(files.len() as u64);
+            Some(bar)
+        } else {
+            None
+        };
+        let mut temp_file_paths = Vec::with_capacity(population_map.num_populations());
+        for (idx, samples) in population_map
+            .get_samples_per_population()
+            .iter()
+            .enumerate()
+        {
+            let sample_names: Vec<String> = samples.iter().map(|&s| s.to_string()).collect();
 
-    index_collection
-        .create_secondary_frame_index()
-        .with_context(|| "Failed to create secondary frame index for the D4 index collection")?;
-    Ok(output_path)
-}
-
-pub fn write_bed<P: AsRef<Path>>(
-    output_path: P,
-    regions: Vec<(String, u32, Vec<CallableRegion>)>,
-) -> Result<()> {
-    let mut file = File::create(output_path)?;
-
-    for (chrom, begin, callable_regions) in regions {
-        for region in callable_regions.into_iter() {
-            writeln!(
-                file,
-                "{}\t{}\t{}",
-                chrom,
-                region.begin + begin,
-                region.end + begin
+            let res = d4_bgzf::run_tasks(
+                files.clone(),
+                Some(&sample_names),
+                args.clone(),
+                progress_bar.clone(),
             )?;
+
+            temp_file_paths.push(io::write_d4_parallel::<PathBuf>(
+                &res,
+                chroms.clone(),
+                None,
+            )?);
+
+            let population_name = population_map.get_popname_refs()[idx];
+            io::write_bed(
+                args.outdir
+                    .join(format!("{}_callable_sites.bed", population_name))
+                    .as_std_path()
+                    .to_path_buf(),
+                &res,
+            );
         }
+
+        io::merge_d4_files(
+            args.outdir
+                .join("callable_sites.d4")
+                .as_std_path()
+                .to_path_buf(),
+            temp_file_paths,
+            population_map.get_popname_refs(),
+        )?;
+    } else {
+        let res = d4_bgzf::run_tasks(files, None, args.clone(), progress_bar)?;
+        io::write_d4_parallel::<PathBuf>(
+            &res,
+            chroms,
+            Some(
+                args.outdir
+                    .join("callable_sites.d4")
+                    .as_std_path()
+                    .to_path_buf(),
+            ),
+        )?;
+        io::write_bed(
+            args.outdir
+                .join("callable_sites.bed")
+                .as_std_path()
+                .to_path_buf(),
+            &res,
+        )?;
     }
 
     Ok(())
 }
 
-#[derive(Clone)]
-pub struct ChromRegion {
-    pub chr: String,
-    pub begin: u32,
-    pub end: u32,
-    pub min_filter: f64,
-    pub max_filter: f64,
-}
-
-pub fn prepare_chrom_regions(
-    chrom_regions: Vec<(&str, u32, u32)>,
-    thresholds: Thresholds,
-    exclude_chrs: Option<&HashSet<String>>,
-) -> Result<Vec<ChromRegion>> {
-    // Apply thresholds and exclusion logic
-    let chrom_filters: Vec<ChromRegion> = match thresholds {
-        Thresholds::Fixed(thresh) => chrom_regions
-            .into_iter()
-            .map(|(chr, start, end)| ChromRegion {
-                chr: chr.to_string(),
-                begin: start,
-                end,
-                min_filter: thresh.0,
-                max_filter: thresh.1,
-            })
-            .collect(),
-
-        Thresholds::PerChromosome(ref filter_map) => {
-            let chroms_with_filters = add_filters_to_chroms(
-                chrom_regions
-                    .iter()
-                    .map(|(chr, start, end)| (*chr, *start, *end))
-                    .collect(),
-                filter_map.clone(),
-            )?;
-            chroms_with_filters
-                .into_iter()
-                .map(|(chr, start, end, min_filter, max_filter)| ChromRegion {
-                    chr,
-                    begin: start,
-                    end,
-                    min_filter,
-                    max_filter,
-                })
-                .collect()
-        }
-    };
-
-    Ok(chrom_filters
-        .into_iter()
-        .filter(|region| {
-            if let Some(exclude_set) = exclude_chrs {
-                !exclude_set.contains(&region.chr)
-            } else {
-                true
-            }
+fn process_merged_d4(
+    file: PathBuf,
+    args: &LociArgs,
+    progress_bar: Option<ProgressBar>,
+) -> Result<()> {
+    let chroms: Vec<d4::Chrom> = d4_tasks::get_chrom_regions(&file)?
+        .iter()
+        .map(|r| d4::Chrom {
+            name: r.0.to_string(),
+            size: r.2.try_into().unwrap(),
         })
-        .collect())
-}
-
-pub fn add_filters_to_chroms(
-    d4_chrom_regions: Vec<(&str, u32, u32)>,
-    filter_map: HashMap<String, (f64, f64)>,
-) -> Result<Vec<(String, u32, u32, f64, f64)>> {
-    let mut result = vec![];
-    for (chrom, start, end) in &d4_chrom_regions {
-        if let Some(&(min_filter, max_filter)) = filter_map.get(*chrom) {
-            result.push((chrom.to_string(), *start, *end, min_filter, max_filter));
-        } else {
-            // Issue a warning if no filter is found and apply default filters
-            warn!(
-                "No filter found for chromosome '{}', using default filters (0.0, f64::INFINITY).",
-                chrom
-            );
-            result.push((chrom.to_string(), *start, *end, 0.0, f64::INFINITY));
-        }
-    }
-
-    // Ensure every filter in chrom_filters was used; if not, bail
-    for (chrom, (_, _)) in filter_map.iter() {
-        if !d4_chrom_regions
+        .collect();
+    if let Some(population_map) = &args.population_map {
+        let mut temp_file_paths = Vec::with_capacity(population_map.num_populations());
+        for (idx, samples) in population_map
+            .get_samples_per_population()
             .iter()
-            .any(|(region_chrom, _, _)| region_chrom == chrom)
+            .enumerate()
         {
-            bail!(
-                "Filter provided for chromosome '{}' not found in D4 chrom regions.",
-                chrom
+            let sample_names: Vec<String> = samples.iter().map(|&s| s.to_string()).collect();
+            let res =
+                d4_tasks::run_tasks_on_tracks(file.clone(), Some(sample_names), args.clone())?;
+
+            temp_file_paths.push(io::write_d4_parallel::<PathBuf>(
+                &res,
+                chroms.clone(),
+                None,
+            )?);
+
+            let population_name = population_map.get_popname_refs()[idx];
+            io::write_bed(
+                args.outdir
+                    .join(format!("{}_callable_sites.bed", population_name))
+                    .as_std_path()
+                    .to_path_buf(),
+                &res,
             );
         }
+
+        io::merge_d4_files(
+            args.outdir
+                .join("callable_sites.d4")
+                .as_std_path()
+                .to_path_buf(),
+            temp_file_paths,
+            population_map.get_popname_refs(),
+        )?;
+    } else {
+        let res = d4_tasks::run_tasks_on_tracks(file.clone(), None, args.clone())?;
+        io::write_d4_parallel::<PathBuf>(
+            &res,
+            chroms,
+            Some(
+                args.outdir
+                    .join("callable_sites.d4")
+                    .as_std_path()
+                    .to_path_buf(),
+            ),
+        )?;
+        io::write_bed(
+            args.outdir
+                .join("callable_sites.bed")
+                .as_std_path()
+                .to_path_buf(),
+            &res,
+        )?;
     }
 
-    Ok(result)
+    Ok(())
+   
 }
 
-#[cfg(test)]
-mod tests {
+// pub enum D4Reader {
+//     D4(d4::D4TrackReader),
+//     Bgzf(d4_bgzf::BGZID4MatrixReader),
+// }
 
-    use std::collections::HashMap;
+// impl D4Reader {
+//     pub fn chrom_regions(
+//         &self,
+//         thresholds: Thresholds,
+//         exclude_chrs: Option<&HashSet<String>>,
+//     ) -> Result<Vec<ChromRegion>> {
+//         match self {
+//             D4Reader::D4(reader) => {
+//                 prepare_chrom_regions(reader.chrom_regions(), thresholds, exclude_chrs)
+//             }
+//             D4Reader::Bgzf(reader) => {
+//                 prepare_chrom_regions(reader.chrom_regions(), thresholds, exclude_chrs)
+//             }
+//         }
+//     }
 
-    use super::*;
-    fn init() {
-        let _ = env_logger::builder()
-            .target(env_logger::Target::Stdout)
-            .filter_level(log::LevelFilter::Trace)
-            .is_test(true)
-            .try_init();
-    }
+//     pub fn run_tasks(
+//         &self,
+//         loci_args: &LociArgs,
+//         chrom_regions: Vec<ChromRegion>,
+//         sample_refs: Option<Vec<String>>,
+//         progress_bar: Option<indicatif::ProgressBar>,
+//     ) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
+//         let output_counts = !loci_args.no_counts;
+//         let paths = loci_args.read_filelist(None)?;
+//         match self {
+//             D4Reader::Bgzf(_) => d4_bgzf::run_tasks(
+//                 paths,
+//                 loci_args.threads,
+//                 &chrom_regions,
+//                 (loci_args.mean_depth_min, loci_args.mean_depth_max),
+//                 loci_args.depth_proportion,
+//                 progress_bar,
+//             ),
+//             D4Reader::D4(_) => {
+//                 let tracks = d4_tasks::prepare_tracks_from_file(
+//                     loci_args.infile.clone().unwrap(),
+//                     sample_refs,
+//                 )?;
+//                 d4_tasks::run_tasks_on_tracks(
+//                     tracks,
+//                     chrom_regions,
+//                     (loci_args.mean_depth_min, loci_args.mean_depth_max),
+//                     loci_args.depth_proportion,
+//                     output_counts,
+//                 )
+//             }
+//         }
+//     }
+// }
 
-    #[test]
-    fn test_add_filters_to_chroms_success() {
-        // Setup input
-        init();
-        let d4_chrom_regions = vec![
-            ("chr1", 0, 1000),
-            ("chr2", 1000, 2000),
-            ("chr3", 2000, 3000),
-        ];
-        let mut filter_map = HashMap::new();
-        filter_map.insert("chr1".to_string(), (0.5, 1.5));
-        filter_map.insert("chr2".to_string(), (0.1, 0.9));
-        filter_map.insert("chr3".to_string(), (0.2, 1.0));
+// pub enum LociMode {
+//     D4,
+//     BGZF,
+//     GVCF,
+// }
 
-        // Expected output
-        let expected = vec![
-            ("chr1".to_string(), 0, 1000, 0.5, 1.5),
-            ("chr2".to_string(), 1000, 2000, 0.1, 0.9),
-            ("chr3".to_string(), 2000, 3000, 0.2, 1.0),
-        ];
+// // #[cfg(test)]
+// // mod tests {
 
-        // Call function
-        let result = add_filters_to_chroms(d4_chrom_regions, filter_map).unwrap();
+// //     use std::collections::HashMap;
 
-        // Assert the result matches expected
-        assert_eq!(result, expected);
-    }
+// //     use super::*;
+// //     fn init() {
+// //         let _ = env_logger::builder()
+// //             .target(env_logger::Target::Stdout)
+// //             .filter_level(log::LevelFilter::Trace)
+// //             .is_test(true)
+// //             .try_init();
+// //     }
 
-    #[test]
-    fn test_add_filters_to_chroms_missing_filter() {
-        // Setup input with one chromosome missing from the filter map
-        let d4_chrom_regions = vec![
-            ("chr1", 0, 1000),
-            ("chr2", 1000, 2000),
-            ("chr3", 2000, 3000),
-        ];
-        let mut filter_map = HashMap::new();
-        filter_map.insert("chr1".to_string(), (0.5, 1.5));
-        filter_map.insert("chr2".to_string(), (0.1, 0.9));
-        // chr3 is missing in the filter map
+// //     #[test]
+// //     fn test_add_filters_to_chroms_success() {
+// //         // Setup input
+// //         init();
+// //         let d4_chrom_regions = vec![
+// //             ("chr1", 0, 1000),
+// //             ("chr2", 1000, 2000),
+// //             ("chr3", 2000, 3000),
+// //         ];
+// //         let mut filter_map = HashMap::new();
+// //         filter_map.insert("chr1".to_string(), (0.5, 1.5));
+// //         filter_map.insert("chr2".to_string(), (0.1, 0.9));
+// //         filter_map.insert("chr3".to_string(), (0.2, 1.0));
 
-        // Expected output
-        let expected = vec![
-            ("chr1".to_string(), 0, 1000, 0.5, 1.5),
-            ("chr2".to_string(), 1000, 2000, 0.1, 0.9),
-            ("chr3".to_string(), 2000, 3000, 0.0, f64::INFINITY), // Default filter for chr3
-        ];
+// //         // Expected output
+// //         let expected = vec![
+// //             ("chr1".to_string(), 0, 1000, 0.5, 1.5),
+// //             ("chr2".to_string(), 1000, 2000, 0.1, 0.9),
+// //             ("chr3".to_string(), 2000, 3000, 0.2, 1.0),
+// //         ];
 
-        // Call function
-        let result = add_filters_to_chroms(d4_chrom_regions, filter_map).unwrap();
+// //         // Call function
+// //         let result = add_filters_to_chroms(d4_chrom_regions, filter_map).unwrap();
 
-        // Assert the result matches expected
-        assert_eq!(result, expected);
-    }
+// //         // Assert the result matches expected
+// //         assert_eq!(result, expected);
+// //     }
 
-    #[test]
-    fn test_add_filters_to_chroms_unmatched_filter() {
-        // Setup input with an extra chromosome in the filter map
-        let d4_chrom_regions = vec![("chr1", 0, 1000), ("chr2", 1000, 2000)];
-        let mut filter_map = HashMap::new();
-        filter_map.insert("chr1".to_string(), (0.5, 1.5));
-        filter_map.insert("chr2".to_string(), (0.1, 0.9));
-        filter_map.insert("chrX".to_string(), (0.3, 1.2)); // Unmatched chromosome filter
+// //     #[test]
+// //     fn test_add_filters_to_chroms_missing_filter() {
+// //         // Setup input with one chromosome missing from the filter map
+// //         let d4_chrom_regions = vec![
+// //             ("chr1", 0, 1000),
+// //             ("chr2", 1000, 2000),
+// //             ("chr3", 2000, 3000),
+// //         ];
+// //         let mut filter_map = HashMap::new();
+// //         filter_map.insert("chr1".to_string(), (0.5, 1.5));
+// //         filter_map.insert("chr2".to_string(), (0.1, 0.9));
+// //         // chr3 is missing in the filter map
 
-        // Call function, expecting an error
-        let result = add_filters_to_chroms(d4_chrom_regions, filter_map);
+// //         // Expected output
+// //         let expected = vec![
+// //             ("chr1".to_string(), 0, 1000, 0.5, 1.5),
+// //             ("chr2".to_string(), 1000, 2000, 0.1, 0.9),
+// //             ("chr3".to_string(), 2000, 3000, 0.0, f64::INFINITY), // Default filter for chr3
+// //         ];
 
-        // Assert the function returns an error due to unmatched chromosome in the filter map
-        assert!(result.is_err());
-        let err_message = result.unwrap_err().to_string();
-        assert!(err_message
-            .contains("Filter provided for chromosome 'chrX' not found in D4 chrom regions."));
-    }
-}
+// //         // Call function
+// //         let result = add_filters_to_chroms(d4_chrom_regions, filter_map).unwrap();
+
+// //         // Assert the result matches expected
+// //         assert_eq!(result, expected);
+// //     }
+
+// //     #[test]
+// //     fn test_add_filters_to_chroms_unmatched_filter() {
+// //         // Setup input with an extra chromosome in the filter map
+// //         let d4_chrom_regions = vec![("chr1", 0, 1000), ("chr2", 1000, 2000)];
+// //         let mut filter_map = HashMap::new();
+// //         filter_map.insert("chr1".to_string(), (0.5, 1.5));
+// //         filter_map.insert("chr2".to_string(), (0.1, 0.9));
+// //         filter_map.insert("chrX".to_string(), (0.3, 1.2)); // Unmatched chromosome filter
+
+// //         // Call function, expecting an error
+// //         let result = add_filters_to_chroms(d4_chrom_regions, filter_map);
+
+// //         // Assert the function returns an error due to unmatched chromosome in the filter map
+// //         assert!(result.is_err());
+// //         let err_message = result.unwrap_err().to_string();
+// //         assert!(err_message
+// //             .contains("Filter provided for chromosome 'chrX' not found in D4 chrom regions."));
+// //     }
+// // }

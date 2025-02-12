@@ -213,7 +213,7 @@ impl PopulationMapping {
 pub fn get_exclude_chromosomes(
     exclude: &Option<Vec<String>>,
     exclude_file: &Option<Utf8PathBuf>,
-) -> Result<HashSet<String>> {
+) -> Result<Option<HashSet<String>>> {
     if let Some(file_path) = exclude_file {
         // Read chromosomes from the file and collect them into a HashSet
         let file = File::open(file_path)?;
@@ -222,13 +222,13 @@ pub fn get_exclude_chromosomes(
             .lines()
             .filter_map(Result::ok) // Ignore any lines that fail to read
             .collect();
-        Ok(exclude_set)
+        Ok(Some(exclude_set))
     } else if let Some(chromosomes) = exclude {
         // Convert Vec<String> to HashSet<String> directly
-        Ok(chromosomes.iter().cloned().collect())
+        Ok(Some(chromosomes.iter().cloned().collect()))
     } else {
         // If neither option is provided, return an empty HashSet
-        Ok(HashSet::new())
+        Ok(None)
     }
 }
 

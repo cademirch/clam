@@ -121,7 +121,7 @@ struct HetRecord {
     count_hets: u32,
 }
 
-fn build_vcf_reader(path: impl AsRef<Path>) -> Result<(IndexedReader<Reader<File>>, vcf::Header)> {
+pub fn build_vcf_reader(path: impl AsRef<Path>) -> Result<(IndexedReader<Reader<File>>, vcf::Header)> {
     let mut reader = vcf::io::indexed_reader::Builder::default()
         .build_from_path(path.as_ref())
         .context(format!(
@@ -164,7 +164,7 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
     let num_populations = pop_map.num_populations();
     let pop_names = pop_map.get_popname_refs();
     let exclude_chroms = get_exclude_chromosomes(&args.exclude, &args.exclude_file)?;
-    let seqlens = seqlens_vcf(&header, &exclude_chroms, &index_seqs)?;
+    let seqlens = seqlens_vcf(&header, exclude_chroms.as_ref(), &index_seqs)?;
 
     let regions = match (args.regions_file.clone(), args.window_size) {
         (Some(regions_file), _) => read_bed_regions(regions_file)?,
@@ -294,7 +294,7 @@ pub fn regions_from_seqlens(
 
 pub fn seqlens_vcf(
     header: &vcf::Header,
-    exclude: &HashSet<String>,
+    exclude: Option<&HashSet<String>>,
     index_seqs: &IndexSet<String>,
 ) -> Result<FnvHashMap<String, usize>> {
     let mut res = FnvHashMap::default();
@@ -313,10 +313,15 @@ pub fn seqlens_vcf(
             return Err(anyhow!("Contig {} has no length specified", name));
         }
     }
+    
     res.retain(|key, _| index_seqs.contains(key));
-    if !exclude.is_empty() {
-        res.retain(|contig, _| !exclude.contains(contig));
+    
+    if let Some(exclude_set) = exclude {
+        if !exclude_set.is_empty() {
+            res.retain(|contig, _| !exclude_set.contains(contig));
+        }
     }
+    
     Ok(res)
 }
 fn make_region_sites_binary_search(
