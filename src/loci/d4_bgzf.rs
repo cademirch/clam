@@ -1,18 +1,20 @@
-use std::collections::{HashSet,HashMap};
-use std::fs::File;
-use std::path::Path;
-use std::thread;
-use std::time::Instant;
-
-use anyhow::{Context, Result};
+use super::regions::{CallableRegion, ChromRegion};
+use super::{counts::*, LociArgs};
+use anyhow::{Context, Ok, Result};
 use crossbeam::channel::{bounded, Receiver, Sender};
 use d4::find_tracks;
 use d4::index::D4IndexCollection;
 use d4::ssio::{D4TrackReader, D4TrackView};
+use indicatif::ProgressBar;
 use log::{info, trace, warn};
 use noodles::bgzf::{self, IndexedReader};
-
-use super::{CallableRegion, ChromRegion};
+use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Instant;
 
 const CHUNK_SIZE: u32 = 10_000_000;
 
@@ -55,6 +57,95 @@ impl BGZID4TrackReader {
     pub fn inner(&self) -> &D4TrackReader<IndexedReader<File>> {
         &self.inner
     }
+
+    pub fn get_depth(
+        &mut self,
+        chrom: &str,
+        begin: u32,
+        end: u32,
+        depth_threshold: (f64, f64), // min and max depth thresholds
+    ) -> Result<ChromosomeCounts> {
+        let mut view = self.inner_mut().get_view(chrom, begin, end)?;
+        let mut counts = ChromosomeCounts::new(chrom.to_string(), begin, end);
+
+        for pos in begin..end {
+            let (reported_pos, value) = view.next().unwrap().unwrap();
+            assert_eq!(reported_pos, pos);
+            let depth: u32 = value.try_into().context("Couldn't fit depth into u32!")?;
+            let idx = (pos - begin) as usize;
+            counts.depth_sums[idx] = depth;
+            if (value as f64) >= depth_threshold.0 && (value as f64) <= depth_threshold.1 {
+                let mut bit = counts.counts.get_mut(idx).unwrap();
+                *bit = true;
+            }
+        }
+
+        Ok(counts)
+    }
+    pub fn chrom_regions(&self) -> Vec<(&str, u32, u32)> {
+        self.inner()
+            .get_header()
+            .chrom_list()
+            .iter()
+            .map(|x| (x.name.as_str(), 0, x.size as u32))
+            .collect()
+    }
+    pub fn get_callable_regions(
+        &mut self,
+        chrom: &str,
+        begin: u32,
+        end: u32,
+        depth_threshold: (f64, f64), // min and max depth thresholds
+        output_counts: bool,
+    ) -> Result<Vec<CallableRegion>> {
+        let mut view = self.inner_mut().get_view(chrom, begin, end)?;
+        let mut callable_regions = Vec::new();
+        let mut current_region: Option<CallableRegion> = None;
+        let mut current_start = None;
+        let mut current_value = None;
+        let mut add_region = |start: u32, end: u32, value: f64| {
+            let meets_threshold = value >= depth_threshold.0 && value <= depth_threshold.1;
+            if meets_threshold || output_counts {
+                callable_regions.push(CallableRegion {
+                    begin: start,
+                    end,
+                    count: if meets_threshold { 1 } else { 0 },
+                });
+            }
+        };
+
+        // Process each position in the view
+        for pos in begin..end {
+            let (reported_pos, value) = view.next().unwrap().unwrap();
+            assert_eq!(reported_pos, pos);
+            let value = value as f64;
+            match (current_start, current_value) {
+                (Some(start), Some(prev_value)) if value == prev_value => {
+                    // Continue current region
+                    continue;
+                }
+                (Some(start), Some(prev_value)) => {
+                    // End current region and maybe start new one
+                    add_region(start, pos, prev_value);
+                    current_start = Some(pos);
+                    current_value = Some(value);
+                }
+                (None, None) => {
+                    // Start new region
+                    current_start = Some(pos);
+                    current_value = Some(value);
+                }
+                _ => {}
+            }
+        }
+
+        // Handle last region if exists
+        if let (Some(start), Some(value)) = (current_start, current_value) {
+            add_region(start, end, value);
+        }
+
+        Ok(callable_regions)
+    }
 }
 
 pub struct BGZID4MatrixReader {
@@ -68,7 +159,7 @@ impl BGZID4MatrixReader {
             .into_iter()
             .map(|p| BGZID4TrackReader::from_path(p, None))
             .collect();
-    
+
         Ok(Self { readers: readers? })
     }
     pub fn from_merged<P: AsRef<Path>>(src: P, track_names: Option<Vec<&str>>) -> Result<Self> {
@@ -226,228 +317,269 @@ impl BGZID4MatrixReader {
     }
 }
 
-pub fn run_bgzf_tasks<P: AsRef<Path>>(
-    d4_file: P,
-    threads: usize,
-    samples: Option<Vec<String>>,
-    regions: Vec<ChromRegion>,
-    mean_thresholds: (f64, f64),
-    depth_proportion: f64,
-    output_counts: bool,
+pub fn run_tasks(
+    d4_files: VecDeque<PathBuf>,
+    samples: Option<&[String]>,
+    args: LociArgs,
+    progress_bar: Option<ProgressBar>,
 ) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
-    let (region_sender, region_receiver): (
-        Sender<(String, u32, u32, f64, f64)>,
-        Receiver<(String, u32, u32, f64, f64)>,
-    ) = bounded(threads);
-    let (result_sender, result_receiver) = bounded(threads);
-    let total_chunks: u32 = regions
-        .iter()
-        .map(|r| (r.end - r.begin + CHUNK_SIZE - 1) / CHUNK_SIZE) // Ceiling division to count all chunks
-        .sum();
-    info!("Total chunks to process: {}", total_chunks);
-    let mut completed_chunks = 0;
+    let threads = args.threads;
+    let mean_thresholds = (args.mean_depth_min, args.mean_depth_max);
+    let min_proportion = args.depth_proportion;
 
-    let region_sender_thread = {
-        let region_sender = region_sender.clone();
-
-        thread::spawn(move || {
-            let chunked_regions: Vec<(String, u32, u32, f64, f64)> = regions
-                .into_iter()
-                .flat_map(|region| {
-                    (region.begin..region.end).step_by(CHUNK_SIZE as usize).map(
-                        move |chunk_start| {
-                            let chunk_end = (chunk_start + CHUNK_SIZE).min(region.end);
-                            (
-                                region.chr.clone(),
-                                chunk_start,
-                                chunk_end,
-                                region.min_filter,
-                                region.max_filter,
-                            )
-                        },
-                    )
-                })
-                .collect();
-
-            // Send each chunked region to the channel
-            for region in chunked_regions {
-                region_sender.send(region).expect("Failed to send region");
-            }
-            drop(region_sender); // Close the sender when done
-        })
-    };
-    let start_time = Instant::now();
-    let mut last_log_time = Instant::now();
-
-    let workers: Vec<_> = (0..threads)
-        .map(|_| {
-            let region_receiver = region_receiver.clone();
-            let result_sender = result_sender.clone();
-            let d4_file = d4_file.as_ref().to_path_buf();
-            let samples = samples.clone();
-            thread::spawn(move || {
-                let track_names = samples.as_ref().map(|sample_names| {
-                    sample_names
-                        .iter()
-                        .map(|s| s.as_str())
-                        .collect::<Vec<&str>>()
-                });
-
-                let mut matrix_rdr = if let Some(extension) = Path::new(&d4_file).extension().and_then(|e| e.to_str()) {
-                    match extension {
-                        "gz" => {
-                            BGZID4MatrixReader::from_merged(d4_file, track_names)
-                                .expect("Failed to create BgzfD4MatrixReader from merged")
-                        }
-                        // TODO write function to handle this and do error handling n stuff
-                        "txt" => {
-                            // Read paths from the .txt file
-                            let paths = std::fs::read_to_string(&d4_file)
-                                .expect("Failed to read paths from txt file")
-                                .lines()
-                                .map(|line| line.trim().to_string())
-                                .collect::<Vec<_>>();
-                            trace!("FOF Paths: {:?}", paths);
-                            // Filter paths based on track_names if provided
-                            let filtered_paths: Vec<_> = if let Some(track_names) = &track_names {
-                                trace!("FOF Track Names: {:?}", track_names);
-                                let track_name_set: HashSet<_> = track_names.iter().cloned().collect();
-                                paths
-                                    .into_iter()
-                                    .filter(|path| {
-                                        track_name_set.iter().any(|track_name| path.contains(track_name))
-                                    })
-                                    .collect()
-                            } else {
-                                paths
-                            };
-                            
-                            trace!("Filtered paths: {:?}", filtered_paths);
-                            BGZID4MatrixReader::from_paths(filtered_paths)
-                                .expect("Failed to create BgzfD4MatrixReader from paths")
-                        }
-                        _ => panic!("Unsupported file extension: {}", extension),
-                    }
-                } else {
-                    panic!("File does not have a valid extension");
-                };
-                let tid = thread::current().id();
-
-                // Process each region received from the region channel
-                for (chrom, begin, end, per_sample_min, per_sample_max) in region_receiver.iter() {
-                    trace!(
-                        "TID: {:?} | Processing region: {}:{}-{}",
-                        tid,
-                        chrom,
-                        begin,
-                        end
-                    );
-                    let start_time = Instant::now();
-                    let callable = matrix_rdr
-                        .get_callable_regions(
-                            &chrom,
-                            begin,
-                            end,
-                            (per_sample_min, per_sample_max),
-                            mean_thresholds,
-                            depth_proportion,
-                            output_counts,
-                        )
-                        .expect("Failed to get callable regions");
-
-                    // Send the result back through the result channel
-                    let duration = start_time.elapsed();
-                    trace!(
-                        "TID: {:?} | Processed region: {}:{}-{} in {:?}",
-                        tid,
-                        chrom,
-                        begin,
-                        end,
-                        duration
-                    );
-                    result_sender
-                        .send((chrom, callable))
-                        .expect("Failed to send result");
-                }
+    let files = if let Some(sample_names) = samples {
+        d4_files
+            .into_iter()
+            .filter(|path| {
+                let path_str = path.to_string_lossy();
+                sample_names.iter().any(|sample| path_str.contains(sample))
             })
-        })
-        .collect();
+            .collect()
+    } else {
+        d4_files
+    };
+    
+    let num_files = files.len();
+    let regions = {
+        let reader = BGZID4TrackReader::from_path(files.front().unwrap(), None)?;
+        super::regions::prepare_chrom_regions(
+            reader.chrom_regions(),
+            args.get_per_sample_thresholds(),
+            args.exclude_chrs.as_ref(),
+        )?
+    };
 
-    // Drop the original senders so worker threads will end when the region_sender_thread completes
-    drop(region_sender);
-    drop(result_sender);
+    let work_queue = Arc::new(Mutex::new(files));
 
-    let mut callable_map: HashMap<String, Vec<CallableRegion>> = HashMap::new();
-    for (chrom, callable_regions) in result_receiver {
-        callable_map
-            .entry(chrom)
-            .or_insert_with(Vec::new)
-            .extend(callable_regions);
-        completed_chunks += 1;
+    let global_counts = Arc::new(Mutex::new(GlobalCounts::new(&regions)));
 
-        // Log progress every 10 chunks
-        if completed_chunks % 10 == 0 {
-            let elapsed_for_last_10 = last_log_time.elapsed();
-            last_log_time = Instant::now(); // Reset for the next 10 chunks
-            let total_elapsed = start_time.elapsed();
+    thread::scope(|scope| {
+        for i in 0..threads {
+            trace!("Spawned worker {}", i);
+            let work_queue = Arc::clone(&work_queue);
+            let regions = &regions;
+            let accumulator = Arc::clone(&global_counts);
+            let bar = progress_bar.clone();
+            scope.spawn(move || -> Result<()> {
+                trace!("Worker {} starting...", i);
+                loop {
+                    let next_file = {
+                        let mut queue = work_queue.lock().unwrap();
+                        queue.pop_front()
+                    };
 
-            info!(
-                "Processed {} chunks out of {} ({:.2}%) | Last 10 chunks in {:?} | Total time: {:?}",
-                completed_chunks,
-                total_chunks,
-                completed_chunks as f64 / total_chunks as f64 * 100.0,
-                elapsed_for_last_10,
-                total_elapsed
-            );
-        }
-    }
-
-    // Wait for the region sender thread to complete
-    region_sender_thread
-        .join()
-        .expect("Region sender thread panicked");
-
-    // Wait for all worker threads to complete
-    for worker in workers {
-        worker.join().expect("Worker thread panicked");
-    }
-    for regions in callable_map.values_mut() {
-        regions.sort_by_key(|region| region.begin);
-
-        let mut merged_regions = Vec::new();
-        let mut current_region: Option<CallableRegion> = None;
-
-        for region in regions.drain(..) {
-            if let Some(mut r) = current_region.take() {
-                // Check if the current region is contiguous with the next
-                if r.end == region.begin && r.count == region.count {
-                    // Extend the current region
-                    r.end = region.end;
-                    current_region = Some(r);
-                } else {
-                    // Push the previous region and start a new one
-                    merged_regions.push(r);
-                    current_region = Some(region);
+                    match next_file {
+                        Some(file) => {
+                            let mut rdr = BGZID4TrackReader::from_path(file, None)?;
+                            for region in regions {
+                                let res = rdr.get_depth(
+                                    &region.chr,
+                                    region.begin,
+                                    region.end,
+                                    (region.min_filter, region.max_filter),
+                                )?;
+                                {
+                                    let mut accumulator = accumulator.lock().unwrap();
+                                    accumulator.merge(res);
+                                }
+                            }
+                            if let Some(ref bar) = bar {
+                                bar.inc(1);
+                            }
+                        }
+                        None => break,
+                    }
                 }
-            } else {
-                // Start with the first region
-                current_region = Some(region);
-            }
+                Ok(())
+            });
         }
-        // Push the final region
-        if let Some(r) = current_region {
-            merged_regions.push(r);
-        }
+    });
 
-        // Replace the old regions with merged regions
-        *regions = merged_regions;
-    }
+    let global_counts = Arc::try_unwrap(global_counts)
+        .map_err(|_| anyhow::anyhow!("Failed to unwrap global counts"))?
+        .into_inner()
+        .map_err(|_| anyhow::anyhow!("Failed to get inner value of global counts"))?;
 
-    // Convert the merged map into the desired Vec format for BED output
-    let regions: Vec<(String, u32, Vec<CallableRegion>)> = callable_map
-        .into_iter()
-        .map(|(chrom, callable_regions)| (chrom, 0, callable_regions)) // Use 0 as `begin` for each chromosome
-        .collect();
-
-    Ok(regions)
+    Ok(global_counts.finalize(min_proportion, mean_thresholds, num_files))
 }
+
+// pub fn run_bgzf_tasks<P: AsRef<Path>>(
+//     d4_file: P,
+//     threads: usize,
+//     samples: Option<Vec<String>>,
+//     regions: Vec<ChromRegion>,
+//     depth_thresholds: (f64, f64),
+//     min_proportion: f64,
+//     output_counts: bool,
+// ) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
+//     // Initialize global counts
+//     let global_counts = Arc::new(Mutex::new(GlobalCounts::new(&regions)));
+
+//     let d4_path = d4_file.as_ref();
+
+//     // Get list of tracks/files to process
+//     let file_queue: VecDeque<(PathBuf, Option<String>)> = if let Some(extension) = d4_path.extension().and_then(|e| e.to_str()) {
+//         match extension {
+//             "gz" => {
+//                 // For merged files, we'll read tracks from the same file but with different track names
+//                 let indexed_reader = build_bgzf_reader(d4_path)?;
+//                 let mut track_paths = vec![];
+//                 find_tracks(indexed_reader, |_| true, &mut track_paths)?;
+
+//                 let tracks: VecDeque<_> = if let Some(ref sample_names) = samples {
+//                     track_paths.into_iter()
+//                         .filter_map(|track_path| {
+//                             let track_str = track_path.to_string_lossy();
+//                             if sample_names.iter().any(|sample| track_str.contains(sample)) {
+//                                 Some((d4_path.to_path_buf(), Some(track_str.into_owned())))
+//                             } else {
+//                                 None
+//                             }
+//                         })
+//                         .collect()
+//                 } else {
+//                     track_paths.into_iter()
+//                         .map(|track_path| {
+//                             (d4_path.to_path_buf(), Some(track_path.to_string_lossy().into_owned()))
+//                         })
+//                         .collect()
+//                 };
+//                 tracks
+//             },
+//             "txt" => {
+//                 // For file of files, read separate files
+//                 let paths: VecDeque<(PathBuf, Option<String>)> = std::fs::read_to_string(d4_path)?
+//                     .lines()
+//                     .map(|line| (PathBuf::from(line.trim()), None))
+//                     .filter(|(path, _)| {
+//                         if let Some(ref sample_names) = samples {
+//                             let path_str = path.to_string_lossy();
+//                             sample_names.iter().any(|sample| path_str.contains(sample))
+//                         } else {
+//                             true
+//                         }
+//                     })
+//                     .collect();
+//                 paths
+//             },
+//             _ => return Err(anyhow::anyhow!("Unsupported file extension")),
+//         }
+//     } else {
+//         return Err(anyhow::anyhow!("File has no extension"));
+//     };
+
+//     let num_files = file_queue.len();
+//     info!("Processing {} files", num_files);
+
+//     // Create shared work queue
+//     let work_queue = Arc::new(Mutex::new(file_queue));
+
+//     // Track progress
+//     let start_time = Instant::now();
+//     let files_processed = Arc::new(Mutex::new(0usize));
+//     let last_log_time = Arc::new(Mutex::new(Instant::now()));
+
+//     // Use scope to ensure all threads complete before we finalize results
+//     thread::scope(|scope| {
+//         let mut handles = Vec::new();
+
+//         // Spawn worker threads
+//         for thread_id in 0..threads {
+//             let work_queue = Arc::clone(&work_queue);
+//             let global_counts = Arc::clone(&global_counts);
+//             let files_processed = Arc::clone(&files_processed);
+//             let last_log_time = Arc::clone(&last_log_time);
+//             let regions = regions.clone();
+
+//             handles.push(scope.spawn(move || {
+//                 loop {
+//                     // Get next file from queue
+//                     let work_item = {
+//                         let mut queue = work_queue.lock().unwrap();
+//                         queue.pop_front()
+//                     };
+
+//                     // Break if no more files
+//                     let (file_path, track_name) = match work_item {
+//                         Some(item) => item,
+//                         None => break,
+//                     };
+
+//                     trace!("Thread {} processing file: {} track: {:?}",
+//                           thread_id, file_path.display(), track_name);
+
+//                     // Process the file
+//                     match process_single_file(&file_path, track_name.as_deref(), &regions, depth_thresholds) {
+//                         Ok(sample_regions) => {
+//                             // Add results to global counts
+//                             let mut global = global_counts.lock().unwrap();
+//                             // global.add_sample_regions(sample_regions);
+
+//                             // Update progress
+//                             let mut processed = files_processed.lock().unwrap();
+//                             *processed += 1;
+
+//                             // Log progress every 5 files or at completion
+//                             if *processed % 5 == 0 || *processed == num_files {
+//                                 let mut last_time = last_log_time.lock().unwrap();
+//                                 let elapsed_since_last = last_time.elapsed();
+//                                 *last_time = Instant::now();
+
+//                                 info!(
+//                                     "Processed {}/{} files ({:.1}%) | Last 5 files in {:?} | Total time: {:?}",
+//                                     processed,
+//                                     num_files,
+//                                     (*processed as f64 / num_files as f64) * 100.0,
+//                                     elapsed_since_last,
+//                                     start_time.elapsed()
+//                                 );
+//                             }
+//                         },
+//                         Err(e) => {
+//                             warn!("Failed to process file {}: {}", file_path.display(), e);
+//                         }
+//                     }
+//                 }
+//             }));
+//         }
+
+//         // Wait for all threads to complete
+//         for handle in handles {
+//             handle.join().unwrap();
+//         }
+//     });
+
+//     // Finalize results
+//     let global_counts = Arc::try_unwrap(global_counts)
+//         .map_err(|_| anyhow::anyhow!("Failed to unwrap global counts"))?
+//         .into_inner()
+//         .map_err(|_| anyhow::anyhow!("Failed to get inner value of global counts"))?;
+
+//     Ok(global_counts.finalize(min_proportion, 0.0, 100))
+// }
+
+// fn process_single_file(
+//     file_path: &Path,
+//     track_name: Option<&str>,
+//     regions: &[ChromRegion],
+//     depth_thresholds: (f64, f64),
+// ) -> Result<Vec<(String, Vec<CallableRegion>)>> {
+//     let mut reader = BGZID4TrackReader::from_path(file_path, track_name)?;
+//     let mut results = Vec::new();
+
+//     for region in regions {
+//         let callable_regions = reader.get_callable_regions(
+//             &region.chr,
+//             region.begin,
+//             region.end,
+//             depth_thresholds,
+//             false,  // output_counts handled at merge time
+//         )?;
+
+//         if !callable_regions.is_empty() {
+//             results.push((region.chr.clone(), callable_regions));
+//         }
+//     }
+
+//     Ok(results)
+// }

@@ -9,7 +9,6 @@ use assert_cmd::prelude::*;
 use d4::find_tracks_in_file;
 use d4::ssio::D4TrackReader;
 use log::debug;
-use rstest::*;
 
 /// Compare two files byte-by-byte to check if they are the same.
 fn files_are_equal<P: AsRef<Path> + Clone>(file1: P, file2: P) -> Result<bool> {
@@ -106,8 +105,6 @@ fn d4_files_are_equal<P: AsRef<Path> + Clone>(
     Ok(true) // All data matched
 }
 
-/// Fixtures
-
 fn init_logger() {
     let _ = env_logger::builder()
         .target(env_logger::Target::Stdout)
@@ -116,97 +113,42 @@ fn init_logger() {
         .try_init();
 }
 
-#[fixture]
-fn clam_command() -> Command {
-    Command::cargo_bin("clam").unwrap()
-}
-
-/// Utility function for file equality
 fn file_paths(
     test_case: &str,
-    output_ext: &str,
+    outdir: &str,
     truth_file: &str,
-    bgzip: bool
-) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
-    let input_file_str = if bgzip {format!("tests/data/loci/{}/merged.d4.gz", test_case)} else {format!("tests/data/loci/{}/merged.d4", test_case)};
+    bgzip: bool,
+) -> (PathBuf, PathBuf, PathBuf) {
+    let input_file_str = if bgzip {
+        format!("tests/data/loci/{}/filelist.txt", test_case)
+    } else {
+        format!("tests/data/loci/{}/merged.d4", test_case)
+    };
     let input_file = PathBuf::from_str(&input_file_str).unwrap();
-    let output_prefix = PathBuf::from_str(&format!("tests/data/loci/{}/output", test_case)).unwrap();
-    let output_file = output_prefix.with_extension(output_ext);
+    let output_dir = PathBuf::from_str(outdir).unwrap();
     let expected_file =
         PathBuf::from_str(&format!("tests/data/loci/{}/{}", test_case, truth_file)).unwrap();
-    (input_file, output_prefix, output_file, expected_file)
+    (input_file, output_dir, expected_file)
 }
 
-/// Parameterized Tests
-#[rstest]
-#[case("test_no_pops", "bed", "truth.bed", vec!["--no-counts", "-d", "0.5", "-u", "6"])]
-#[case("test_no_pops", "d4", "truth_counts.d4", vec![])]
-#[case("test_pops", "d4", "counts.d4", vec!["-p", "tests/data/loci/test_pops/populations.tsv"])]
-fn loci_tests(
-    #[case] test_case: &str,
-    #[case] output_ext: &str,
-    #[case] truth_file: &str,
-    #[case] extra_args: Vec<&str>,
-    mut clam_command: Command,
-) -> Result<()> {
+#[test]
+fn test_merged_pops() -> Result<()> {
     init_logger();
-    let (input_file, output_prefix, output_file, expected_output_file) =
-        file_paths(test_case, output_ext, truth_file, false);
-
-    let chrom = "sq0";
-    let begin = 0;
-    let end = 1000;
-
-    clam_command
-        .arg("loci")
-        .arg(&input_file)
-        .arg(&output_prefix)
-        .arg("-m")
-        .arg("3")
-        .arg("-M")
-        .arg("15")
-        .args(&extra_args);
-
-    let output = clam_command.output()?;
-    log::debug!("stdout: {}", String::from_utf8_lossy(&output.stdout));
-    log::debug!("stderr: {}", String::from_utf8_lossy(&output.stderr));
-
-    if output_ext == "bed" {
-        assert!(files_are_equal(expected_output_file, output_file.clone())?);
-    } else if output_ext == "d4" {
-        assert!(d4_files_are_equal(expected_output_file, output_file.clone(), chrom, begin, end)?);
-    }
-
-    std::fs::remove_file(output_file)?;
-
-    Ok(())
-}
-
-
-#[rstest]
-#[case("test_no_pops/bgzf", "d4", "truth_counts.d4", vec![])]
-#[case("test_no_pops/bgzf", "bed", "truth.bed", vec!["--no-counts", "-d", "0.5", "-u", "6"])]
-#[case("test_pops/bgzf", "d4", "counts.d4", vec!["-p", "tests/data/loci/test_pops/populations.tsv"])]
-fn loci_bgzf_tests(
+    let input_file = "tests/data/loci/test_pops/merged.d4";
+    let output_dir = "tests/data/loci/test_pops/output";
+    let extra_args = vec![
+        "-p",
+        "tests/data/loci/test_pops/populations.tsv",
+        "--merged",
+    ];
     
-    #[case] test_case: &str,
-    #[case] output_ext: &str,
-    #[case] truth_file: &str,
-    #[case] extra_args: Vec<&str>,
-    mut clam_command: Command,
-) -> Result<()> {
-    init_logger();
-    let (input_file, output_prefix, output_file, expected_output_file) =
-        file_paths(test_case, output_ext, truth_file, true);
-
-    let chrom = "sq0";
-    let begin = 0;
-    let end = 1000;
-
-    clam_command
+    std::fs::remove_dir_all(output_dir);
+    let mut cmd = Command::cargo_bin("clam").unwrap();
+    let clam_command = cmd
         .arg("loci")
         .arg(&input_file)
-        .arg(&output_prefix)
+        .arg("-o")
+        .arg(&output_dir)
         .arg("-m")
         .arg("3")
         .arg("-M")
@@ -217,15 +159,99 @@ fn loci_bgzf_tests(
     log::debug!("stdout: {}", String::from_utf8_lossy(&output.stdout));
     log::debug!("stderr: {}", String::from_utf8_lossy(&output.stderr));
 
-    if output_ext == "bed" {
-        assert!(files_are_equal(expected_output_file, output_file.clone())?);
-    } else if output_ext == "d4" {
-        assert!(d4_files_are_equal(expected_output_file, output_file.clone(), chrom, begin, end)?);
-    }
+    let output_d4 = "tests/data/loci/test_pops/output/callable_sites.d4";
+    let truth_d4 = "tests/data/loci/test_pops/counts.d4";
 
-    std::fs::remove_file(output_file)?;
-
+    let chrom = "sq0";
+    let begin = 0;
+    let end = 1000;
+    assert!(d4_files_are_equal(
+        truth_d4,
+        output_d4.clone(),
+        chrom,
+        begin,
+        end
+    )?);
+    std::fs::remove_dir_all(output_dir)?;
     Ok(())
 }
 
+#[test]
+fn test_merged_no_pops() -> Result<()> {
+    init_logger();
+    let input_file = "tests/data/loci/test_no_pops/merged.d4";
+    let output_dir = "tests/data/loci/test_no_pops/output";
+    let extra_args = vec!["--merged"];
+    std::fs::remove_dir_all(output_dir);
+    let mut cmd = Command::cargo_bin("clam").unwrap();
+    let clam_command = cmd
+        .arg("loci")
+        .arg(&input_file)
+        .arg("-o")
+        .arg(&output_dir)
+        .arg("-m")
+        .arg("3")
+        .arg("-M")
+        .arg("15")
+        .args(&extra_args);
 
+    let output = clam_command.output()?;
+    log::debug!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+    log::debug!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let output_d4 = "tests/data/loci/test_no_pops/output/callable_sites.d4";
+    let truth_d4 = "tests/data/loci/test_no_pops/truth_counts.d4";
+
+    let chrom = "sq0";
+    let begin = 0;
+    let end = 1000;
+    assert!(d4_files_are_equal(
+        truth_d4,
+        output_d4.clone(),
+        chrom,
+        begin,
+        end
+    )?);
+    std::fs::remove_dir_all(output_dir)?;
+    Ok(())
+}
+
+#[test]
+fn test_multid4_no_pops() -> Result<()> {
+    init_logger();
+    let input_file = "tests/data/loci/test_no_pops/bgzf/filelist.txt";
+    let output_dir = "tests/data/loci/test_no_pops/bgzf/output";
+
+    std::fs::remove_dir_all(output_dir);
+    let mut cmd = Command::cargo_bin("clam").unwrap();
+    let clam_command = cmd
+        .arg("loci")
+        .arg("-f")
+        .arg(&input_file)
+        .arg("-o")
+        .arg(&output_dir)
+        .arg("-m")
+        .arg("3")
+        .arg("-M")
+        .arg("15");
+
+    let output = clam_command.output()?;
+    log::debug!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+    log::debug!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+
+    let output_d4 = "tests/data/loci/test_no_pops/bgzf/output/callable_sites.d4";
+    let truth_d4 = "tests/data/loci/test_no_pops/bgzf/truth_counts.d4";
+
+    let chrom = "sq0";
+    let begin = 0;
+    let end = 1000;
+    assert!(d4_files_are_equal(
+        truth_d4,
+        output_d4.clone(),
+        chrom,
+        begin,
+        end
+    )?);
+    std::fs::remove_dir_all(output_dir)?;
+    Ok(())
+}
