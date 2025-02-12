@@ -307,7 +307,7 @@ fn process_gvcf(
         {
             let sample_names: Vec<String> = samples.iter().map(|&s| s.to_string()).collect();
 
-            let res = d4_bgzf::run_tasks(
+            let res = gvcf::run_tasks(
                 files.clone(),
                 Some(&sample_names),
                 args.clone(),
@@ -339,7 +339,7 @@ fn process_gvcf(
             population_map.get_popname_refs(),
         )?;
     } else {
-        let res = d4_bgzf::run_tasks(files, None, args.clone(), progress_bar)?;
+        let res = gvcf::run_tasks(files, None, args.clone(), progress_bar)?;
         io::write_d4_parallel::<PathBuf>(
             &res,
             chroms,
