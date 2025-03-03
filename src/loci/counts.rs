@@ -104,7 +104,7 @@ impl AccumulatedCounts {
                     continue;
                 }
                 (Some(start), Some((prev_count, prev_depth))) => {
-                    add_region(start, pos, prev_count, prev_depth);
+                    add_region(start, pos+1, prev_count, prev_depth);
                     if count > 0 {
                         current_start = Some(pos);
                         current_stats = Some((count, depth_sum));

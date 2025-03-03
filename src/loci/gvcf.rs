@@ -43,7 +43,7 @@ impl GvcfReader {
             if let Some(length) = contig.length() {
                 res.push((
                     name.as_str(),
-                    1,                                     // start position
+                    0,                                     // start position
                     length.try_into().unwrap_or(u32::MAX), // convert usize to u32
                 ));
             }
@@ -59,7 +59,7 @@ impl GvcfReader {
         depth_threshold: (f64, f64), // min and max depth thresholds
     ) -> Result<ChromosomeCounts> {
         let mut counts = ChromosomeCounts::new(chrom.to_string(), begin, end);
-        let region: Region = format!("{}:{}-{}", chrom, begin, end).parse()?;
+        let region: Region = format!("{}:{}-{}", chrom, begin+1, end).parse()?;
         let query = self.inner.query(&self.header, &region)?;
         trace!("Querying GVCF region {}:{}-{}", chrom, begin, end);
         for result in query {
@@ -114,20 +114,22 @@ impl GvcfReader {
                 continue;
             };
             let array_start = (startpos.get() - 1) as usize;
-            let array_end = (endpos - 1) as usize;
-            trace!(
-                "Record at {}:{}-{} DP={}, END={}, GQ={}",
-                chrom,
-                array_start + 1,
-                array_end + 1,
-                dp,
-                endpos,
-                gq
-            );
-            for idx in array_start..=array_end {
+            let array_end = endpos as usize;
+            
+            for idx in array_start..array_end {
                 if idx < counts.counts.len() {
                     counts.depth_sums[idx] = dp as u32;
                     if gq > 0 && (dp as f64) >= depth_threshold.0 && (dp as f64) <= depth_threshold.1 {
+                        trace!(
+                            "Record at {}:{}-{} IDX={}, DP={}, END={}, GQ={}",
+                            chrom,
+                            array_start,
+                            array_end,
+                            idx,
+                            dp,
+                            endpos,
+                            gq
+                        );
                         counts.counts.set(idx, true);
                     }
                 }

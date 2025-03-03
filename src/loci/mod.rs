@@ -283,12 +283,17 @@ fn process_gvcf(
 ) -> Result<()> {
     let chroms: Vec<d4::Chrom> = {
         let reader = gvcf::GvcfReader::from_path(files.front().unwrap())?;
-        let chrom_regions = reader.chrom_regions();
+        let chrom_regions = regions::prepare_chrom_regions(
+            reader.chrom_regions(),
+            args.get_per_sample_thresholds(),
+            args.exclude_chrs.as_ref(),
+            args.include_chrs.as_ref(),
+        )?;
         chrom_regions
             .iter()
             .map(|r| d4::Chrom {
-                name: r.0.to_string(),
-                size: r.2.try_into().unwrap(),
+                name: r.chr.to_string(),
+                size: r.end.try_into().unwrap(),
             })
             .collect()
     };
