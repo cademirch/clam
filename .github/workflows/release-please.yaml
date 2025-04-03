@@ -1,0 +1,49 @@
+name: release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # First job: run release-please to create releases and tags
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          release-type: rust
+
+  # Second job: upload binaries if a release was created
+  upload:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: clam
+          target: ${{ matrix.target }}
+          checksum: "md5"
+          ref: refs/tags/${{ needs.release-please.outputs.tag_name }}
+          tar: unix
+          zip: none
+          token: ${{ secrets.GITHUB_TOKEN }}
