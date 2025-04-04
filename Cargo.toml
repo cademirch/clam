@@ -19,7 +19,7 @@ log = "0.4.22"
 noodles = { version = "0.89.0", features = ["core", "vcf", "bgzf", "bed", "tabix", "csi"] }
 noodles-bgzf = { version = "0.33.0", features = ["libdeflate"] }
 serde = { version = "1.0.214", features = ["derive"] }
-d4 = {git = "https://github.com/38/d4-format.git"}
+d4 = {git = "https://github.com/cademirch/d4-format.git"}
 rayon = "1.10.0"
 tempfile = "3.13.0"
 env_logger = "0.11.5"

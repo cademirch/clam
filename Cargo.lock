@@ -469,7 +469,7 @@ dependencies = [
 [[package]]
 name = "d4"
 version = "0.3.11"
-source = "git+https://github.com/38/d4-format.git#480e0a36a453fd3ec40b6768458f8892e6f36510"
+source = "git+https://github.com/cademirch/d4-format.git#c455f512fc59e1de952203ae0af0b29cde07e7df"
 dependencies = [
  "d4-framefile",
  "d4-hts",
@@ -487,7 +487,7 @@ dependencies = [
 [[package]]
 name = "d4-framefile"
 version = "0.3.6"
-source = "git+https://github.com/38/d4-format.git#480e0a36a453fd3ec40b6768458f8892e6f36510"
+source = "git+https://github.com/cademirch/d4-format.git#c455f512fc59e1de952203ae0af0b29cde07e7df"
 dependencies = [
  "memmap",
 ]
@@ -495,7 +495,7 @@ dependencies = [
 [[package]]
 name = "d4-hts"
 version = "0.3.11"
-source = "git+https://github.com/38/d4-format.git#480e0a36a453fd3ec40b6768458f8892e6f36510"
+source = "git+https://github.com/cademirch/d4-format.git#c455f512fc59e1de952203ae0af0b29cde07e7df"
 dependencies = [
  "bindgen",
  "pkg-config",
