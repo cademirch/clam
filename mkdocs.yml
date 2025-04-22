@@ -1,6 +1,29 @@
 site_name: clam
 repo_url: https://github.com/cademirch/clam
 
+
+
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - tables
+  - def_list
+  - pymdownx.caret
+  - pymdownx.tilde
 theme:
   name: "material"
   palette:
@@ -26,3 +49,4 @@ theme:
   features:
     - toc.follow
     - content.action.edit
+    - navigation.footer
