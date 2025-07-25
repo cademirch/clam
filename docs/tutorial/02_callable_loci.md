@@ -47,8 +47,8 @@ The following options control if a site is considered callable at the sample lev
     chrX    15    150
     ```
 
-#### Population-Level Thresholds
-The following options control if a site is considered callable at the population level.
+#### Site-Level Thresholds
+The following options control if a site is considered callable.
 `-d, --depth-proportion`
 :  Proportion of samples that must pass thresholds (0.0-1.0, default: 0)
 

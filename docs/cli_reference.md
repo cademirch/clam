@@ -7,9 +7,10 @@ This page contains the help content for the `clam` command-line program.
 
 **Command Overview:**
 
-* [`clam`↴](#clam)
-* [`clam loci`↴](#clam-loci)
-* [`clam stat`↴](#clam-stat)
+- [Command-Line Help for `clam`](#command-line-help-for-clam)
+  - [`clam`](#clam)
+  - [`clam loci`](#clam-loci)
+  - [`clam stat`](#clam-stat)
 
 ## `clam`
 
@@ -53,7 +54,7 @@ Sample-level Thresholds:
       --thresholds-file <THRESHOLD_FILE>
           Custom thresholds per chromosome. Tab-separated file: chrom, min, max
 
-Population-level Thresholds:
+Site-level Thresholds:
   -d, --depth-proportion <DEPTH_PROPORTION>
           Proportion of samples that must pass thresholds at a site to consider it callable. Value between 0.0 and 1.0 [default: 0]
   -u, --min-mean-depth <MEAN_DEPTH_MIN>
