@@ -96,15 +96,14 @@ pub struct LociArgs {
     )]
     pub threshold_file: Option<Utf8PathBuf>,
 
-    // === Population-level Threshold Options ===
+    // === Site-level Threshold Options ===
     /// Proportion of samples that must pass thresholds at a site to consider it callable.
     /// Value between 0.0 and 1.0.
     #[arg(
         short = 'd',
         long = "depth-proportion",
         default_value_t = 0.0,
-        conflicts_with("population_file"),
-        help_heading = "Population-level Thresholds"
+        help_heading = "Site-level Thresholds"
     )]
     pub depth_proportion: f64,
 
@@ -113,8 +112,7 @@ pub struct LociArgs {
         short = 'u',
         long = "min-mean-depth",
         default_value_t = 0.0,
-        conflicts_with("population_file"),
-        help_heading = "Population-level Thresholds"
+        help_heading = "Site-level Thresholds"
     )]
     pub mean_depth_min: f64,
 
@@ -123,8 +121,7 @@ pub struct LociArgs {
         short = 'U', 
         long = "max-mean-depth", 
         default_value_t = f64::INFINITY, 
-        conflicts_with("population_file"),
-        help_heading = "Population-level Thresholds"
+        help_heading = "Site-level Thresholds"
     )]
     pub mean_depth_max: f64,
 
