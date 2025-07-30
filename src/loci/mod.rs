@@ -447,34 +447,47 @@ fn process_multi_d4(
         .collect();
 
     if let Some(population_map) = &args.population_map {
-        let progress_bar = if let Some(bar) = progress_bar {
-            bar.set_length(files.len() as u64);
-            Some(bar)
-        } else {
-            None
-        };
-        let mut temp_file_paths = Vec::with_capacity(population_map.num_populations());
-        for (idx, samples) in population_map
-            .get_samples_per_population()
-            .iter()
-            .enumerate()
-        {
-            let sample_names: Vec<String> = samples.iter().map(|&s| s.to_string()).collect();
+        let (global_res, pop_res) = d4_bgzf::run_tasks(
+            files.clone(),
+            None, 
+            args.clone(),
+            progress_bar,
+        )?;
 
-            let res = d4_bgzf::run_tasks(
-                files.clone(),
-                Some(&sample_names),
-                args.clone(),
-                progress_bar.clone(),
+        // Write global result
+        let _ = io::write_d4_parallel::<PathBuf>(
+            &global_res,
+            chroms.clone(),
+            Some(
+                args.outdir
+                    .join("callable_sites.d4")
+                    .as_std_path()
+                    .to_path_buf(),
+            ),
+        )?;
+        if args.write_bed {
+            let _ = io::write_bed(
+                args.outdir
+                    .join("callable_sites.bed")
+                    .as_std_path()
+                    .to_path_buf(),
+                &global_res,
             )?;
+        }
 
-            temp_file_paths.push(io::write_d4_parallel::<PathBuf>(
+        // Write per-population results
+        for (idx, res) in pop_res.into_iter().enumerate() {
+            let population_name = population_map.get_popname_refs()[idx];
+            let _ = io::write_d4_parallel::<PathBuf>(
                 &res,
                 chroms.clone(),
-                None,
-            )?);
-
-            let population_name = population_map.get_popname_refs()[idx];
+                Some(
+                    args.outdir
+                        .join(format!("{}_callable_sites.d4", population_name))
+                        .as_std_path()
+                        .to_path_buf(),
+                ),
+            )?;
             if args.write_bed {
                 let _ = io::write_bed(
                     args.outdir
@@ -483,21 +496,12 @@ fn process_multi_d4(
                         .to_path_buf(),
                     &res,
                 );
-            };
+            }
         }
-
-        let _ = io::merge_d4_files(
-            args.outdir
-                .join("callable_sites.d4")
-                .as_std_path()
-                .to_path_buf(),
-            temp_file_paths,
-            population_map.get_popname_refs(),
-        )?;
     } else {
-        let res = d4_bgzf::run_tasks(files, None, args.clone(), progress_bar)?;
+        let (global_res, _) = d4_bgzf::run_tasks(files, None, args.clone(), progress_bar)?;
         let _ = io::write_d4_parallel::<PathBuf>(
-            &res,
+            &global_res,
             chroms,
             Some(
                 args.outdir
@@ -512,9 +516,9 @@ fn process_multi_d4(
                     .join("callable_sites.bed")
                     .as_std_path()
                     .to_path_buf(),
-                &res,
+                &global_res,
             )?;
-        };
+        }
     }
 
     Ok(())
