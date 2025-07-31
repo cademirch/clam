@@ -113,8 +113,6 @@ impl Population {
         }
     }
 
-    
-
     pub fn to_pi_record(&self, chrom: &str, begin: u32, end: u32) -> PiRecord {
         let pi = self.calc_pi();
         PiRecord::new(
@@ -177,7 +175,6 @@ impl FstStats {
         }
     }
 }
-
 
 impl Window {
     pub fn from_regions(

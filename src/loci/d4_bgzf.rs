@@ -316,8 +316,7 @@ impl BGZID4MatrixReader {
 }
 
 pub fn run_tasks(
-    d4_files: VecDeque<PathBuf>,
-    samples: Option<&[String]>,
+    work_queue: VecDeque<(PathBuf, Option<usize>)>,
     args: LociArgs,
     progress_bar: Option<ProgressBar>,
 ) -> Result<(
@@ -327,22 +326,10 @@ pub fn run_tasks(
     let threads = args.threads;
     let mean_thresholds = (args.mean_depth_min, args.mean_depth_max);
     let min_proportion = args.depth_proportion;
+    let total_num_samples = work_queue.len();
 
-    let files = if let Some(sample_names) = samples {
-        d4_files
-            .into_iter()
-            .filter(|path| {
-                let path_str = path.to_string_lossy();
-                sample_names.iter().any(|sample| path_str.contains(sample))
-            })
-            .collect()
-    } else {
-        d4_files
-    };
-
-    let num_files = files.len();
     let regions = {
-        let reader = BGZID4TrackReader::from_path(files.front().unwrap(), None)?;
+        let reader = BGZID4TrackReader::from_path(work_queue.front().unwrap().0.clone(), None)?;
         super::regions::prepare_chrom_regions(
             reader.chrom_regions(),
             args.get_per_sample_thresholds(),
@@ -353,50 +340,21 @@ pub fn run_tasks(
 
     let global_counts = Arc::new(Mutex::new(GlobalCounts::new(&regions)));
 
-    let (pop_accumulator, work_queue, pop_map, sample_to_pop) = if let Some(pop_map) =
-        &args.population_map
-    {
-        let sample_to_pop: std::collections::HashMap<String, usize> = pop_map
-            .get_samples_per_population()
-            .iter()
-            .enumerate()
-            .flat_map(|(pop_idx, samples)| samples.iter().map(move |s| (s.to_string(), pop_idx)))
-            .collect();
-
-        let pop_accumulator = Arc::new(Mutex::new(
-            (0..pop_map.num_populations())
-                .map(|_| GlobalCounts::new(&regions))
-                .collect::<Vec<_>>(),
-        ));
-
-        let work_queue = Arc::new(Mutex::new(
-            files
-                .iter()
-                .map(|file| {
-                    let fname = file.file_stem().unwrap().to_string_lossy().to_string();
-                    let pop_idx = sample_to_pop.get(&fname).copied().unwrap();
-                    (file.clone(), Some(pop_idx))
-                })
-                .collect::<VecDeque<_>>(),
-        ));
-
-        (
-            Some(pop_accumulator),
-            Some(work_queue),
-            Some(pop_map),
-            Some(sample_to_pop),
-        )
-    } else {
-        (None, None, None, None)
-    };
+    let (pop_accumulator, pop_map) = if let Some(pop_map) = &args.population_map {
+    let pop_accumulator = Arc::new(Mutex::new(
+        (0..pop_map.num_populations())
+            .map(|_| GlobalCounts::new(&regions))
+            .collect::<Vec<_>>(),
+    ));
+    (Some(pop_accumulator), Some(pop_map))
+} else {
+    (None, None)
+};
+    let work_queue = Arc::new(Mutex::new(work_queue));
 
     thread::scope(|scope| {
         for i in 0..threads {
-            let work_queue = if let Some(ref wq) = work_queue {
-                Arc::clone(wq)
-            } else {
-                Arc::new(Mutex::new(VecDeque::new()))
-            };
+            let work_queue = Arc::clone(&work_queue);
             let regions = &regions;
             let pop_accumulator = pop_accumulator.as_ref().map(Arc::clone);
             let accumulator = Arc::clone(&global_counts);
@@ -407,7 +365,7 @@ pub fn run_tasks(
                         let mut queue = work_queue.lock().unwrap();
                         queue.pop_front()
                     };
-
+                    
                     match next_file {
                         Some((file, pop_idx_opt)) => {
                             let mut rdr = BGZID4TrackReader::from_path(file, None)?;
@@ -418,6 +376,7 @@ pub fn run_tasks(
                                     region.end,
                                     (region.min_filter, region.max_filter),
                                 )?;
+                                
                                 {
                                     let mut accumulator = accumulator.lock().unwrap();
                                     accumulator.merge(res.clone());
@@ -456,16 +415,14 @@ pub fn run_tasks(
             pop_counts
                 .into_iter()
                 .zip(sample_counts.into_iter())
-                .map(|(pop_gc, num_samples)| {
-                    pop_gc.finalize(min_proportion, mean_thresholds, num_samples)
-                })
+                .map(|(pop_gc, num_samples)| pop_gc.finalize(0.0, mean_thresholds, num_samples))
                 .collect()
         } else {
             Vec::new()
         };
 
     Ok((
-        global_counts.finalize(min_proportion, mean_thresholds, num_files),
+        global_counts.finalize(min_proportion, mean_thresholds, total_num_samples),
         finalized_pop_counts,
     ))
 }

@@ -32,7 +32,7 @@ pub fn count_combinations(n: u32, r: u32) -> u32 {
 #[derive(Debug, Clone)]
 pub struct PopulationMapping {
     population_names: IndexSet<String>, // index corresponds to population_idx
-    sample_names: Vec<Vec<String>>, 
+    sample_names: Vec<Vec<String>>,
     sample_name_lookup: FnvHashMap<String, (usize, usize)>, // key is sample name. value is (population_idx, sample's idx within population (internal_idx))
     sample_idx_lookup: Option<FnvHashMap<usize, (usize, usize)>>, // key is sample idx in vcf (global_idx). value is (population_idx, sample's idx within population (internal_idx))
 }
@@ -43,7 +43,7 @@ impl PopulationMapping {
         let population_names = indexset! {DEFAULT_POPULATION_NAME.to_string()};
         let mut sample_name_lookup = FnvHashMap::default();
         let mut sample_idx_lookup = FnvHashMap::default();
-        let mut sample_names: Vec<Vec<String>> = vec![Vec::default();1];
+        let mut sample_names: Vec<Vec<String>> = vec![Vec::default(); 1];
         for (global_idx, sample_name) in vcf_sample_names.iter().enumerate() {
             let population_idx = 0; // Default population
             let internal_idx = global_idx;
@@ -128,7 +128,7 @@ impl PopulationMapping {
             sample_idx_lookup,
         })
     }
-    
+
     pub fn get_samples_per_population(&self) -> Vec<Vec<&str>> {
         self.sample_names
             .iter()
@@ -140,7 +140,7 @@ impl PopulationMapping {
         let counts: Vec<usize> = self.sample_names.iter().map(|x| x.len()).collect();
         counts
     }
-    
+
     pub fn num_populations(&self) -> usize {
         self.population_names.len()
     }
@@ -205,7 +205,6 @@ impl PopulationMapping {
             );
         }
 
-        
         Ok(())
     }
 }

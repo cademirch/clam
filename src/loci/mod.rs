@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use clap::Parser;
 use indicatif::ProgressBar;
-
+use log::warn;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputMode {
@@ -90,10 +90,7 @@ pub struct LociArgs {
     pub max_depth: f64,
 
     /// Custom thresholds per chromosome. Tab-separated file: chrom, min, max
-    #[arg(
-        long = "thresholds-file",
-        help_heading = "Sample-level Thresholds"
-    )]
+    #[arg(long = "thresholds-file", help_heading = "Sample-level Thresholds")]
     pub threshold_file: Option<Utf8PathBuf>,
 
     // === Site-level Threshold Options ===
@@ -127,7 +124,7 @@ pub struct LociArgs {
 
     /// Path to file that defines populations. Tab separated: sample, population_name
     #[arg(
-        short = 'p', 
+        short = 'p',
         long = "population-file",
         help_heading = "Population-level Thresholds"
     )]
@@ -147,7 +144,7 @@ pub struct LociArgs {
 
     /// Path to file with chromosomes to exclude, one per line.
     #[arg(
-        long = "exclude-file", 
+        long = "exclude-file",
         conflicts_with("exclude"),
         help_heading = "Chromosome Filtering"
     )]
@@ -166,7 +163,7 @@ pub struct LociArgs {
 
     /// Path to file with chromosomes to include, one per line.
     #[arg(
-        long = "include-file", 
+        long = "include-file",
         conflicts_with("include"),
         help_heading = "Chromosome Filtering"
     )]
@@ -175,8 +172,8 @@ pub struct LociArgs {
     // === Performance Options ===
     /// Number of threads to use for parallel processing.
     #[arg(
-        short = 't', 
-        long = "threads", 
+        short = 't',
+        long = "threads",
         default_value_t = 1,
         help_heading = "Performance"
     )]
@@ -446,60 +443,81 @@ fn process_multi_d4(
         })
         .collect();
 
+    
+    let work_queue: VecDeque<(PathBuf, Option<usize>)> = if let Some(population_map) = &args.population_map {
+        let sample_to_pop: std::collections::HashMap<String, usize> = population_map
+            .get_samples_per_population()
+            .iter()
+            .enumerate()
+            .flat_map(|(pop_idx, samples)| samples.iter().map(move |s| (s.to_string(), pop_idx)))
+            .collect();
+
+        files
+            .iter()
+            .filter_map(|file| {
+                let fname = file.file_stem()?.to_string_lossy().to_string();
+                sample_to_pop.get(&fname).map(|&pop_idx| (file.clone(), Some(pop_idx)))
+            })
+            .collect()
+    } else {
+        files.iter().cloned().map(|f| (f, None)).collect()
+    };
+
+    
+    let (global_res, pop_res) = d4_bgzf::run_tasks(work_queue, args.clone(), progress_bar)?;
+
+    
     if let Some(population_map) = &args.population_map {
-        let (global_res, pop_res) = d4_bgzf::run_tasks(
-            files.clone(),
-            None, 
-            args.clone(),
-            progress_bar,
-        )?;
-
-        // Write global result
-        let _ = io::write_d4_parallel::<PathBuf>(
-            &global_res,
-            chroms.clone(),
-            Some(
-                args.outdir
-                    .join("callable_sites.d4")
-                    .as_std_path()
-                    .to_path_buf(),
-            ),
-        )?;
-        if args.write_bed {
-            let _ = io::write_bed(
-                args.outdir
-                    .join("callable_sites.bed")
-                    .as_std_path()
-                    .to_path_buf(),
-                &global_res,
-            )?;
-        }
-
-        // Write per-population results
+        
+        let mut temp_file_paths = Vec::new();
         for (idx, res) in pop_res.into_iter().enumerate() {
             let population_name = population_map.get_popname_refs()[idx];
-            let _ = io::write_d4_parallel::<PathBuf>(
-                &res,
-                chroms.clone(),
-                Some(
-                    args.outdir
-                        .join(format!("{}_callable_sites.d4", population_name))
-                        .as_std_path()
-                        .to_path_buf(),
-                ),
-            )?;
+            let binding = Vec::new();
+            let filtered: Vec<(String, u32, Vec<regions::CallableRegion>)> = res
+                .into_iter()
+                .map(|(chrom, begin, pop_regions)| {
+                    let global_regions = global_res
+                        .iter()
+                        .find(|(c, _, _)| c == &chrom)
+                        .map(|(_, _, regions)| regions)
+                        .unwrap_or(&binding);
+
+                    let filtered_regions =
+                        regions::intersect_intervals(&pop_regions, global_regions);
+
+                    (chrom, begin, filtered_regions)
+                })
+                .collect();
+
+            
+            let temp_path = args
+                .outdir
+                .join(format!("{}_callable_sites.d4", population_name))
+                .as_std_path()
+                .to_path_buf();
+
+            io::write_d4_parallel::<PathBuf>(&filtered, chroms.clone(), Some(temp_path.clone()))?;
+            temp_file_paths.push(temp_path);
+
             if args.write_bed {
-                let _ = io::write_bed(
-                    args.outdir
-                        .join(format!("{}_callable_sites.bed", population_name))
-                        .as_std_path()
-                        .to_path_buf(),
-                    &res,
-                );
+                let bed_path = args
+                    .outdir
+                    .join(format!("{}_callable_sites.bed", population_name))
+                    .as_std_path()
+                    .to_path_buf();
+                io::write_bed(bed_path, &filtered)?;
             }
         }
+        io::merge_d4_files(
+            args.outdir
+                .join("callable_sites.d4")
+                .as_std_path()
+                .to_path_buf(),
+            temp_file_paths,
+            population_map.get_popname_refs(),
+        )?;
     } else {
-        let (global_res, _) = d4_bgzf::run_tasks(files, None, args.clone(), progress_bar)?;
+        
         let _ = io::write_d4_parallel::<PathBuf>(
             &global_res,
             chroms,
