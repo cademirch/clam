@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/cademirch/clam/compare/v0.1.5...v0.1.6) (2025-07-31)
+
+
+### Bug Fixes
+
+* build regions outside run_tasks ([ae357d7](https://github.com/cademirch/clam/commit/ae357d7d932bc08af0d3816a2da097909413a851))
+
 ## [0.1.5](https://github.com/cademirch/clam/compare/v0.1.4...v0.1.5) (2025-07-31)
 
 
