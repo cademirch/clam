@@ -316,59 +316,40 @@ impl BGZID4MatrixReader {
 }
 
 pub fn run_tasks(
-    d4_files: VecDeque<PathBuf>,
-    samples: Option<&[String]>,
+    work_queue: VecDeque<(PathBuf, Option<usize>)>,
     args: LociArgs,
     progress_bar: Option<ProgressBar>,
-) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
-    let threads = args.threads;
-    let mean_thresholds = (args.mean_depth_min, args.mean_depth_max);
-    let min_proportion = args.depth_proportion;
-
-    let files = if let Some(sample_names) = samples {
-        d4_files
-            .into_iter()
-            .filter(|path| {
-                let path_str = path.to_string_lossy();
-                sample_names.iter().any(|sample| path_str.contains(sample))
-            })
-            .collect()
-    } else {
-        d4_files
-    };
+    regions: Vec<super::regions::ChromRegion>,
+    num_pops:u32,
     
-    let num_files = files.len();
-    let regions = {
-        let reader = BGZID4TrackReader::from_path(files.front().unwrap(), None)?;
-        super::regions::prepare_chrom_regions(
-            reader.chrom_regions(),
-            args.get_per_sample_thresholds(),
-            args.exclude_chrs.as_ref(),
-            args.include_chrs.as_ref()
-        )?
-    };
+) -> Result<
+    GlobalPopCounts,      
+    
+> {
+    let threads = args.threads;
+    
+    
 
-    let work_queue = Arc::new(Mutex::new(files));
+    let global_counts = Arc::new(Mutex::new(GlobalPopCounts::new(&regions, num_pops)));
 
-    let global_counts = Arc::new(Mutex::new(GlobalCounts::new(&regions)));
+    let work_queue = Arc::new(Mutex::new(work_queue));
 
     thread::scope(|scope| {
         for i in 0..threads {
-            trace!("Spawned worker {}", i);
             let work_queue = Arc::clone(&work_queue);
             let regions = &regions;
+            
             let accumulator = Arc::clone(&global_counts);
             let bar = progress_bar.clone();
             scope.spawn(move || -> Result<()> {
-                trace!("Worker {} starting...", i);
                 loop {
                     let next_file = {
                         let mut queue = work_queue.lock().unwrap();
                         queue.pop_front()
                     };
-
+                    
                     match next_file {
-                        Some(file) => {
+                        Some((file, pop_idx_opt)) => {
                             let mut rdr = BGZID4TrackReader::from_path(file, None)?;
                             for region in regions {
                                 let res = rdr.get_depth(
@@ -377,10 +358,17 @@ pub fn run_tasks(
                                     region.end,
                                     (region.min_filter, region.max_filter),
                                 )?;
+                                
                                 {
                                     let mut accumulator = accumulator.lock().unwrap();
-                                    accumulator.merge(res);
+                                    let pop_idx = if let Some(pop_idx) = pop_idx_opt {
+                                        pop_idx
+                                    } else {
+                                        0
+                                    };
+                                    accumulator.merge(res.clone(), pop_idx);
                                 }
+                                
                             }
                             if let Some(ref bar) = bar {
                                 bar.inc(1);
@@ -399,7 +387,12 @@ pub fn run_tasks(
         .into_inner()
         .map_err(|_| anyhow::anyhow!("Failed to get inner value of global counts"))?;
 
-    Ok(global_counts.finalize(min_proportion, mean_thresholds, num_files))
+    
+
+    Ok(
+        global_counts,
+        
+    )
 }
 
 // pub fn run_bgzf_tasks<P: AsRef<Path>>(
