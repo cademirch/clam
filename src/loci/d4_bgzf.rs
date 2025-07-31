@@ -323,7 +323,11 @@ pub fn run_tasks(
 ) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
     let threads = args.threads;
     let mean_thresholds = (args.mean_depth_min, args.mean_depth_max);
-    let min_proportion = args.depth_proportion;
+    let min_proportion = if let Some(ref pop_map) = args.population_file {
+        0.0
+    } else {
+        args.depth_proportion
+    };
 
     let files = if let Some(sample_names) = samples {
         d4_files
@@ -398,8 +402,16 @@ pub fn run_tasks(
         .map_err(|_| anyhow::anyhow!("Failed to unwrap global counts"))?
         .into_inner()
         .map_err(|_| anyhow::anyhow!("Failed to get inner value of global counts"))?;
-
-    Ok(global_counts.finalize(min_proportion, mean_thresholds, num_files))
+    let mut result = global_counts.finalize(min_proportion, mean_thresholds, num_files);
+    result.sort_by(|a, b| {
+    let chr_cmp = a.0.cmp(&b.0);
+    if chr_cmp == std::cmp::Ordering::Equal {
+        a.1.cmp(&b.1)
+    } else {
+        chr_cmp
+    }
+});
+    Ok(result)
 }
 
 // pub fn run_bgzf_tasks<P: AsRef<Path>>(

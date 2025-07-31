@@ -450,13 +450,16 @@ fn process_multi_d4(
         .collect();
 
     if let Some(population_map) = &args.population_map {
+        let num_pops = population_map.num_populations();
+        let total_samples = population_map.get_sample_counts_per_population().iter().sum();
         let progress_bar = if let Some(bar) = progress_bar {
             bar.set_length(files.len() as u64);
             Some(bar)
         } else {
             None
         };
-        let mut temp_file_paths = Vec::with_capacity(population_map.num_populations());
+        
+        let mut per_pop_results: Vec<Vec<(String, u32, Vec<regions::CallableRegion>)>> = Vec::new();
         for (idx, samples) in population_map
             .get_samples_per_population()
             .iter()
@@ -470,26 +473,55 @@ fn process_multi_d4(
                 args.clone(),
                 progress_bar.clone(),
             )?;
+            per_pop_results.push(res);
+        }
+        let mut per_pop_output: Vec<Vec<(String, u32, Vec<regions::CallableRegion>)>> = vec![Vec::new(); num_pops];
 
-            temp_file_paths.push(io::write_d4_parallel::<PathBuf>(
-                &res,
-                chroms.clone(),
-                None,
-            )?);
+    if !per_pop_results.is_empty() {
+        let num_regions = per_pop_results[0].len();
+        for region_idx in 0..num_regions {
+            // Gather the regions for this (chrom, begin) across all pops
+            let mut pop_regions = Vec::with_capacity(num_pops);
+            let (chrom, begin, _) = &per_pop_results[0][region_idx];
+            for pop_idx in 0..num_pops {
+                let (_, _, regions) = &per_pop_results[pop_idx][region_idx];
+                pop_regions.push(regions.clone());
+            }
+            // 3. Intersect
+            let intersected = regions::intersect_pop_regions(
+                &pop_regions,
+                total_samples,
+                args.depth_proportion,
+            );
+            // 4. Store output
+            for (pop_idx, regions) in intersected.into_iter().enumerate() {
+                per_pop_output[pop_idx].push((chrom.clone(), *begin, regions));
+            }
+        }
+    }
+    let mut temp_file_paths = Vec::with_capacity(num_pops);
+        for (pop_idx, pop_regions) in per_pop_output.into_iter().enumerate() {
+            let population_name = population_map.get_popname_refs()[pop_idx];
+            let d4_path = args
+                .outdir
+                .join(format!("{}_callable_sites.d4", population_name))
+                .as_std_path()
+                .to_path_buf();
+            io::write_d4_parallel::<PathBuf>(&pop_regions, chroms.clone(), Some(d4_path.clone()))?;
+            temp_file_paths.push(d4_path.clone());
 
-            let population_name = population_map.get_popname_refs()[idx];
             if args.write_bed {
-                let _ = io::write_bed(
-                    args.outdir
-                        .join(format!("{}_callable_sites.bed", population_name))
-                        .as_std_path()
-                        .to_path_buf(),
-                    &res,
-                );
-            };
+                let bed_path = args
+                    .outdir
+                    .join(format!("{}_callable_sites.bed", population_name))
+                    .as_std_path()
+                    .to_path_buf();
+                io::write_bed(bed_path, &pop_regions)?;
+            }
         }
 
-        let _ = io::merge_d4_files(
+        // 4. Merge per-population D4 files into a single merged D4
+        io::merge_d4_files(
             args.outdir
                 .join("callable_sites.d4")
                 .as_std_path()
@@ -497,6 +529,7 @@ fn process_multi_d4(
             temp_file_paths,
             population_map.get_popname_refs(),
         )?;
+
     } else {
         let res = d4_bgzf::run_tasks(files, None, args.clone(), progress_bar)?;
         let _ = io::write_d4_parallel::<PathBuf>(
