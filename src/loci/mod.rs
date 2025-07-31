@@ -442,6 +442,12 @@ fn process_multi_d4(
             size: r.2.try_into().unwrap(),
         })
         .collect();
+    let regions = regions::prepare_chrom_regions(
+        chrom_regions,
+        args.get_per_sample_thresholds(),
+        args.exclude_chrs.as_ref(),
+        args.include_chrs.as_ref(),
+    )?;
 
     
     let work_queue: VecDeque<(PathBuf, Option<usize>)> = if let Some(population_map) = &args.population_map {
@@ -464,7 +470,7 @@ fn process_multi_d4(
     };
 
     
-    let (global_res, pop_res) = d4_bgzf::run_tasks(work_queue, args.clone(), progress_bar)?;
+    let (global_res, pop_res) = d4_bgzf::run_tasks(work_queue, args.clone(), progress_bar, regions)?;
 
     
     if let Some(population_map) = &args.population_map {

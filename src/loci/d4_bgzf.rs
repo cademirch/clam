@@ -319,6 +319,7 @@ pub fn run_tasks(
     work_queue: VecDeque<(PathBuf, Option<usize>)>,
     args: LociArgs,
     progress_bar: Option<ProgressBar>,
+    regions: Vec<super::regions::ChromRegion>
 ) -> Result<(
     Vec<(String, u32, Vec<CallableRegion>)>,      // global
     Vec<Vec<(String, u32, Vec<CallableRegion>)>>, // per-population
@@ -328,15 +329,7 @@ pub fn run_tasks(
     let min_proportion = args.depth_proportion;
     let total_num_samples = work_queue.len();
 
-    let regions = {
-        let reader = BGZID4TrackReader::from_path(work_queue.front().unwrap().0.clone(), None)?;
-        super::regions::prepare_chrom_regions(
-            reader.chrom_regions(),
-            args.get_per_sample_thresholds(),
-            args.exclude_chrs.as_ref(),
-            args.include_chrs.as_ref(),
-        )?
-    };
+    
 
     let global_counts = Arc::new(Mutex::new(GlobalCounts::new(&regions)));
 
