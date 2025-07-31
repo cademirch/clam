@@ -103,7 +103,7 @@ pub struct LociArgs {
         short = 'd',
         long = "depth-proportion",
         default_value_t = 0.0,
-        conflicts_with("population_file"),
+        
         help_heading = "Population-level Thresholds"
     )]
     pub depth_proportion: f64,
