@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/cademirch/clam/compare/v0.1.3...v0.1.4) (2025-07-31)
+
+
+### Bug Fixes
+
+* pop thresholds ([#8](https://github.com/cademirch/clam/issues/8)) ([167d35d](https://github.com/cademirch/clam/commit/167d35d20492ba5348dc8403bc6b5c095314fc8f))
+
 ## [0.1.3](https://github.com/cademirch/clam/compare/v0.1.2...v0.1.3) (2025-07-25)
 
 
