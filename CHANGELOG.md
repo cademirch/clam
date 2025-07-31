@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/cademirch/clam/compare/v0.1.4...v0.1.5) (2025-07-31)
+
+
+### Bug Fixes
+
+* fix multi pop depth prop ([#10](https://github.com/cademirch/clam/issues/10)) ([c349aa2](https://github.com/cademirch/clam/commit/c349aa288131b6403ae98c92b2c23afc40f935ab))
+
 ## [0.1.4](https://github.com/cademirch/clam/compare/v0.1.3...v0.1.4) (2025-07-31)
 
 
