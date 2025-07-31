@@ -141,7 +141,7 @@ fn test_merged_pops() -> Result<()> {
         "tests/data/loci/test_pops/populations.tsv",
         "--merged",
     ];
-    
+
     std::fs::remove_dir_all(output_dir);
     let mut cmd = Command::cargo_bin("clam").unwrap();
     let clam_command = cmd
@@ -165,13 +165,7 @@ fn test_merged_pops() -> Result<()> {
     let chrom = "sq0";
     let begin = 0;
     let end = 1000;
-    assert!(d4_files_are_equal(
-        truth_d4,
-        output_d4,
-        chrom,
-        begin,
-        end
-    )?);
+    assert!(d4_files_are_equal(truth_d4, output_d4, chrom, begin, end)?);
     std::fs::remove_dir_all(output_dir)?;
     Ok(())
 }
@@ -205,13 +199,7 @@ fn test_merged_no_pops() -> Result<()> {
     let chrom = "sq0";
     let begin = 0;
     let end = 1000;
-    assert!(d4_files_are_equal(
-        truth_d4,
-        output_d4,
-        chrom,
-        begin,
-        end
-    )?);
+    assert!(d4_files_are_equal(truth_d4, output_d4, chrom, begin, end)?);
     std::fs::remove_dir_all(output_dir)?;
     Ok(())
 }
@@ -245,13 +233,7 @@ fn test_multid4_no_pops() -> Result<()> {
     let chrom = "sq0";
     let begin = 0;
     let end = 1000;
-    assert!(d4_files_are_equal(
-        truth_d4,
-        output_d4,
-        chrom,
-        begin,
-        end
-    )?);
+    assert!(d4_files_are_equal(truth_d4, output_d4, chrom, begin, end)?);
     assert_ne!(PathBuf::from_str(output_bed).unwrap().exists(), true);
     std::fs::remove_dir_all(output_dir)?;
     Ok(())

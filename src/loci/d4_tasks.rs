@@ -196,30 +196,38 @@ pub fn prepare_tracks_from_file<P: AsRef<Path>>(
     Ok(tracks)
 }
 
-pub fn get_chrom_regions<P: AsRef<Path>>(
-    d4_file_path: P,) -> Result<Vec<(String, u32, u32)>> {
-        let tracks: Vec<D4TrackReader> =
-            D4TrackReader::open_tracks(d4_file_path, |_| true).context("Failed to open D4 file")?;
-            let reader = D4MatrixReader::new(tracks).unwrap();
-        let regions = reader.chrom_regions().iter().map(|(chr, begin, end)| (chr.to_string(), *begin, *end)).collect();
-        Ok(regions)
-    }
+pub fn get_chrom_regions<P: AsRef<Path>>(d4_file_path: P) -> Result<Vec<(String, u32, u32)>> {
+    let tracks: Vec<D4TrackReader> =
+        D4TrackReader::open_tracks(d4_file_path, |_| true).context("Failed to open D4 file")?;
+    let reader = D4MatrixReader::new(tracks).unwrap();
+    let regions = reader
+        .chrom_regions()
+        .iter()
+        .map(|(chr, begin, end)| (chr.to_string(), *begin, *end))
+        .collect();
+    Ok(regions)
+}
 
 pub fn run_tasks_on_tracks<P: AsRef<Path>>(
     d4_file_path: P,
     samples: Option<Vec<String>>,
-    args: super::LociArgs
+    args: super::LociArgs,
 ) -> Result<Vec<(String, u32, Vec<CallableRegion>)>> {
     let tracks = prepare_tracks_from_file(d4_file_path, samples)?;
     trace!("Successfully opened D4 file with {} tracks", tracks.len());
     let mean_thresholds = (args.mean_depth_min, args.mean_depth_max);
-    let depth_proportion= args.depth_proportion;
+    let depth_proportion = args.depth_proportion;
     let output_counts = true;
     let num_tracks = tracks.len();
     let mut reader = D4MatrixReader::new(tracks).unwrap();
 
     let mut tasks = vec![];
-    let regions = super::regions::prepare_chrom_regions(reader.chrom_regions(), args.get_per_sample_thresholds(), args.exclude_chrs.as_ref(), args.include_chrs.as_ref())?;
+    let regions = super::regions::prepare_chrom_regions(
+        reader.chrom_regions(),
+        args.get_per_sample_thresholds(),
+        args.exclude_chrs.as_ref(),
+        args.include_chrs.as_ref(),
+    )?;
     for region in regions {
         tasks.push(TaskParent {
             chrom: region.chr.clone(),

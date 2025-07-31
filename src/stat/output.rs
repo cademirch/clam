@@ -24,9 +24,9 @@ pub struct HetRecord {
     pub start: u32,
     pub end: u32,
     pub callable_bases: u32,
-    pub bases_in_roh:u32,
+    pub bases_in_roh: u32,
     pub sample_name: String,
-    pub count_het_sites:u32,
+    pub count_het_sites: u32,
 }
 
 impl HetRecord {
@@ -129,7 +129,6 @@ pub struct FstRecord {
     start: u32,
     end: u32,
     fst: f32,
-    
 }
 
 impl FstRecord {
@@ -140,7 +139,6 @@ impl FstRecord {
         start: u32,
         end: u32,
         fst: f32,
-        
     ) -> Self {
         Self {
             population1_name: population1_name.to_string(),
