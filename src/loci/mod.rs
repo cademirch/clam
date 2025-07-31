@@ -462,39 +462,26 @@ fn process_multi_d4(
             args.include_chrs.as_ref(),
         )?
     };
-    trace!("files:{files:?}");
-    let work_queue: VecDeque<(PathBuf, Option<usize>)> = if let Some(population_map) = &args.population_map {
     
-    let sample_to_pop: Vec<(&str, usize)> = population_map
-        .get_samples_per_population()
-        .iter()
-        .enumerate()
-        .flat_map(|(pop_idx, samples)| samples.iter().map(move |&s| (s, pop_idx)))
-        .collect();
+    let work_queue: VecDeque<(PathBuf, Option<usize>)> = if let Some(population_map) = &args.population_map {
+        let sample_to_pop: std::collections::HashMap<String, usize> = population_map
+            .get_samples_per_population()
+            .iter()
+            .enumerate()
+            .flat_map(|(pop_idx, samples)| samples.iter().map(move |s| (s.to_string(), pop_idx)))
+            .collect();
 
-    let mut work_queue = VecDeque::new();
-    for file in &files {
-        let fname = file.file_name().unwrap().to_string_lossy();
-        let mut matched = false;
-        for (sample, pop_idx) in &sample_to_pop {
-            if fname.contains(sample) {
-                work_queue.push_back((file.clone(), Some(*pop_idx)));
-                matched = true;
-                break;
-            }
-        }
-        if !matched {
-            anyhow::bail!(
-                "Input file '{}' does not match any sample name in the population mapping.",
-                fname
-            );
-        }
-    }
-    work_queue
-} else {
-    files.iter().cloned().map(|f| (f, None)).collect()
-};
-    trace!("work_queue:{work_queue:?}");
+        files
+            .iter()
+            .filter_map(|file| {
+                let fname = file.file_stem()?.to_string_lossy().to_string();
+                sample_to_pop.get(&fname).map(|&pop_idx| (file.clone(), Some(pop_idx)))
+            })
+            .collect()
+    } else {
+        files.iter().cloned().map(|f| (f, None)).collect()
+    };
+
     let (num_pops, total_num_samples) = if let Some(population_map) = &args.population_map {
         (population_map.num_populations(), population_map.get_sample_counts_per_population().iter().sum())
     } else {
