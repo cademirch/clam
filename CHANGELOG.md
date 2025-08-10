@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/cademirch/clam/compare/v0.1.6...v0.1.7) (2025-08-10)
+
+
+### Bug Fixes
+
+* counting multiple pops and skip dels ([#16](https://github.com/cademirch/clam/issues/16)) ([9201cf4](https://github.com/cademirch/clam/commit/9201cf4db8b284af342c8d8e5c9d079885677c3f))
+
 ## [0.1.6](https://github.com/cademirch/clam/compare/v0.1.5...v0.1.6) (2025-07-31)
 
 
