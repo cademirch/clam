@@ -621,7 +621,13 @@ pub fn process_windows<P: AsRef<Path>>(
                         let should_process_site =
                             window.sites.is_empty() || window.sites.contains(&(start as u32));
 
-                        if should_process_site && record.alternate_bases().len() <= 1 {
+                        let is_spanning_deletion = record.alternate_bases().iter().any(|alt| {
+                            alt.as_ref()
+                                .map(|a| String::from_utf8_lossy(a.as_ref()) == "*")
+                                .unwrap_or(false)
+                        });
+
+                        if !is_spanning_deletion && should_process_site && record.alternate_bases().len() <= 1 {
                             window.count_alleles(&record, &header, &pop_info, samples_in_roh)?;
                             sites_skipped.insert(start as u32); // skip this site in callable
                         } else {

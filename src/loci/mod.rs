@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use camino::Utf8PathBuf;
 use clap::Parser;
 use indicatif::ProgressBar;
-use log::warn;
+use log::{trace, warn};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputMode {
@@ -442,48 +442,92 @@ fn process_multi_d4(
             size: r.2.try_into().unwrap(),
         })
         .collect();
+    
+    let regions = {
+        
+        regions::prepare_chrom_regions(
+            chrom_regions,
+            args.get_per_sample_thresholds(),
+            args.exclude_chrs.as_ref(),
+            args.include_chrs.as_ref(),
+        )?
+    };
+    trace!("files:{files:?}");
+    let work_queue: VecDeque<(PathBuf, Option<usize>)> = if let Some(population_map) = &args.population_map {
+    
+    let sample_to_pop: Vec<(&str, usize)> = population_map
+        .get_samples_per_population()
+        .iter()
+        .enumerate()
+        .flat_map(|(pop_idx, samples)| samples.iter().map(move |&s| (s, pop_idx)))
+        .collect();
 
-    if let Some(population_map) = &args.population_map {
-        let progress_bar = if let Some(bar) = progress_bar {
-            bar.set_length(files.len() as u64);
-            Some(bar)
-        } else {
-            None
-        };
-        let mut temp_file_paths = Vec::with_capacity(population_map.num_populations());
-        for (idx, samples) in population_map
-            .get_samples_per_population()
-            .iter()
-            .enumerate()
-        {
-            let sample_names: Vec<String> = samples.iter().map(|&s| s.to_string()).collect();
-
-            let res = d4_bgzf::run_tasks(
-                files.clone(),
-                Some(&sample_names),
-                args.clone(),
-                progress_bar.clone(),
-            )?;
-
-            temp_file_paths.push(io::write_d4_parallel::<PathBuf>(
-                &res,
-                chroms.clone(),
-                None,
-            )?);
-
-            let population_name = population_map.get_popname_refs()[idx];
-            if args.write_bed {
-                let _ = io::write_bed(
-                    args.outdir
-                        .join(format!("{}_callable_sites.bed", population_name))
-                        .as_std_path()
-                        .to_path_buf(),
-                    &res,
-                );
-            };
+    let mut work_queue = VecDeque::new();
+    for file in &files {
+        let fname = file.file_name().unwrap().to_string_lossy();
+        let mut matched = false;
+        for (sample, pop_idx) in &sample_to_pop {
+            if fname.contains(sample) {
+                work_queue.push_back((file.clone(), Some(*pop_idx)));
+                matched = true;
+                break;
+            }
         }
+        if !matched {
+            anyhow::bail!(
+                "Input file '{}' does not match any sample name in the population mapping.",
+                fname
+            );
+        }
+    }
+    work_queue
+} else {
+    files.iter().cloned().map(|f| (f, None)).collect()
+};
+    trace!("work_queue:{work_queue:?}");
+    let (num_pops, total_num_samples) = if let Some(population_map) = &args.population_map {
+        (population_map.num_populations(), population_map.get_sample_counts_per_population().iter().sum())
+    } else {
+        (1, files.len())
+    };
+    let res = d4_bgzf::run_tasks(work_queue, args.clone(), progress_bar, regions, num_pops as u32,)?;
 
-        let _ = io::merge_d4_files(
+    let mean_thresholds = (args.mean_depth_min, args.mean_depth_max);
+    let min_proportion = args.depth_proportion;
+    if let Some(population_map) = &args.population_map {
+        let mut temp_file_paths = Vec::new();
+for pop_idx in 0..num_pops {
+    let regions = res.finalize(
+        min_proportion,
+        mean_thresholds,
+        total_num_samples,
+        pop_idx,
+    );
+    let population_name = population_map.get_popname_refs()[pop_idx];
+        
+        
+        
+
+            
+            let temp_path = args
+                .outdir
+                .join(format!("{}_callable_sites.d4", population_name))
+                .as_std_path()
+                .to_path_buf();
+
+            io::write_d4_parallel::<PathBuf>(&regions, chroms.clone(), Some(temp_path.clone()))?;
+            temp_file_paths.push(temp_path);
+
+            if args.write_bed {
+                let bed_path = args
+                    .outdir
+                    .join(format!("{}_callable_sites.bed", population_name))
+                    .as_std_path()
+                    .to_path_buf();
+                io::write_bed(bed_path, &regions)?;
+            }
+        }
+        io::merge_d4_files(
             args.outdir
                 .join("callable_sites.d4")
                 .as_std_path()
@@ -492,9 +536,14 @@ fn process_multi_d4(
             population_map.get_popname_refs(),
         )?;
     } else {
-        let res = d4_bgzf::run_tasks(files, None, args.clone(), progress_bar)?;
+        let regions = res.finalize(
+        min_proportion,
+        mean_thresholds,
+        total_num_samples,
+        0,
+    );
         let _ = io::write_d4_parallel::<PathBuf>(
-            &res,
+            &regions,
             chroms,
             Some(
                 args.outdir
@@ -509,9 +558,9 @@ fn process_multi_d4(
                     .join("callable_sites.bed")
                     .as_std_path()
                     .to_path_buf(),
-                &res,
+                &regions,
             )?;
-        };
+        }
     }
 
     Ok(())

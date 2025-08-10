@@ -1,7 +1,10 @@
 use super::regions::{CallableRegion, ChromRegion};
 
 use bitvec::prelude::*;
+use core::num;
 use std::collections::HashMap;
+
+
 
 #[derive(Debug, Clone)]
 pub struct ChromosomeCounts {
@@ -29,12 +32,100 @@ pub struct GlobalCounts {
     chrom_counts: HashMap<String, AccumulatedCounts>,
 }
 
+pub struct GlobalPopCounts {
+    chrom_counts: HashMap<String, AccumulatedPopCounts>,
+    num_pops: u32
+
+}
+
+
+
+pub struct AccumulatedPopCounts {
+    counts: Vec<Vec<u16>>,      // [position][population]
+    depth_sums: Vec<Vec<u32>>,  // [position][population]
+    chrom: String,
+    begin: u32,
+    end: u32,
+    num_pops: usize,
+}
+
+impl AccumulatedPopCounts {
+    pub fn new(chrom: String, begin: u32, end: u32, num_pops: usize) -> Self {
+        let len = (end - begin) as usize;
+        Self {
+            counts: vec![vec![0; num_pops]; len],
+            depth_sums: vec![vec![0; num_pops]; len],
+            chrom,
+            begin,
+            end,
+            num_pops,
+        }
+    }
+
+    pub fn add_chromosome_counts(&mut self, counts: ChromosomeCounts, pop_idx: usize) {
+        assert_eq!(self.chrom, counts.chrom);
+        assert_eq!(self.begin, counts.begin);
+        assert_eq!(self.end, counts.end);
+
+        for (i, is_set) in counts.counts.iter().by_vals().enumerate() {
+            if is_set {
+                self.counts[i][pop_idx] = self.counts[i][pop_idx].saturating_add(1);
+            }
+        }
+        for (acc_depths, &new_depth) in self.depth_sums.iter_mut().zip(counts.depth_sums.iter()) {
+            acc_depths[pop_idx] = acc_depths[pop_idx].saturating_add(new_depth);
+        }
+    }
+
+    
+    
+}
+
+impl AccumulatedPopCounts {
+    /// For each population, output a region for every base that passes the thresholds.
+    pub fn to_callable_regions(
+        &self,
+        min_proportion: f64,
+        mean_thresholds: (f64, f64),
+        total_samples: usize,
+    ) -> Vec<Vec<CallableRegion>> {
+        let mut regions_per_pop = vec![Vec::new(); self.num_pops];
+        let min_samples = (total_samples as f64 * min_proportion).ceil() as u32;
+
+        for (i, (counts, depths)) in self.counts.iter().zip(self.depth_sums.iter()).enumerate() {
+            let total_count: u32 = counts.iter().map(|&c| c as u32).sum();
+            let total_depth: u32 = depths.iter().sum();
+            let mean_depth = if total_count > 0 {
+                total_depth as f64 / total_count as f64
+            } else {
+                0.0
+            };
+
+            if total_count >= min_samples
+                && mean_depth >= mean_thresholds.0
+                && mean_depth <= mean_thresholds.1
+            {
+                let pos = self.begin + i as u32;
+                for (pop_idx, &count) in counts.iter().enumerate() {
+                    regions_per_pop[pop_idx].push(CallableRegion {
+                        begin: pos,
+                        end: pos + 1,
+                        count: count as u32,
+                    });
+                }
+            }
+        }
+
+        regions_per_pop
+    }
+}
 pub struct AccumulatedCounts {
     counts: Vec<u16>,
     depth_sums: Vec<u32>,
     chrom: String,
     begin: u32,
     end: u32,
+    
 }
 
 impl AccumulatedCounts {
@@ -181,6 +272,59 @@ impl GlobalCounts {
     }
 }
 
+
+impl GlobalPopCounts {
+    pub fn new(regions: &[ChromRegion], num_pops:u32) -> Self {
+        let mut chrom_counts = HashMap::new();
+
+        for region in regions {
+            chrom_counts.insert(
+                region.chr.clone(),
+                AccumulatedPopCounts::new(region.chr.clone(), region.begin, region.end, num_pops as usize),
+            );
+        }
+
+        Self { chrom_counts, num_pops }
+    }
+
+    pub fn merge(&mut self, chromosome_counts: ChromosomeCounts, pop_idx:usize) {
+        if let Some(existing) = self.chrom_counts.get_mut(&chromosome_counts.chrom) {
+            existing.add_chromosome_counts(chromosome_counts, pop_idx);
+        } else {
+            let mut accumulated = AccumulatedPopCounts::new(
+                chromosome_counts.chrom.clone(),
+                chromosome_counts.begin,
+                chromosome_counts.end,
+                self.num_pops as usize,
+            );
+            accumulated.add_chromosome_counts(chromosome_counts, pop_idx);
+            self.chrom_counts
+                .insert(accumulated.chrom.clone(), accumulated);
+        }
+    }
+
+    pub fn finalize(
+    &self,
+    min_proportion: f64,
+    mean_thresholds: (f64, f64),
+    total_samples: usize,
+    pop_idx: usize,
+) -> Vec<(String, u32, Vec<CallableRegion>)> {
+    let mut results: Vec<_> = self
+        .chrom_counts
+        .iter()
+        .map(|(chrom, counts)| {
+            let begin = counts.begin;
+            let regions_per_pop = counts.to_callable_regions(min_proportion, mean_thresholds, total_samples);
+            // Only take the regions for the requested population
+            (chrom.clone(), begin, regions_per_pop[pop_idx].clone())
+        })
+        .collect();
+
+    results.sort_by(|a, b| a.0.cmp(&b.0));
+    results
+}
+}
 #[cfg(test)]
 mod tests {
     use super::*;

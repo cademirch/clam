@@ -21,39 +21,6 @@ pub struct CallableRegion {
     pub end: u32,
 }
 
-pub fn intersect_intervals(
-    pop_regions: &[CallableRegion],
-    global_regions: &[CallableRegion],
-) -> Vec<CallableRegion> {
-    let mut result = Vec::new();
-    let mut i = 0;
-    let mut j = 0;
-
-    while i < pop_regions.len() && j < global_regions.len() {
-        let a = &pop_regions[i];
-        let b = &global_regions[j];
-
-        let start = a.begin.max(b.begin);
-        let end = a.end.min(b.end);
-
-        if start < end {
-            // There is an intersection
-            result.push(CallableRegion {
-                begin: start,
-                end,
-                count: a.count, // or min(a.count, b.count) if you want
-            });
-        }
-
-        // Move to next interval
-        if a.end < b.end {
-            i += 1;
-        } else {
-            j += 1;
-        }
-    }
-    result
-}
 
 pub fn prepare_chrom_regions(
     chrom_regions: Vec<(&str, u32, u32)>,
