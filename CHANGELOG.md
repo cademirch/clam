@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/cademirch/clam/compare/v0.1.7...v0.2.0) (2025-08-14)
+
+
+### Features
+
+* add min gq option ([#18](https://github.com/cademirch/clam/issues/18)) ([fbedbe5](https://github.com/cademirch/clam/commit/fbedbe5db2ee708fe31a506eac8dba4059497c1c))
+
 ## [0.1.7](https://github.com/cademirch/clam/compare/v0.1.6...v0.1.7) (2025-08-10)
 
 
