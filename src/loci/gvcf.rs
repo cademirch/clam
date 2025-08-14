@@ -57,6 +57,7 @@ impl GvcfReader {
         begin: u32,
         end: u32,
         depth_threshold: (f64, f64), // min and max depth thresholds
+        min_gq: u32
     ) -> Result<ChromosomeCounts> {
         let mut counts = ChromosomeCounts::new(chrom.to_string(), begin, end);
         let region: Region = format!("{}:{}-{}", chrom, begin + 1, end).parse()?;
@@ -127,7 +128,7 @@ impl GvcfReader {
             for idx in array_start..array_end {
                 if idx < counts.counts.len() {
                     counts.depth_sums[idx] = dp as u32;
-                    if gq > 0
+                    if gq >= min_gq as i32
                         && (dp as f64) >= depth_threshold.0
                         && (dp as f64) <= depth_threshold.1
                     {
@@ -222,6 +223,7 @@ pub fn run_tasks(
                                     region.begin,
                                     region.end,
                                     (region.min_filter, region.max_filter),
+                                    args.min_gq
                                 ) {
                                     Ok(res) => {
                                         let mut accumulator = accumulator.lock().unwrap();
@@ -293,7 +295,7 @@ mod tests {
         let infile = "tests/data/loci/test_no_pops/gvcf/s1.g.vcf.gz";
         let mut gvcf_reader = super::GvcfReader::from_path(infile).unwrap();
         let counts = gvcf_reader
-            .get_depth("NW_017805931.1", 0, 105, (10.0, f64::MAX))
+            .get_depth("NW_017805931.1", 0, 105, (10.0, f64::MAX), 0)
             .unwrap();
         let mut global_counts = super::GlobalCounts::new(&chroms);
         global_counts.merge(counts);
