@@ -88,6 +88,16 @@ pub struct LociArgs {
         help_heading = "Sample-level Thresholds"
     )]
     pub max_depth: f64,
+    /// Minimum genotype quality (GQ) to consider a site callable (GVCF only)
+    #[arg(
+        short = 'q', 
+        long = "min-gq", 
+        default_value_t = 0, 
+        conflicts_with("threshold_file"),
+        requires="gvcf",
+        help_heading = "Sample-level Thresholds"
+    )]
+    pub min_gq: u32,
 
     /// Custom thresholds per chromosome. Tab-separated file: chrom, min, max
     #[arg(long = "thresholds-file", help_heading = "Sample-level Thresholds")]
