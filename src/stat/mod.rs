@@ -167,7 +167,11 @@ pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) ->
         }
         None => None,
     };
-
+    if let Some(callable_loci_file) = &args.callable_sites {
+        if !callable_loci_file.exists() {
+            bail!("Callable loci file {callable_loci_file} specified, but does not exist!")
+        }
+    }
     let windows = Window::from_regions(regions, &pop_map, sites, ploidy as u32);
 
     let worker_count = args.threads;
