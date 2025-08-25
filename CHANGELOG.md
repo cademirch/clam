@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/cademirch/clam/compare/v0.2.0...v0.2.1) (2025-08-25)
+
+
+### Bug Fixes
+
+* check if callable sites file exists before running stat ([#20](https://github.com/cademirch/clam/issues/20)) ([c776544](https://github.com/cademirch/clam/commit/c776544f2ca6bf5b85310775a073f44ed9e59747))
+
 ## [0.2.0](https://github.com/cademirch/clam/compare/v0.1.7...v0.2.0) (2025-08-14)
 
 
