@@ -99,6 +99,8 @@ Options:
           Number of threads to use [default: 1]
   -w, --window-size <WINDOW_SIZE>
           Size of windows for statistics in bp. Conflicts with 'regions-file'
+      --ploidy <PLOIDY>
+          Set ploidy. If not provided, try to infer from first genotype in VCF
   -r, --regions-file <REGIONS_FILE>
           File specifying regions to calculate statistics for. Conflicts with 'window-size'
   -s, --sites-file <SITES_FILE>
