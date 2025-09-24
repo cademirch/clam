@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/cademirch/clam/compare/v0.2.1...v0.2.2) (2025-09-24)
+
+
+### Bug Fixes
+
+* ploidy ([#22](https://github.com/cademirch/clam/issues/22)) ([92200b9](https://github.com/cademirch/clam/commit/92200b986c77a6fd9e4450976cba14364418aa7d))
+
 ## [0.2.1](https://github.com/cademirch/clam/compare/v0.2.0...v0.2.1) (2025-08-25)
 
 
