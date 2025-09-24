@@ -63,6 +63,10 @@ pub struct StatArgs {
     #[arg(short = 'w', long = "window-size")]
     pub window_size: Option<usize>,
 
+    /// Set ploidy. If not provided, try to infer from first genotype in VCF. 
+    #[arg(long = "ploidy")]
+    pub ploidy: Option<usize>,
+
     /// File specifying regions to calculate statistics for. Conflicts with 'window-size'
     #[arg(short = 'r', long = "regions-file")]
     pub regions_file: Option<Utf8PathBuf>,
@@ -116,7 +120,18 @@ pub fn build_vcf_reader(
 }
 
 pub fn run_stat(args: StatArgs, progress_bar: Option<indicatif::ProgressBar>) -> Result<()> {
-    let (header, ploidy) = get_vcf_header_and_ploidy(&args.vcf)?;
+    let header = get_vcf_header(&args.vcf)?;
+    let ploidy = if let Some(user_ploidy) = args.ploidy {
+    user_ploidy
+} else {
+    match get_vcf_ploidy(&args.vcf)? {
+        Some(inferred_ploidy) => inferred_ploidy,
+        None => {
+            warn!("Could not infer ploidy from VCF, defaulting to diploid. Use --ploidy if this is incorrect.");
+            2 // or return an error, depending on your preference
+        }
+    }
+};
 
     let tbi_path = &args.vcf.with_extension("gz.tbi");
     let index = noodles::tabix::read(tbi_path)
@@ -411,7 +426,12 @@ pub fn sites_map(sites_regions: Vec<Region>) -> Result<FnvHashMap<String, Vec<u3
 
     Ok(res)
 }
-pub fn get_vcf_header_and_ploidy<P: AsRef<Path>>(vcf_path: P) -> Result<(vcf::Header, usize)> {
+pub fn get_vcf_header<P: AsRef<Path>>(vcf_path: P) -> Result<vcf::Header> {
+    let (_, header) = build_vcf_reader(vcf_path.as_ref())?;
+    Ok(header.clone())
+}
+
+pub fn get_vcf_ploidy<P: AsRef<Path>>(vcf_path: P) -> Result<Option<usize>> {
     let (mut reader, header) = build_vcf_reader(vcf_path.as_ref())?;
 
     let first_record = reader
@@ -426,14 +446,21 @@ pub fn get_vcf_header_and_ploidy<P: AsRef<Path>>(vcf_path: P) -> Result<(vcf::He
         .select(key::GENOTYPE)
         .ok_or_else(|| anyhow!("Malformed variant record: {:?}", first_record))?;
 
-    let Some(Value::Genotype(genotype)) = gt_series
-        .iter(&header)
-        .next()
-        .context("Failed to get genotype.")??
-    else {
-        return Err(anyhow!(
-            "GT field is missing or invalid in the first record"
-        ));
+    let genotype = match gt_series.iter(&header).next() {
+        Some(Ok(Some(Value::Genotype(genotype)))) => genotype,
+        Some(Ok(Some(_other_value))) => {
+            return Err(anyhow!("GT field contains non-genotype value"));
+        }
+        Some(Ok(None)) => {
+            // Missing genotype - return None for ploidy
+            return Ok(None);
+        }
+        Some(Err(e)) => {
+            return Err(anyhow!("Error reading genotype: {:?}", e));
+        }
+        None => {
+            return Ok(None);
+        }
     };
 
     let mut ploidy = 0;
@@ -447,8 +474,7 @@ pub fn get_vcf_header_and_ploidy<P: AsRef<Path>>(vcf_path: P) -> Result<(vcf::He
 
     warn!("Inferred ploidy: {} from VCF. If this is incorrect, specify ploidy with the option --ploidy.", ploidy);
 
-    drop(reader);
-    Ok((header.clone(), ploidy))
+    Ok(Some(ploidy))
 }
 
 pub fn optimize_chunks<P: AsRef<Path>>(vcf_path: P, tbi_path: P) -> Result<()> {
