@@ -3,6 +3,8 @@ pub mod callable;
 pub mod chunks;
 pub mod output;
 pub mod windows;
+mod genotypes;
+mod roh;
 
 use std::collections::HashSet;
 use std::fs::File;
@@ -445,22 +447,16 @@ pub fn get_vcf_ploidy<P: AsRef<Path>>(vcf_path: P) -> Result<Option<usize>> {
     let gt_series = samples
         .select(key::GENOTYPE)
         .ok_or_else(|| anyhow!("Malformed variant record: {:?}", first_record))?;
-
-    let genotype = match gt_series.iter(&header).next() {
-        Some(Ok(Some(Value::Genotype(genotype)))) => genotype,
-        Some(Ok(Some(_other_value))) => {
-            return Err(anyhow!("GT field contains non-genotype value"));
-        }
-        Some(Ok(None)) => {
-            // Missing genotype - return None for ploidy
-            return Ok(None);
-        }
-        Some(Err(e)) => {
-            return Err(anyhow!("Error reading genotype: {:?}", e));
-        }
-        None => {
-            return Ok(None);
-        }
+    let result = gt_series.iter(&header).next();
+    debug!("Raw result: {:?}", result);
+    let Some(Value::Genotype(genotype)) = gt_series
+        .iter(&header)
+        .next()
+        .context("Failed to get genotype.")??
+    else {
+        return Err(anyhow!(
+            "GT field is missing or invalid in the first record"
+        ));
     };
 
     let mut ploidy = 0;
@@ -474,7 +470,9 @@ pub fn get_vcf_ploidy<P: AsRef<Path>>(vcf_path: P) -> Result<Option<usize>> {
 
     warn!("Inferred ploidy: {} from VCF. If this is incorrect, specify ploidy with the option --ploidy.", ploidy);
 
-    Ok(Some(ploidy))
+    drop(reader);
+    panic!();
+    Ok((header.clone(), ploidy))
 }
 
 pub fn optimize_chunks<P: AsRef<Path>>(vcf_path: P, tbi_path: P) -> Result<()> {

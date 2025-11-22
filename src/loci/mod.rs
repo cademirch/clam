@@ -6,6 +6,8 @@ pub mod io;
 pub mod regions;
 pub mod thresholds;
 
+mod callable;
+
 use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::io::{BufRead, BufReader};

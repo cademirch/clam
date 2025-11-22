@@ -1,7 +1,4 @@
-mod loci;
-mod stat;
-mod utils;
-
+use clam::{loci, stat};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
