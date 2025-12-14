@@ -5,100 +5,111 @@ use color_eyre::{
     Result,
 };
 use flate2::read::{self, GzDecoder};
-use noodles::bed;
+
 use noodles::vcf::Header;
 use rust_lapper::{Interval, Lapper};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
+use noodles::core::Region;
+use noodles::tabix::io::indexed_reader::Builder as TabixReaderBuilder;
+
 use std::path::Path;
 
-type RohIndex = HashMap<String, Lapper<u32, usize>>;
+use crate::core::population::PopulationMap;
 
-fn open_bed<P: AsRef<Path>>(path: P) -> Result<Box<dyn BufRead>> {
-    let file = File::open(&path).map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => {
-            eyre!("File not found: {}", path.as_ref().display())
-        }
-        io::ErrorKind::PermissionDenied => {
-            eyre!("Permission denied: {}", path.as_ref().display())
-        }
-        _ => eyre!("Cannot open file: {} ({})", path.as_ref().display(), e),
-    })?;
-    let reader: Box<dyn BufRead> = if path
-        .as_ref()
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map_or(false, |ext| ext == "gz")
-    {
-        Box::new(BufReader::new(GzDecoder::new(file)))
-    } else {
-        Box::new(BufReader::new(file))
-    };
-
-    Ok(reader)
+pub struct RohIndex {
+    lapper: Lapper<u32, usize>,  
+    pop_map: PopulationMap,
+    sample_names: Vec<String>,
 }
 
-fn create_roh_index<R: BufRead>(bed_file: R, vcf_header: &Header) -> Result<RohIndex> {
-    let mut bed_reader = bed::io::reader::Reader::<4, _>::new(bed_file);
-    let contigs = vcf_header.contigs();
-    let samples = vcf_header.sample_names();
-
-    let mut contig_intervals: HashMap<String, Vec<Interval<u32, usize>>> = HashMap::new();
-    let mut record = bed::Record::default();
-
-    while bed_reader
-        .read_record(&mut record)
-        .wrap_err_with(|| format!("Failed to read bed record: {:?}", record))?
-        != 0
-    {
-        let chrom = record.reference_sequence_name().to_str_lossy().into_owned();
-
-        let contig_key = if contigs.contains_key(&chrom) {
-            chrom
-        } else {
-            bail!("BED contig '{}' not found in VCF header", chrom);
-        };
-
-        let start = record
-            .feature_start()
-            .wrap_err_with(|| format!("Invalid start in bed record: {:?}", record))?;
-
-        let end = record
-            .feature_end()
-            .transpose()
-            .wrap_err_with(|| format!("Invalid end in bed record: {:?}", record))?
-            .ok_or_else(|| eyre!("Missing end in bed record: {:?}", record))?;
-
-        let sample_name = record
-            .name()
-            .ok_or_else(|| eyre!("Missing sample name in bed record: {:?}", record))?
-            .to_str_lossy()
-            .into_owned();
-
-        let sample_idx = samples.get_index_of(&sample_name).ok_or_eyre(format!(
-            "BED sample: {} not found in VCF header.",
-            sample_name
-        ))?;
-
-        contig_intervals
-            .entry(contig_key)
-            .or_default()
-            .push(Interval {
-                // noodles already converted BED's 0-based coords to 1-based Position
-                // e.g., BED [0, 100) becomes Position(1) to Position(100)
-                start: start.get() as u32,
-                // Lapper uses half-open intervals, so Position [1, 100] inclusive
-                // needs to become [1, 101) half-open to include position 100
-                stop: end.get() as u32 + 1,
+impl RohIndex {
+    
+    pub fn from_tabix_query(
+        bed_path: &Path,
+        region: &Region,
+        vcf_header: &Header,
+        pop_map: PopulationMap,
+    ) -> Result<Self> {
+        
+        
+        let mut reader = TabixReaderBuilder::default()
+            .build_from_path(bed_path)
+            .wrap_err_with(|| format!("Failed to open ROH BED file: {}", bed_path.display()))?;
+        
+        let samples = vcf_header.sample_names();
+        let sample_names: Vec<String> = samples.iter().map(|s| s.to_string()).collect();
+        
+        let mut intervals: Vec<Interval<u32, usize>> = Vec::new();
+        
+        // Query the region
+        let query = reader.query(region)
+            .wrap_err_with(|| format!("Failed to query region: {:?}", region))?;
+        
+        for result in query {
+            let record = result.wrap_err("Failed to read ROH record")?;
+            let line = std::str::from_utf8(record.as_ref().as_bytes())
+                .wrap_err("Invalid UTF-8 in ROH record")?;
+            
+            let fields: Vec<&str> = line.split('\t').collect();
+            
+            if fields.len() < 4 {
+                bail!("ROH record missing required fields: {}", line);
+            }
+            
+            let start: u32 = fields[1].parse()
+                .wrap_err_with(|| format!("Invalid start position: {}", fields[1]))?;
+            let end: u32 = fields[2].parse()
+                .wrap_err_with(|| format!("Invalid end position: {}", fields[2]))?;
+            let sample_name = fields[3];
+            
+            let sample_idx = samples.get_index_of(sample_name)
+                .ok_or_else(|| eyre!("ROH sample '{}' not found in VCF", sample_name))?;
+            
+            intervals.push(Interval {
+                start: start + 1, // BED is 0-based, convert to 1-based
+                stop: end + 1,    // Make half-open interval
                 val: sample_idx,
             });
+        }
+        
+        Ok(Self {
+            lapper: Lapper::new(intervals),
+            pop_map,
+            sample_names,
+        })
+    }
+    
+    /// Check if a specific sample is in ROH at a given position
+    #[inline]
+    pub fn is_in_roh(&self, pos: usize, sample_idx: usize) -> bool {
+        self.lapper
+            .find(pos as u32, (pos + 1) as u32)
+            .any(|iv| iv.val == sample_idx)
     }
 
-    let mut lappers = HashMap::new();
-    for (contig, intervals) in contig_intervals {
-        lappers.insert(contig, Lapper::new(intervals));
+    pub fn samples_in_roh_at(&self, pos: usize) -> Vec<usize> {
+        self.lapper
+            .find(pos as u32, (pos + 1) as u32)
+            .map(|iv| iv.val)
+            .collect()
     }
-
-    Ok(lappers)
+    
+    /// Get ROH sample counts per population at a given position
+    pub fn roh_counts_per_pop(&self, pos: usize) -> Vec<u16> {
+        let mut counts = vec![0u16; self.pop_map.num_populations()];
+        
+        let samples_in_roh = self.samples_in_roh_at(pos);
+        
+        for &sample_idx in &samples_in_roh {
+            if let Some(sample_name) = self.sample_names.get(sample_idx) {
+                if let Some((pop_idx, _)) = self.pop_map.lookup(sample_name) {
+                    counts[pop_idx] += 1;
+                }
+            }
+        }
+        
+        counts
+    }
 }
