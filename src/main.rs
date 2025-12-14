@@ -1,88 +1,299 @@
-use clam::{loci, stat};
-use anyhow::Result;
-use clap::{Parser, Subcommand};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use indicatif_log_bridge::LogWrapper;
-use log::info;
+use clap::{Args, Parser, Subcommand};
+use color_eyre::eyre::{Context, Ok};
+use color_eyre::Result;
+use std::collections::HashSet;
+use std::path::PathBuf;
 
-#[derive(Debug, Parser)]
-#[command(name = "clam")]
-#[command(about = "Callable Loci and More")]
-#[command(version)]
-struct Cli {
+/// Population genetics toolkit
+#[derive(Parser, Debug)]
+#[command(author, version, about = "Population genetics analysis toolkit")]
+pub struct Cli {
     #[command(subcommand)]
-    command: Commands,
-
-    /// Increase verbosity (-v, -vv for more verbosity)
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    verbose: u8,
-
-    /// Suppress output (overrides verbosity)
-    #[arg(short, long, action)]
-    quiet: bool,
+    pub command: Commands,
 }
-#[derive(Debug, Subcommand)]
-enum Commands {
-    Loci(loci::LociArgs),
 
-    Stat(stat::StatArgs),
-
-    #[command(hide = true)]
-    Mkdocs,
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Calculate callable sites from depth statistics
+    Loci(LociArgs),
+    /// Calculate population genetic statistics from VCF
+    Stat(StatArgs),
+    /// Collect depth from multiple files into a Zarr store
+    Collect(CollectArgs)
 }
-fn main() -> Result<()> {
-    let args = Cli::parse();
 
-    // Set up logging based on verbosity flags
-    let log_level = if args.quiet {
-        log::LevelFilter::Off
-    } else {
-        match args.verbose {
-            0 => log::LevelFilter::Info,  // Default
-            1 => log::LevelFilter::Debug, // -v
-            2 => log::LevelFilter::Trace, // -vv
-            _ => log::LevelFilter::Trace, // Any more `v`s
-        }
-    };
 
-    let logger = env_logger::builder().filter_level(log_level).build();
-    let multi = MultiProgress::new();
-    LogWrapper::new(multi.clone(), logger).try_init().unwrap();
-    log::set_max_level(log_level);
-    let progress_bar = if args.quiet {
-        None
-    } else {
-        let bar = ProgressBar::no_length().with_style(
-            ProgressStyle::with_template(
-                "{spinner:.green} [{wide_bar:.cyan/blue}] {percent}% done.",
-            )
-            .unwrap()
-            .progress_chars("#>-"),
-        );
-        Some(multi.add(bar))
-    };
+#[derive(Args, Debug, Clone)]
+pub struct SharedOptions {
+    /// Number of threads to use for parallel processing
+    #[arg(short = 't', long = "threads", default_value_t = 1)]
+    pub threads: usize,
 
-    // Capture command-line arguments for logging
-    let str_args: Vec<String> = std::env::args().collect();
-    let command_line = str_args.join(" ");
-    let version = env!("CARGO_PKG_VERSION");
-    info!(
-        "clam version: {} arguments supplied: {}",
-        version, command_line
-    );
-    match args.command {
-        Commands::Mkdocs => {
-            clap_markdown::print_help_markdown::<Cli>();
-            return Ok(());
-        }
-        Commands::Loci(loci_args) => {
-            loci::process(loci_args, progress_bar)?;
+    /// Path to file that defines populations. Tab separated: sample\tpopulation_name
+    #[arg(short = 'p', long = "population-file")]
+    pub population_file: Option<PathBuf>,
 
-            Ok(())
+    /// Comma separated list of chromosomes to exclude
+    #[arg(short = 'x', long = "exclude", value_delimiter = ',', num_args = 1.., conflicts_with = "exclude_file")]
+    pub exclude: Option<Vec<String>>,
+
+    /// Path to file with chromosomes to exclude, one per line
+    #[arg(long = "exclude-file")]
+    pub exclude_file: Option<PathBuf>,
+
+    /// Comma separated list of chromosomes to include (restrict analysis to)
+    #[arg(short = 'i', long = "include", value_delimiter = ',', num_args = 1.., conflicts_with = "include_file")]
+    pub include: Option<Vec<String>>,
+
+    /// Path to file with chromosomes to include, one per line
+    #[arg(long = "include-file")]
+    pub include_file: Option<PathBuf>,
+}
+
+impl SharedOptions {
+    /// Initialize thread pool
+    pub fn initialize_threading(&self) -> Result<()> {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(self.threads)
+            .build_global()?;
+        Ok(())
+    }
+
+    /// Get excluded chromosomes as a HashSet
+    pub fn get_excluded_chromosomes(&self) -> Result<Option<HashSet<String>>> {
+        if let Some(ref exclude_list) = self.exclude {
+            return Ok(Some(exclude_list.iter().cloned().collect()));
         }
-        Commands::Stat(stat_args) => {
-            stat::run_stat(stat_args, progress_bar)?;
-            Ok(())
+
+        if let Some(ref exclude_file) = self.exclude_file {
+            let content = std::fs::read_to_string(exclude_file)?;
+            let chroms = content
+                .lines()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            return Ok(Some(chroms));
         }
+
+        Ok(None)
+    }
+
+    /// Get included chromosomes as a HashSet
+    pub fn get_included_chromosomes(&self) -> Result<Option<HashSet<String>>> {
+        if let Some(ref include_list) = self.include {
+            return Ok(Some(include_list.iter().cloned().collect()));
+        }
+
+        if let Some(ref include_file) = self.include_file {
+            let content = std::fs::read_to_string(include_file)?;
+            let chroms = content
+                .lines()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            return Ok(Some(chroms));
+        }
+
+        Ok(None)
+    }
+}
+
+/// Calculate callable sites from depth statistics
+#[derive(Args, Debug)]
+pub struct LociArgs {
+    /// Input depth files
+    #[arg(required = true)]
+    pub input: Vec<PathBuf>,
+
+    /// Output path for callable sites zarr array
+    #[arg(short = 'o', long = "output", required = true)]
+    pub output: PathBuf,
+
+    /// Minimum depth to consider a site callable for each individual
+    #[arg(short = 'm', long = "min-depth", default_value_t = 0.0)]
+    pub min_depth: f64,
+
+    /// Maximum depth to consider a site callable for each individual
+    #[arg(short = 'M', long = "max-depth", default_value_t = f64::INFINITY)]
+    pub max_depth: f64,
+
+    /// Proportion of samples that must pass thresholds at a site
+    #[arg(short = 'd', long = "min-proportion", default_value_t = 0.0)]
+    pub min_proportion: f64,
+
+    /// Minimum mean depth across all samples required at a site
+    #[arg(long = "min-mean-depth", default_value_t = 0.0)]
+    pub mean_depth_min: f64,
+
+    /// Maximum mean depth across all samples allowed at a site
+    #[arg(long = "max-mean-depth", default_value_t = f64::INFINITY)]
+    pub mean_depth_max: f64,
+
+    /// Chunk size for processing (base pairs)
+    #[arg(long = "chunk-size", default_value_t = 1_000_000)]
+    pub chunk_size: u64,
+
+    /// Output per-sample masks instead of per-population counts
+    #[arg(long = "per-sample")]
+    pub per_sample: bool,
+
+    /// Shared options
+    #[command(flatten)]
+    pub shared: SharedOptions,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct CollectArgs {
+    #[arg(required = true)]
+    pub input: Vec<PathBuf>,
+
+    /// Output path for callable sites zarr array
+    #[arg(short = 'o', long = "output", required = true)]
+    pub output: PathBuf,
+
+    /// Chunk size for processing (base pairs)
+    #[arg(long = "chunk-size", default_value_t = 1_000_000)]
+    pub chunk_size: u64,
+
+    /// Shared options
+    #[command(flatten)]
+    pub shared: SharedOptions,
+}
+
+/// Calculate population genetic statistics from VCF
+#[derive(Args, Debug)]
+pub struct StatArgs {
+    /// Path to input VCF file (bgzipped and indexed)
+    #[arg(required = true)]
+    pub vcf: PathBuf,
+
+    /// Output directory for statistics files
+    #[arg(short = 'o', long = "outdir", required = true)]
+    pub outdir: PathBuf,
+
+    /// Path to callable sites zarr array (from clam loci)
+    #[arg(short = 'c', long = "callable")]
+    pub callable: Option<PathBuf>,
+
+    /// Path to ROH regions BED file (sample name in 4th column)
+    #[arg(short = 'r', long = "roh")]
+    pub roh: Option<PathBuf>,
+
+    /// Window size in base pairs
+    #[arg(short = 'w', long = "window-size", conflicts_with = "regions_file")]
+    pub window_size: Option<usize>,
+
+    /// BED file specifying regions to calculate statistics for
+    #[arg(long = "regions-file", conflicts_with = "window_size")]
+    pub regions_file: Option<PathBuf>,
+
+    /// Chunk size for parallel processing (base pairs)
+    #[arg(long = "chunk-size", default_value_t = 1_000_000)]
+    pub chunk_size: u64,
+
+    /// Shared options
+    #[command(flatten)]
+    pub shared: SharedOptions,
+}
+
+impl CollectArgs {
+    pub fn run(self) -> Result<()> {
+        use clam::collect::run_collect;
+        run_collect(self.input, self.output, self.chunk_size)?;
+        Ok(())
+    }
+}
+
+impl LociArgs {
+    pub fn run(self) -> Result<()> {
+        use clam::core::population::PopulationMap;
+        use clam::loci::{run_loci, ThresholdConfig};
+
+        
+        self.shared.initialize_threading()?;
+
+        
+        let pop_map = if let Some(ref pop_file) = self.shared.population_file {
+            PopulationMap::from_file(pop_file)?
+        } else {
+        
+            PopulationMap::default_from_samples(vec![])
+        };
+
+        let thresholds = ThresholdConfig {
+            min_depth: self.min_depth,
+            max_depth: self.max_depth,
+            min_proportion: self.min_proportion,
+            mean_depth_range: (self.mean_depth_min, self.mean_depth_max),
+        };
+
+        run_loci(
+            self.input,
+            self.output,
+            pop_map,
+            thresholds,
+            self.chunk_size,
+            self.per_sample,
+        )
+    }
+}
+
+impl StatArgs {
+    pub fn run(self) -> Result<()> {
+        use clam::stat::config::StatConfig;
+        use clam::stat::run_stat;
+        use clam::stat::utils::read_bed_regions;
+        use clam::stat::windows::WindowStrategy;
+
+        
+        self.shared.initialize_threading()?;
+
+        
+        std::fs::create_dir_all(&self.outdir).wrap_err(format!(
+            "Failed to create output directory: {}",
+            self.outdir.display()
+        ))?;
+
+        
+        let window_strategy = if let Some(size) = self.window_size {
+            WindowStrategy::FixedSize(size)
+        } else if let Some(ref regions_file) = self.regions_file {
+        
+            let regions = read_bed_regions(regions_file)?;
+            WindowStrategy::Regions(regions)
+        } else {
+            return Err(color_eyre::eyre::eyre!(
+                "Must specify either --window-size or --regions-file"
+            ));
+        };
+        let exclude = self.shared.get_excluded_chromosomes()?;
+        let include = self.shared.get_included_chromosomes()?;
+        
+        let config = StatConfig::new(
+            self.vcf,
+            self.shared.population_file,
+            self.callable,
+            self.roh,
+            window_strategy,
+            self.chunk_size,
+            exclude,
+            include,
+        )?;
+
+        
+        run_stat(config, &self.outdir)
+    }
+}
+
+// Main entry point
+pub fn main() -> Result<()> {
+    color_eyre::install()?;
+
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Loci(args) => args.run(),
+        Commands::Stat(args) => args.run(),
+        Commands::Collect(args) => args.run()
     }
 }
