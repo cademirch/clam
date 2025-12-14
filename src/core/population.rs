@@ -7,6 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::path::Path;
+use ndarray::Array2;
+
 /// A single population with its samples
 #[derive(Debug, Clone)]
 pub struct Population {
@@ -86,8 +88,8 @@ impl PopulationMap {
         Self::from_populations(populations).expect("Default population should always be valid")
     }
 
-    /// Internal constructor that builds lookup tables
-    fn from_populations(pop_data: IndexMap<String, Vec<String>>) -> Result<Self> {
+    
+    pub fn from_populations(pop_data: IndexMap<String, Vec<String>>) -> Result<Self> {
         let mut populations = IndexMap::new();
         let mut sample_lookup = HashMap::new();
 
@@ -149,6 +151,38 @@ impl PopulationMap {
         }
 
         Ok(())
+    }
+
+    /// Create a population membership matrix for the given samples
+    /// 
+    /// Returns an Array2 where:
+    /// - Rows represent samples (in the order provided)
+    /// - Columns represent populations (in the order they were added)
+    /// - Values are 1 if sample belongs to that population, 0 otherwise
+    /// 
+    /// # Example
+    /// For 3 samples across 2 populations:
+    /// ```text
+    /// [[1, 0],  // sample 0 in pop 0
+    ///  [0, 1],  // sample 1 in pop 1
+    ///  [1, 0]]  // sample 2 in pop 0
+    /// ```
+    pub fn membership_matrix(&self, samples: &[String]) -> Result<Array2<usize>> {
+        let num_samples = samples.len();
+        let num_pops = self.num_populations();
+        
+        let mut data = vec![0usize; num_samples * num_pops];
+        
+        for (sample_idx, sample) in samples.iter().enumerate() {
+            let (pop_idx, _) = self.lookup(sample)
+                .wrap_err_with(|| format!("Sample '{}' not found in population map", sample))?;
+            
+            // Set the appropriate element to 1 (row-major order)
+            data[sample_idx * num_pops + pop_idx] = 1;
+        }
+        
+        Array2::from_shape_vec((num_samples, num_pops), data)
+            .wrap_err("Failed to create membership matrix")
     }
 
     /// Get (population_index, sample_index_within_population) for a sample

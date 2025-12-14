@@ -5,7 +5,7 @@ use color_eyre::{
     Result,
 };
 use indexmap::IndexMap;
-
+use std::collections::HashSet;
 /// Information about a reference contig
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Contig {
@@ -17,6 +17,7 @@ impl Contig {
     pub fn new(name: String, length: usize) -> Self {
         Self { name, length }
     }
+    
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +115,40 @@ impl ContigSet {
                     .collect::<Vec<_>>()
             })
             .collect()
+    }
+    /// Filter contigs based on include/exclude lists
+    pub fn filter(
+        self,
+        include: Option<&HashSet<String>>,
+        exclude: Option<&HashSet<String>>,
+    ) -> Self {
+        let filtered = self.contigs
+            .into_iter()
+            .filter(|(name, _)| {
+                // If include list exists, contig must be in it
+                if let Some(include_set) = include {
+                    if !include_set.contains(name.as_str()) {
+                        return false;
+                    }
+                }
+                
+                // If exclude list exists, contig must not be in it
+                if let Some(exclude_set) = exclude {
+                    if exclude_set.contains(name.as_str()) {
+                        return false;
+                    }
+                }
+                
+                true
+            })
+            .collect();
+        
+        Self { contigs: filtered }
+    }
+    
+    /// Check if empty after filtering
+    pub fn is_empty(&self) -> bool {
+        self.contigs.is_empty()
     }
 }
 

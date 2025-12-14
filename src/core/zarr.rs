@@ -7,7 +7,9 @@ use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use zarrs::array::codec::{BloscCodec, BloscCompressionLevel, BloscCompressor, BloscShuffleMode};
+use zarrs::array::codec::{
+    BloscCodec, BloscCompressionLevel, BloscCompressor, BloscShuffleMode, PackBitsCodec,
+};
 
 use zarrs::array::ElementOwned;
 use zarrs::array::{Array, ArrayBuilder, DataType, FillValue};
@@ -55,31 +57,38 @@ impl<T: ElementOwned> ChromosomeArrays<T> {
             .insert("clam_metadata".to_string(), metadata);
         group.store_metadata()?;
 
-        // Derive typesize from data type for blosc codec
-        let typesize = match &data_type {
-            DataType::UInt8 | DataType::Int8 => 1,
-            DataType::UInt16 | DataType::Int16 => 2,
-            DataType::UInt32 | DataType::Int32 | DataType::Float32 => 4,
-            DataType::UInt64 | DataType::Int64 | DataType::Float64 => 8,
-            _ => 4, // default
-        };
-
         // Create array for each chromosome
         for (chrom_name, chrom_length) in contigs.iter() {
-            let mut array = ArrayBuilder::new(
+            let mut builder = ArrayBuilder::new(
                 vec![chrom_length as u64, column_names.len() as u64],
                 vec![chunk_size, column_names.len() as u64],
                 data_type.clone(),
                 fill_value.clone(),
-            )
-            .bytes_to_bytes_codecs(vec![Arc::new(BloscCodec::new(
-                BloscCompressor::Zstd,
-                BloscCompressionLevel::try_from(5).unwrap(),
-                None, // blocksize (auto)
-                BloscShuffleMode::Shuffle,
-                Some(typesize), // typesize
-            )?)])
-            .build(store.clone(), &format!("/{}", chrom_name))?;
+            );
+
+            // Select codec based on data type
+            let builder = if matches!(data_type, DataType::Bool) {
+                // Use PackBits for bool (default config is perfect for bool)
+                builder.array_to_bytes_codec(Arc::new(PackBitsCodec::default()))
+            } else {
+                // Use Blosc for numeric types
+                let typesize = match &data_type {
+                    DataType::UInt8 | DataType::Int8 => 1,
+                    DataType::UInt16 | DataType::Int16 => 2,
+                    DataType::UInt32 | DataType::Int32 | DataType::Float32 => 4,
+                    DataType::UInt64 | DataType::Int64 | DataType::Float64 => 8,
+                    _ => 4, // default
+                };
+                builder.bytes_to_bytes_codecs(vec![Arc::new(BloscCodec::new(
+                    BloscCompressor::Zstd,
+                    BloscCompressionLevel::try_from(5).unwrap(),
+                    None,                   // blocksize (auto)
+                    BloscShuffleMode::Shuffle,
+                    Some(typesize),         // typesize
+                )?)])
+            };
+
+            let mut array = builder.build(store.clone(), &format!("/{}", chrom_name))?;
 
             // Add contig-specific attributes
             let contig_metadata = serde_json::json!({
@@ -206,7 +215,7 @@ impl<T: ElementOwned> ChromosomeArrays<T> {
 }
 
 pub type DepthArrays = ChromosomeArrays<u32>;
-pub type CallableArrays = ChromosomeArrays<u8>;
+pub type CallableArrays = ChromosomeArrays<u16>;
 
 impl DepthArrays {
     pub fn create_new(
@@ -238,8 +247,28 @@ impl CallableArrays {
             contigs,
             population_names,
             chunk_size,
-            DataType::UInt8,
-            FillValue::from(0u8),
+            DataType::UInt16,
+            FillValue::from(0u16),
+        )
+    }
+}
+
+pub type SampleMaskArrays = ChromosomeArrays<bool>;
+
+impl SampleMaskArrays {
+    pub fn create_new(
+        path: impl AsRef<Path>,
+        contigs: ContigSet,
+        sample_names: Vec<String>,
+        chunk_size: u64,
+    ) -> Result<Self> {
+        Self::create(
+            path,
+            contigs,
+            sample_names,
+            chunk_size,
+            DataType::Bool,
+            FillValue::from(false),
         )
     }
 }
@@ -324,5 +353,91 @@ mod tests {
 
         assert_eq!(arrays.overlapping_chunks(0, 100), 0..1);
         assert_eq!(arrays.overlapping_chunks(50, 250), 0..3);
+    }
+
+    #[test]
+    fn test_sample_mask_create_and_open() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test_masks.zarr");
+
+        let contigs = test_contigs();
+        let samples = vec!["sample1".to_string(), "sample2".to_string(), "sample3".to_string()];
+
+        // Create
+        SampleMaskArrays::create_new(&path, contigs.clone(), samples.clone(), 100).unwrap();
+        assert!(path.exists());
+
+        // Open
+        let arrays = SampleMaskArrays::open(&path).unwrap();
+        assert_eq!(arrays.contigs().len(), 2);
+        assert_eq!(arrays.column_names(), &samples);
+        assert_eq!(arrays.chunk_size(), 100);
+    }
+
+    #[test]
+    fn test_sample_mask_write_and_read() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test_masks.zarr");
+
+        let arrays = SampleMaskArrays::create_new(
+            &path,
+            test_contigs(),
+            vec!["sample1".to_string(), "sample2".to_string()],
+            100,
+        )
+        .unwrap();
+
+        // Create test data (100 rows x 2 columns)
+        // Pattern: sample1 is all true, sample2 alternates
+        let mut data = Array2::<bool>::from_elem((100, 2), false);
+        for i in 0..100 {
+            data[[i, 0]] = true;
+            data[[i, 1]] = i % 2 == 0;
+        }
+
+        // Write and read back
+        arrays.write_chunk("chr1", 0, data.clone()).unwrap();
+        let read_data = arrays.read_chunk("chr1", 0).unwrap();
+
+        assert_eq!(read_data.shape(), &[100, 2]);
+
+        // Verify all values match
+        for i in 0..100 {
+            assert_eq!(read_data[[i, 0]], true, "Position {} sample1 should be true", i);
+            assert_eq!(read_data[[i, 1]], i % 2 == 0, "Position {} sample2 mismatch", i);
+        }
+    }
+
+    #[test]
+    fn test_sample_mask_packbits_compression() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test_masks.zarr");
+
+        // Create with 10 samples
+        let samples: Vec<String> = (0..10).map(|i| format!("sample{}", i)).collect();
+        let arrays = SampleMaskArrays::create_new(&path, test_contigs(), samples, 1000).unwrap();
+
+        // Write alternating pattern (should compress well)
+        let mut data = Array2::<bool>::from_elem((1000, 10), false);
+        for i in 0..1000 {
+            for j in 0..10 {
+                data[[i, j]] = (i + j) % 2 == 0;
+            }
+        }
+
+        arrays.write_chunk("chr1", 0, data.clone()).unwrap();
+        let read_data = arrays.read_chunk("chr1", 0).unwrap();
+
+        // Verify data integrity after compression
+        assert_eq!(read_data.shape(), data.shape());
+        for i in 0..1000 {
+            for j in 0..10 {
+                assert_eq!(
+                    read_data[[i, j]],
+                    data[[i, j]],
+                    "Mismatch at position [{}, {}]", i, j
+                );
+            }
+        }
     }
 }

@@ -1,12 +1,13 @@
 use super::DepthSource;
 use crate::core::contig::{Contig, ContigSet};
-use color_eyre::{eyre::WrapErr, Result};
+use color_eyre::{eyre::WrapErr, Result, eyre::eyre};
 use d4::index::D4IndexCollection;
 use d4::ssio::D4TrackReader;
 use log::warn;
 use noodles::bgzf::{self, IndexedReader};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+
 
 pub struct D4Reader {
     inner: D4TrackReader<File>,
@@ -15,6 +16,21 @@ pub struct D4Reader {
 }
 
 impl D4Reader {
+    /// Create a new D4Reader for a specific track
+    ///
+    /// # Arguments
+    /// * `src` - Path to the D4 file
+    /// * `sample_name` - The biological sample name to associate with this reader.
+    ///                   This is what will be returned by `sample_name()` and used
+    ///                   for downstream analysis.
+    /// * `track_name` - The internal track path within the D4 file (e.g., "/sample1").
+    ///                  If None, reads the default/only track in the file.
+    ///                  In multitrack D4 files, we assume each track one sample.
+    ///
+    /// # Note
+    /// For single-sample D4 files, `track_name` should be `None`.
+    /// For multisample D4 files, `track_name` identifies which track to read,
+    /// and `sample_name` is typically derived from the track name.
     pub fn new<P: AsRef<Path>>(
         src: P,
         sample_name: &str,
@@ -51,6 +67,51 @@ impl D4Reader {
             sample_name: sample_name.to_string(),
             src: src_path,
         })
+    }
+    pub fn list_tracks<P: AsRef<Path>>(src: P) -> Result<Vec<PathBuf>> {
+        let src_path = src.as_ref();
+        let mut file = File::open(src_path)
+            .wrap_err_with(|| format!("Failed to open D4 file: {}", src_path.display()))?;
+        
+        let mut tracks = Vec::new();
+        d4::find_tracks(&mut file, |_| true, &mut tracks)
+            .wrap_err("Failed to enumerate tracks in D4 file")?;
+        
+        Ok(tracks)
+    }
+    
+    
+    /// Create one reader per track in a multisample D4 file
+    ///
+    /// Each track in the D4 file becomes a separate DepthSource with the track name
+    /// used as both the internal track identifier and the sample name.
+    ///
+    /// # Example
+    /// A multisample D4 file with tracks "/sample1" and "/sample2" will return
+    /// two readers where `sample_name()` returns "sample1" and "sample2" respectively.
+    pub fn from_multisample_file<P: AsRef<Path>>(
+        src: P,
+    ) -> Result<Vec<Box<dyn DepthSource>>> {
+        let src_path = src.as_ref();
+        let track_paths = Self::list_tracks(src_path)?;
+        
+        
+        track_paths
+            .into_iter()
+            .map(|track_path| {
+                // Convert PathBuf to &str for track name
+                let track_name = track_path
+                    .to_str()
+                    .ok_or_else(|| eyre!("Invalid track path: {:?}", track_path))?;
+                
+                // Use track name as sample name (e.g., "/sample1" -> "/sample1")
+                // You could strip the leading "/" if desired: track_name.trim_start_matches('/')
+                let sample_name = track_name;
+                
+                let reader = Self::new(src_path, sample_name, Some(track_name))?;
+                Ok(Box::new(reader) as Box<dyn DepthSource>)
+            })
+            .collect()
     }
 }
 
