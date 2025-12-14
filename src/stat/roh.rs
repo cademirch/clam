@@ -1,16 +1,13 @@
 use bstr::ByteSlice;
-use color_eyre::eyre::{Context, ContextCompat, OptionExt};
+use color_eyre::eyre::{Context, ContextCompat};
 use color_eyre::{
-    eyre::{bail, ensure, eyre, WrapErr},
+    eyre::{bail, eyre, WrapErr},
     Result,
 };
-use flate2::read::{self, GzDecoder};
 
 use noodles::vcf::Header;
 use rust_lapper::{Interval, Lapper};
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read};
+use std::io::BufRead;
 use noodles::core::Region;
 use noodles::tabix::io::indexed_reader::Builder as TabixReaderBuilder;
 

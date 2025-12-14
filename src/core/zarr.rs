@@ -1,9 +1,7 @@
 use crate::core::contig::ContigSet;
 use color_eyre::{eyre::eyre, Result};
-use indexmap::IndexMap;
 use ndarray::Array2;
 use std::marker::PhantomData;
-use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,7 +11,6 @@ use zarrs::array::codec::{
 
 use zarrs::array::ElementOwned;
 use zarrs::array::{Array, ArrayBuilder, DataType, FillValue};
-use zarrs::array_subset::ArraySubset;
 use zarrs::filesystem::FilesystemStore;
 use zarrs::group::{Group, GroupBuilder};
 use zarrs::storage::ReadableWritableListableStorage;

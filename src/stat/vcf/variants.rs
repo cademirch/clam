@@ -5,7 +5,7 @@ use noodles::vcf::variant::record::samples::series::Value;
 use noodles::vcf::variant::record::samples::Series;
 use noodles::vcf::variant::record::Samples;
 use noodles::vcf::variant::RecordBuf;
-use noodles::vcf::{self, Header, Record};
+use noodles::vcf::{Header, Record};
 use std::ops::{Add, AddAssign};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

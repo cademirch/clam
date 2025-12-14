@@ -5,7 +5,7 @@ pub mod writer;
 pub mod utils;
 pub mod config;
 
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::channel;
 use rayon::prelude::*;
 use std::path::Path;
 use color_eyre::Result;

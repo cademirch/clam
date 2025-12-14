@@ -1,9 +1,9 @@
 use crate::core::population::PopulationMap;
-use crate::stat::vcf::variants::{AlleleCounts, NonRohCounts, Ploidy};
+use crate::stat::vcf::variants::AlleleCounts;
 use bstr::ByteSlice;
 use color_eyre::Result;
 use color_eyre::eyre::Ok;
-use ndarray::{Array1, Array2};
+use ndarray::Array1;
 use noodles::core::{Position, Region};
 use rust_lapper::{Interval, Lapper};
 use serde::Serialize;

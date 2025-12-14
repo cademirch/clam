@@ -9,7 +9,7 @@ use crate::{
 use color_eyre::eyre::{bail, Result};
 use ndarray::{Array1, Array2};
 use noodles::core::Region;
-use noodles::vcf::{self, Header, Record};
+use noodles::vcf::{Header, Record};
 use rayon::prelude::*;
 use std::path::PathBuf;
 
