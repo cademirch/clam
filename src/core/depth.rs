@@ -3,9 +3,10 @@ use crate::core::depth::d4::D4Reader;
 use color_eyre::eyre::eyre;
 use color_eyre::Help;
 use color_eyre::Result;
+use log::info;
+use ndarray::Array2;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
-
 pub mod array;
 pub mod d4;
 pub mod gvcf;
@@ -128,13 +129,13 @@ pub struct DepthProcessor {
 
 impl DepthProcessor {
     pub fn from_paths(paths: Vec<PathBuf>) -> Result<Self> {
+        info!("Processing {} depth files: {:?}", paths.len(), &paths);
         let (sources, sample_names, reference_contigs) =
             if paths.len() == 1 && is_multisample_d4(&paths[0])? {
                 setup_multisample(&paths[0])?
             } else {
                 setup_individual_files(paths)?
             };
-
         Ok(Self {
             sources,
             sample_names,
@@ -185,7 +186,29 @@ impl DepthProcessor {
         }
     }
 }
+fn depths_to_array(depths: &[Vec<u32>]) -> Result<Array2<u32>> {
+    if depths.is_empty() {
+        return Err(eyre!("No depth data provided"));
+    }
 
+    let num_samples = depths.len();
+    let num_positions = depths[0].len();
+
+    // Validate all samples have same length
+    if !depths.iter().all(|d| d.len() == num_positions) {
+        return Err(eyre!("Inconsistent depth vector lengths"));
+    }
+
+    // Create array: rows = positions, columns = samples
+    let mut array = Array2::<u32>::zeros((num_positions, num_samples));
+    for (sample_idx, sample_depths) in depths.iter().enumerate() {
+        for (pos_idx, &depth) in sample_depths.iter().enumerate() {
+            array[[pos_idx, sample_idx]] = depth;
+        }
+    }
+
+    Ok(array)
+}
 fn setup_multisample(path: &Path) -> Result<(DepthSources, Vec<String>, ContigSet)> {
     let track_paths = D4Reader::list_tracks(path)?;
 

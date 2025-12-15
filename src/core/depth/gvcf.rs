@@ -56,7 +56,7 @@ impl DepthSource for GvcfReader {
             .query(&self.header, &region)
             .wrap_err_with(|| format!("Failed to query region: {}:{}-{}", chrom, start, end))?;
 
-        trace!("Querying GVCF region {}:{}-{}", chrom, start, end);
+        trace!("Querying GVCF{} region {}:{}-{}", self.src.display(), chrom, start, end);
 
         for result in query {
             let record = result.wrap_err("Failed to read GVCF record")?;
