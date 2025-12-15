@@ -1,51 +1,50 @@
 use crate::core::population::PopulationMap;
-use color_eyre::{eyre::bail, Result};
+use color_eyre::{eyre::bail, eyre::eyre, Result};
 use ndarray::{Array1, Array2, Axis};
 
 /// Helper to stack depth vectors
-pub fn stack_depths(
-        depths: Vec<Vec<u32>>,
-        sample_names: Vec<String>,
-    ) -> Result<Array2<u32>> {
-        if depths.is_empty() {
-            bail!("No sample depths provided");
-        }
-
-        if depths.len() != sample_names.len() {
-            bail!(
-                "Mismatch: {} depth vectors but {} sample names",
-                depths.len(),
-                sample_names.len()
-            );
-        }
-
-        let num_positions = depths[0].len();
-
-        // Validate all samples have same number of positions
-        for (i, sample_depths) in depths.iter().enumerate() {
-            if sample_depths.len() != num_positions {
-                bail!(
-                    "Sample '{}' has {} positions, expected {}",
-                    sample_names[i],
-                    sample_depths.len(),
-                    num_positions
-                );
-            }
-        }
-
-        // Stack into (positions, samples) array
-        let arrays: Vec<Array1<u32>> = depths.into_iter().map(Array1::from_vec).collect();
-        let views: Vec<_> = arrays.iter().map(|a| a.view()).collect();
-        Ok(ndarray::stack(Axis(1), &views)?)
+pub fn stack_depths(depths: Vec<Vec<u32>>, sample_names: Vec<String>) -> Result<Array2<u32>> {
+    if depths.is_empty() {
+        bail!("No sample depths provided");
     }
 
-pub fn build_pop_membership(
-    sample_names: &[String],
-    pop_map: &PopulationMap,
-) -> Array2<bool> {
+    if depths.len() != sample_names.len() {
+        bail!(
+            "Mismatch: {} depth vectors but {} sample names",
+            depths.len(),
+            sample_names.len()
+        );
+    }
+
+    let num_positions = depths[0].len();
+    let num_samples = depths.len();
+
+    // Validate all samples have same number of positions
+    for (i, sample_depths) in depths.iter().enumerate() {
+        if sample_depths.len() != num_positions {
+            bail!(
+                "Sample '{}' has {} positions, expected {}",
+                sample_names[i],
+                sample_depths.len(),
+                num_positions
+            );
+        }
+    }
+    
+    // Directly build array in correct layout (positions, samples)
+    let mut array = Array2::<u32>::zeros((num_positions, num_samples));
+    for (sample_idx, sample_depths) in depths.into_iter().enumerate() {
+        // Assign entire column at once
+        array.column_mut(sample_idx).assign(&Array1::from(sample_depths));
+    }
+    
+    Ok(array)
+}
+
+pub fn build_pop_membership(sample_names: &[String], pop_map: &PopulationMap) -> Array2<bool> {
     let num_samples = sample_names.len();
     let num_pops = pop_map.num_populations();
-    
+
     let mut pop_membership = Array2::<bool>::from_elem((num_samples, num_pops), false);
     for (sample_idx, name) in sample_names.iter().enumerate() {
         if let Some((pop_idx, _)) = pop_map.lookup(name) {
@@ -61,18 +60,14 @@ pub struct MultisampleDepthArray {
     pub depths: Array2<u32>,
     /// Sample names corresponding to columns in depths array
     pub sample_names: Vec<String>,
-    
 }
 
 impl MultisampleDepthArray {
     /// Build from per-sample depth vectors
-    
-    pub fn from_samples(
-        depths: Vec<Vec<u32>>,
-        sample_names: Vec<String>,
-    ) -> Result<Self> {
+
+    pub fn from_samples(depths: Vec<Vec<u32>>, sample_names: Vec<String>) -> Result<Self> {
         let depths = stack_depths(depths, sample_names.clone())?;
-        
+
         Ok(Self {
             depths,
             sample_names,
@@ -89,7 +84,7 @@ impl MultisampleDepthArray {
     }
 
     /// Count callable samples per population using site-level filters
-    
+
     pub fn count_callable_per_population(
         &self,
         callable_mask: &Array2<bool>,
