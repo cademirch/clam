@@ -1,6 +1,7 @@
 use crate::core::contig::ContigSet;
+use color_eyre::eyre::OptionExt;
 use color_eyre::{eyre::eyre, Result};
-use ndarray::Array2;
+use ndarray::{s, Array2};
 use std::marker::PhantomData;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -25,7 +26,7 @@ pub struct ChromosomeArrays<T: ElementOwned> {
     _marker: PhantomData<T>,
 }
 
-impl<T: ElementOwned> ChromosomeArrays<T> {
+impl<T: ElementOwned + Default> ChromosomeArrays<T> {
     pub fn create(
         path: impl AsRef<Path>,
         contigs: ContigSet,
@@ -63,31 +64,31 @@ impl<T: ElementOwned> ChromosomeArrays<T> {
                 fill_value.clone(),
             );
 
-            // Select codec based on data type
+            
             let builder = if matches!(data_type, DataType::Bool) {
-                // Use PackBits for bool (default config is perfect for bool)
+                
                 builder.array_to_bytes_codec(Arc::new(PackBitsCodec::default()))
             } else {
-                // Use Blosc for numeric types
+                
                 let typesize = match &data_type {
                     DataType::UInt8 | DataType::Int8 => 1,
                     DataType::UInt16 | DataType::Int16 => 2,
                     DataType::UInt32 | DataType::Int32 | DataType::Float32 => 4,
                     DataType::UInt64 | DataType::Int64 | DataType::Float64 => 8,
-                    _ => 4, // default
+                    _ => 4, 
                 };
                 builder.bytes_to_bytes_codecs(vec![Arc::new(BloscCodec::new(
                     BloscCompressor::Zstd,
                     BloscCompressionLevel::try_from(5).unwrap(),
-                    None,                   // blocksize (auto)
+                    None, 
                     BloscShuffleMode::Shuffle,
-                    Some(typesize),         // typesize
+                    Some(typesize), 
                 )?)])
             };
 
             let mut array = builder.build(store.clone(), &format!("/{}", chrom_name))?;
 
-            // Add contig-specific attributes
+            
             let contig_metadata = serde_json::json!({
                 "contig": chrom_name,
                 "length": chrom_length,
@@ -114,7 +115,7 @@ impl<T: ElementOwned> ChromosomeArrays<T> {
         let path = path.as_ref().to_path_buf();
         let store = Self::open_store(&path)?;
 
-        // Read root metadata
+        
         let group = Group::open(store.clone(), "/")?;
         let metadata = group
             .attributes()
@@ -166,13 +167,44 @@ impl<T: ElementOwned> ChromosomeArrays<T> {
         Ok(data.into_dimensionality()?)
     }
 
-    /// Write a complete chunk
-    pub fn write_chunk(&self, chrom: &str, chunk_idx: u64, data: Array2<T>) -> Result<()> {
-        let array = Array::open(self.store.clone(), &format!("/{}", chrom))?;
-        array.store_chunk_ndarray(&[chunk_idx, 0], data)?;
-        Ok(())
+    /// Check if this is the last (partial) chunk for a chromosome
+    pub fn is_last_chunk(&self, chrom: &str, chunk_idx: u64) -> Result<bool> {
+        let chrom_length = self
+            .contigs
+            .get_length(chrom)
+            .ok_or_eyre("Failed to find contig")?;
+
+        
+        let chunk_end = (chunk_idx + 1) * self.chunk_size;
+
+        Ok(chunk_end > chrom_length as u64)
     }
 
+    
+    pub fn write_chunk(&self, chrom: &str, chunk_idx: u64, data: Array2<T>) -> Result<()> {
+        let array = Array::open(self.store.clone(), &format!("/{}", chrom))?;
+
+        if data.shape()[1] != self.column_names.len() {
+            return Err(eyre!("Column count mismatch"));
+        }
+
+        if data.shape()[0] == self.chunk_size as usize {
+            
+            array.store_chunk_ndarray(&[chunk_idx, 0], data)?;
+        } else if self.is_last_chunk(chrom, chunk_idx)? {
+            
+            array.store_chunk_subset_ndarray(&[chunk_idx, 0], &[0, 0], data)?;
+        } else {
+            return Err(eyre!(
+                "Partial chunk at non-terminal position: chunk {} has {} rows but expected {}",
+                chunk_idx,
+                data.shape()[0],
+                self.chunk_size
+            ));
+        }
+
+        Ok(())
+    }
     pub fn contigs(&self) -> &ContigSet {
         &self.contigs
     }
@@ -189,7 +221,7 @@ impl<T: ElementOwned> ChromosomeArrays<T> {
         &self.path
     }
 
-    // Chunk utilities
+    
 
     /// Convert position to chunk index
     pub fn position_to_chunk(&self, position: u32) -> u64 {
@@ -358,7 +390,11 @@ mod tests {
         let path = dir.path().join("test_masks.zarr");
 
         let contigs = test_contigs();
-        let samples = vec!["sample1".to_string(), "sample2".to_string(), "sample3".to_string()];
+        let samples = vec![
+            "sample1".to_string(),
+            "sample2".to_string(),
+            "sample3".to_string(),
+        ];
 
         // Create
         SampleMaskArrays::create_new(&path, contigs.clone(), samples.clone(), 100).unwrap();
@@ -400,8 +436,18 @@ mod tests {
 
         // Verify all values match
         for i in 0..100 {
-            assert_eq!(read_data[[i, 0]], true, "Position {} sample1 should be true", i);
-            assert_eq!(read_data[[i, 1]], i % 2 == 0, "Position {} sample2 mismatch", i);
+            assert_eq!(
+                read_data[[i, 0]],
+                true,
+                "Position {} sample1 should be true",
+                i
+            );
+            assert_eq!(
+                read_data[[i, 1]],
+                i % 2 == 0,
+                "Position {} sample2 mismatch",
+                i
+            );
         }
     }
 
@@ -432,7 +478,9 @@ mod tests {
                 assert_eq!(
                     read_data[[i, j]],
                     data[[i, j]],
-                    "Mismatch at position [{}, {}]", i, j
+                    "Mismatch at position [{}, {}]",
+                    i,
+                    j
                 );
             }
         }
