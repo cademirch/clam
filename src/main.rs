@@ -207,6 +207,7 @@ pub struct StatArgs {
 impl CollectArgs {
     pub fn run(self) -> Result<()> {
         use clam::collect::run_collect;
+        self.shared.initialize_threading()?;
         run_collect(self.input, self.output, self.chunk_size, self.min_gq)?;
         Ok(())
     }
