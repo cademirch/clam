@@ -1,3 +1,4 @@
+use clam::core::zarr::CallableArrays;
 use clap::{Args, Parser, Subcommand};
 use color_eyre::eyre::{Context, Ok};
 use color_eyre::Result;
@@ -19,9 +20,8 @@ pub enum Commands {
     /// Calculate population genetic statistics from VCF
     Stat(StatArgs),
     /// Collect depth from multiple files into a Zarr store
-    Collect(CollectArgs)
+    Collect(CollectArgs),
 }
-
 
 #[derive(Args, Debug, Clone)]
 pub struct SharedOptions {
@@ -137,6 +137,10 @@ pub struct LociArgs {
     #[arg(long = "per-sample")]
     pub per_sample: bool,
 
+    /// Minimum gq to count depth (GVCF input only)
+    #[arg(long = "min-gq")]
+    pub min_gq: Option<isize>,
+
     /// Shared options
     #[command(flatten)]
     pub shared: SharedOptions,
@@ -154,6 +158,10 @@ pub struct CollectArgs {
     /// Chunk size for processing (base pairs)
     #[arg(long = "chunk-size", default_value_t = 1_000_000)]
     pub chunk_size: u64,
+
+    /// Minimum gq to count depth (GVCF input only)
+    #[arg(long = "min-gq")]
+    pub min_gq: Option<isize>,
 
     /// Shared options
     #[command(flatten)]
@@ -199,7 +207,7 @@ pub struct StatArgs {
 impl CollectArgs {
     pub fn run(self) -> Result<()> {
         use clam::collect::run_collect;
-        run_collect(self.input, self.output, self.chunk_size)?;
+        run_collect(self.input, self.output, self.chunk_size, self.min_gq)?;
         Ok(())
     }
 }
@@ -207,17 +215,15 @@ impl CollectArgs {
 impl LociArgs {
     pub fn run(self) -> Result<()> {
         use clam::core::population::PopulationMap;
-        use clam::loci::{run_loci, ThresholdConfig};
+        use clam::core::zarr::is_zarr_path;
+        use clam::loci::{run_loci, run_loci_zarr, ThresholdConfig};
 
-        
         self.shared.initialize_threading()?;
 
-        
         let pop_map = if let Some(ref pop_file) = self.shared.population_file {
-            PopulationMap::from_file(pop_file)?
+            Some(PopulationMap::from_file(pop_file)?)
         } else {
-        
-            PopulationMap::default_from_samples(vec![])
+            None
         };
 
         let thresholds = ThresholdConfig {
@@ -227,38 +233,47 @@ impl LociArgs {
             mean_depth_range: (self.mean_depth_min, self.mean_depth_max),
         };
 
-        run_loci(
-            self.input,
-            self.output,
-            pop_map,
-            thresholds,
-            self.chunk_size,
-            self.per_sample,
-        )
+        if self.input.len() == 1 && is_zarr_path(&self.input[0]) {
+            let zarr = &self.input[0];
+            run_loci_zarr(
+                zarr.to_path_buf(),
+                self.output,
+                pop_map,
+                thresholds,
+                self.per_sample,
+            )
+        } else {
+            run_loci(
+                self.input,
+                self.output,
+                pop_map,
+                thresholds,
+                self.chunk_size,
+                self.per_sample,
+                self.min_gq,
+            )
+        }
     }
 }
 
 impl StatArgs {
     pub fn run(self) -> Result<()> {
+        use clam::core::zarr::is_zarr_path;
         use clam::stat::config::StatConfig;
         use clam::stat::run_stat;
         use clam::stat::utils::read_bed_regions;
         use clam::stat::windows::WindowStrategy;
 
-        
         self.shared.initialize_threading()?;
 
-        
         std::fs::create_dir_all(&self.outdir).wrap_err(format!(
             "Failed to create output directory: {}",
             self.outdir.display()
         ))?;
 
-        
         let window_strategy = if let Some(size) = self.window_size {
             WindowStrategy::FixedSize(size)
         } else if let Some(ref regions_file) = self.regions_file {
-        
             let regions = read_bed_regions(regions_file)?;
             WindowStrategy::Regions(regions)
         } else {
@@ -268,19 +283,26 @@ impl StatArgs {
         };
         let exclude = self.shared.get_excluded_chromosomes()?;
         let include = self.shared.get_included_chromosomes()?;
-        
+
+        let mut chunk_size = self.chunk_size;
+        if let Some(callable_path) = self.callable.as_ref() {
+            if is_zarr_path(&callable_path) {
+                let callable_zarr = CallableArrays::open(&callable_path)?;
+                chunk_size = callable_zarr.chunk_size();
+            }
+        }
+
         let config = StatConfig::new(
             self.vcf,
             self.shared.population_file,
             self.callable,
             self.roh,
             window_strategy,
-            self.chunk_size,
+            chunk_size,
             exclude,
             include,
         )?;
 
-        
         run_stat(config, &self.outdir)
     }
 }
@@ -296,6 +318,6 @@ pub fn main() -> Result<()> {
     match cli.command {
         Commands::Loci(args) => args.run(),
         Commands::Stat(args) => args.run(),
-        Commands::Collect(args) => args.run()
+        Commands::Collect(args) => args.run(),
     }
 }

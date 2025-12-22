@@ -96,7 +96,7 @@ impl StatConfig {
 
     /// Create a VcfQuery for processing a specific genomic chunk
     pub fn create_query(&self, chunk: &ContigChunk) -> Result<VcfQuery> {
-        let start = Position::try_from(chunk.start as usize).wrap_err("Invalid start position")?;
+        let start = Position::try_from((chunk.start+1) as usize).wrap_err("Invalid start position")?;
         let end = Position::try_from(chunk.end as usize).wrap_err("Invalid end position")?;
 
         let query_region = Region::new(chunk.contig_name.clone(), start..=end);

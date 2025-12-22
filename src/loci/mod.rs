@@ -1,7 +1,7 @@
 use crate::core::depth::array::{build_pop_membership, MultisampleDepthArray};
 use crate::core::depth::DepthProcessor;
 use crate::core::population::PopulationMap;
-use crate::core::zarr::{CallableArrays, SampleMaskArrays};
+use crate::core::zarr::{CallableArrays, DepthArrays, SampleMaskArrays};
 use color_eyre::Result;
 use std::path::PathBuf;
 
@@ -15,12 +15,15 @@ pub struct ThresholdConfig {
 pub fn run_loci(
     depth_files: Vec<PathBuf>,
     output_path: PathBuf,
-    pop_map: PopulationMap,
+    pop_map: Option<PopulationMap>,
     thresholds: ThresholdConfig,
     chunk_size: u64,
     output_per_sample_mask: bool,
+    min_gq: Option<isize>,
 ) -> Result<()> {
-    let processor = DepthProcessor::from_paths(depth_files)?;
+    let processor = DepthProcessor::from_paths(depth_files, min_gq)?;
+    let pop_map = pop_map
+        .unwrap_or_else(|| PopulationMap::default_from_samples(processor.sample_names().to_vec()));
     pop_map.validate_exact_match(processor.sample_names())?;
 
     if output_per_sample_mask {
@@ -47,10 +50,8 @@ fn process_sample_masks(
 
     processor.process_chunks(chunk_size, |chunk, depths, sample_names| {
         let depth_array = MultisampleDepthArray::from_samples(depths, sample_names.to_vec())?;
-        let callable_mask = depth_array.apply_sample_thresholds(
-            thresholds.min_depth,
-            thresholds.max_depth,
-        );
+        let callable_mask =
+            depth_array.apply_sample_thresholds(thresholds.min_depth, thresholds.max_depth);
         output_zarr.write_chunk(&chunk.contig_name, chunk.chunk_idx, callable_mask)?;
         Ok(())
     })?;
@@ -65,10 +66,7 @@ fn process_population_counts(
     thresholds: ThresholdConfig,
     chunk_size: u64,
 ) -> Result<CallableArrays> {
-    let population_names: Vec<String> = pop_map
-        .populations()
-        .map(|p| p.name.clone())
-        .collect();
+    let population_names: Vec<String> = pop_map.populations().map(|p| p.name.clone()).collect();
 
     let output_zarr = CallableArrays::create_new(
         output_path,
@@ -81,10 +79,8 @@ fn process_population_counts(
 
     processor.process_chunks(chunk_size, |chunk, depths, sample_names| {
         let depth_array = MultisampleDepthArray::from_samples(depths, sample_names.to_vec())?;
-        let callable_mask = depth_array.apply_sample_thresholds(
-            thresholds.min_depth,
-            thresholds.max_depth,
-        );
+        let callable_mask =
+            depth_array.apply_sample_thresholds(thresholds.min_depth, thresholds.max_depth);
         let callable_counts = depth_array.count_callable_per_population(
             &callable_mask,
             &pop_membership,
@@ -94,6 +90,110 @@ fn process_population_counts(
         output_zarr.write_chunk(&chunk.contig_name, chunk.chunk_idx, callable_counts)?;
         Ok(())
     })?;
+
+    Ok(output_zarr)
+}
+
+pub fn run_loci_zarr(
+    input_zarr_path: PathBuf,
+    output_path: PathBuf,
+    pop_map: Option<PopulationMap>,
+    thresholds: ThresholdConfig,
+    output_per_sample_mask: bool,
+) -> Result<()> {
+    let input_zarr = DepthArrays::open(&input_zarr_path)?;
+    let input_zarr_samples = input_zarr.column_names();
+    let chunk_size = input_zarr.chunk_size();
+
+    let pop_map =
+        pop_map.unwrap_or_else(|| PopulationMap::default_from_samples(input_zarr_samples.to_vec()));
+    pop_map.validate_exact_match(input_zarr_samples)?;
+
+    if output_per_sample_mask {
+        process_sample_masks_zarr(input_zarr, output_path, thresholds, chunk_size)?;
+    } else {
+        process_population_counts_zarr(input_zarr, output_path, pop_map, thresholds, chunk_size)?;
+    }
+
+    Ok(())
+}
+
+fn process_sample_masks_zarr(
+    input_zarr: DepthArrays,
+    output_path: PathBuf,
+    thresholds: ThresholdConfig,
+    chunk_size: u64,
+) -> Result<SampleMaskArrays> {
+    let output_zarr = SampleMaskArrays::create_new(
+        output_path,
+        input_zarr.contigs().clone(),
+        input_zarr.column_names().to_vec(),
+        chunk_size,
+    )?;
+
+    for (chrom_name, chrom_length) in input_zarr.contigs().iter() {
+        let num_chunks = (chrom_length as u64 + chunk_size - 1) / chunk_size;
+
+        for chunk_idx in 0..num_chunks {
+            let depths = input_zarr.read_chunk(chrom_name, chunk_idx)?;
+
+            let depth_array = MultisampleDepthArray {
+                depths,
+                sample_names: input_zarr.column_names().to_vec(),
+            };
+
+            let callable_mask =
+                depth_array.apply_sample_thresholds(thresholds.min_depth, thresholds.max_depth);
+
+            output_zarr.write_chunk(chrom_name, chunk_idx, callable_mask)?;
+        }
+    }
+
+    Ok(output_zarr)
+}
+
+fn process_population_counts_zarr(
+    input_zarr: DepthArrays,
+    output_path: PathBuf,
+    pop_map: PopulationMap,
+    thresholds: ThresholdConfig,
+    chunk_size: u64,
+) -> Result<CallableArrays> {
+    let population_names: Vec<String> = pop_map.populations().map(|p| p.name.clone()).collect();
+
+    let output_zarr = CallableArrays::create_new(
+        output_path,
+        input_zarr.contigs().clone(),
+        population_names,
+        chunk_size,
+    )?;
+
+    let pop_membership = build_pop_membership(input_zarr.column_names(), &pop_map);
+
+    for (chrom_name, chrom_length) in input_zarr.contigs().iter() {
+        let num_chunks = (chrom_length as u64 + chunk_size - 1) / chunk_size;
+
+        for chunk_idx in 0..num_chunks {
+            let depths = input_zarr.read_chunk(chrom_name, chunk_idx)?;
+
+            let depth_array = MultisampleDepthArray {
+                depths,
+                sample_names: input_zarr.column_names().to_vec(),
+            };
+
+            let callable_mask =
+                depth_array.apply_sample_thresholds(thresholds.min_depth, thresholds.max_depth);
+
+            let callable_counts = depth_array.count_callable_per_population(
+                &callable_mask,
+                &pop_membership,
+                thresholds.min_proportion,
+                thresholds.mean_depth_range,
+            )?;
+
+            output_zarr.write_chunk(chrom_name, chunk_idx, callable_counts)?;
+        }
+    }
 
     Ok(output_zarr)
 }
@@ -131,10 +231,11 @@ mod tests {
         run_loci(
             depth_files,
             output_path.clone(),
-            pop_map,
+            Some(pop_map),
             thresholds,
             100,
             false,
+            None,
         )
         .unwrap();
 
@@ -181,10 +282,11 @@ mod tests {
         run_loci(
             depth_files,
             output_path.clone(),
-            pop_map,
+            Some(pop_map),
             thresholds,
             100,
             false,
+            None,
         )
         .unwrap();
 
@@ -234,10 +336,11 @@ mod tests {
         run_loci(
             depth_files,
             output_path.clone(),
-            pop_map,
+            Some(pop_map),
             thresholds,
             100,
             true,
+            None,
         )
         .unwrap();
 
@@ -285,10 +388,11 @@ mod tests {
         run_loci(
             depth_files,
             output_path.clone(),
-            pop_map,
+            Some(pop_map),
             thresholds,
             100,
             true,
+            None,
         )
         .unwrap();
 

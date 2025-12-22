@@ -7,12 +7,30 @@ use log::warn;
 use noodles::bgzf::{self, IndexedReader};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::sync::Mutex;
+use std::collections::HashSet;
+
+static WARNED_FILES: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+fn warn_missing_index(path: &Path) {
+    let warned = WARNED_FILES.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut set = warned.lock().unwrap();
+    if set.insert(path.to_path_buf()) {
+        warn!(
+            "SFI index not found for D4 file: {}, this will result in slower performance. \
+            You can create the index by running: d4tools index build {}",
+            path.display(),
+            path.display()
+        );
+    }
+}
 
 
 pub struct D4Reader {
     inner: D4TrackReader<File>,
     sample_name: String,
-    src: PathBuf,
+    
 }
 
 impl D4Reader {
@@ -54,18 +72,13 @@ impl D4Reader {
         let track_root = d4_reader.as_root();
         let ic = D4IndexCollection::from_root_container(&track_root);
         if ic.is_err() {
-            warn!(
-                "SFI index not found for D4 file: {}, this will result in slower performance. \
-                You can create the index by running: d4tools index build {}",
-                src_path.display(),
-                src_path.display()
-            );
+            warn_missing_index(&src_path);
         }
 
         Ok(Self {
             inner: d4_reader,
             sample_name: sample_name.to_string(),
-            src: src_path,
+            
         })
     }
     pub fn list_tracks<P: AsRef<Path>>(src: P) -> Result<Vec<PathBuf>> {
@@ -169,7 +182,7 @@ impl DepthSource for D4Reader {
 pub struct BgzfD4Reader {
     inner: D4TrackReader<IndexedReader<File>>,
     sample_name: String,
-    src: PathBuf,
+    
 }
 
 impl BgzfD4Reader {
@@ -208,7 +221,7 @@ impl BgzfD4Reader {
         Ok(Self {
             inner: d4_reader,
             sample_name: sample_name.to_string(),
-            src: src_path,
+            
         })
     }
 }

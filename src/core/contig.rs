@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-
 use color_eyre::{
     eyre::{bail, WrapErr},
     Result,
@@ -28,6 +27,8 @@ pub struct ContigChunk {
     pub end: u32,
 }
 
+
+
 #[derive(Debug, Clone)]
 pub struct ContigSet {
     contigs: IndexMap<String, usize>, // name -> length, ordered
@@ -39,7 +40,7 @@ impl ContigSet {
         let contigs = contigs.into_iter().map(|c| (c.name, c.length)).collect();
         Self { contigs }
     }
-
+    
     /// Get contig length by name
     pub fn get_length(&self, name: &str) -> Option<usize> {
         self.contigs.get(name).copied()
@@ -98,7 +99,7 @@ impl ContigSet {
     }
 
     pub fn to_chunks(&self, chunk_size: u64) -> Vec<ContigChunk> {
-        self.iter()
+        let chunks: Vec<ContigChunk> = self.iter()
             .flat_map(|(contig, length)| {
                 let num_chunks = (length + chunk_size as usize - 1) / chunk_size as usize;
                 (0..num_chunks)
@@ -114,7 +115,9 @@ impl ContigSet {
                     })
                     .collect::<Vec<_>>()
             })
-            .collect()
+            .collect();
+        
+        chunks
     }
     /// Filter contigs based on include/exclude lists
     pub fn filter(
@@ -125,14 +128,14 @@ impl ContigSet {
         let filtered = self.contigs
             .into_iter()
             .filter(|(name, _)| {
-                // If include list exists, contig must be in it
+                
                 if let Some(include_set) = include {
                     if !include_set.contains(name.as_str()) {
                         return false;
                     }
                 }
                 
-                // If exclude list exists, contig must not be in it
+                
                 if let Some(exclude_set) = exclude {
                     if exclude_set.contains(name.as_str()) {
                         return false;

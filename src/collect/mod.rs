@@ -1,11 +1,22 @@
 use crate::core::depth::array::stack_depths;
 use crate::core::depth::DepthProcessor;
-use crate::core::zarr::DepthArrays;
+use crate::core::zarr::{DepthArrays, is_zarr_path};
 use color_eyre::Result;
+use color_eyre::Help;
+use color_eyre::eyre::eyre;
 use std::path::PathBuf;
 
-pub fn run_collect(depth_files: Vec<PathBuf>, output_path: PathBuf, chunk_size: u64) -> Result<()> {
-    let processor = DepthProcessor::from_paths(depth_files)?;
+
+pub fn run_collect(depth_files: Vec<PathBuf>, output_path: PathBuf, chunk_size: u64, min_gq: Option<isize>) -> Result<()> {
+    if is_zarr_path(&output_path) {
+        return Err(eyre!(
+            "Output zarr path: {} already exists",
+            output_path.display()
+        ))
+        .suggestion("Remove the existing directory or choose a different output path");
+    }
+    
+    let processor = DepthProcessor::from_paths(depth_files, min_gq)?;
 
     let output_zarr = DepthArrays::create_new(
         output_path,
@@ -43,7 +54,7 @@ mod tests {
 
         let depth_files = vec![PathBuf::from(path)];
 
-        run_collect(depth_files, output_path.clone(), 100).unwrap();
+        run_collect(depth_files, output_path.clone(), 100, None).unwrap();
 
         assert!(output_path.exists());
 
@@ -76,7 +87,7 @@ mod tests {
 
         let depth_files: Vec<PathBuf> = paths.iter().map(|p| PathBuf::from(p)).collect();
 
-        run_collect(depth_files, output_path.clone(), 100).unwrap();
+        run_collect(depth_files, output_path.clone(), 100, None).unwrap();
 
         assert!(output_path.exists());
 

@@ -241,7 +241,7 @@ impl Add for AlleleCounts {
             refs: &self.refs + &other.refs,
             alts: &self.alts + &other.alts,
             missing: &self.missing + &other.missing,
-            hets: self.hets | other.hets, // logical OR - a sample is het if it's het at any position
+            hets: self.hets | other.hets, 
             non_roh: match (self.non_roh, other.non_roh) {
                 (Some(a), Some(b)) => Some(a + b),
                 _ => None,
@@ -318,7 +318,7 @@ mod tests {
         ]
     }
 
-    fn parse_vcf_line(line: &str, header: &Header) -> Result<Record> {
+    fn parse_vcf_line(line: &str, _header: &Header) -> Result<Record> {
         let mut reader = vcf::io::Reader::new(line.as_bytes());
         let mut record = vcf::Record::default();
         reader.read_record(&mut record)?;

@@ -18,10 +18,11 @@ pub struct GvcfReader {
     header: Header,
     src: PathBuf,
     sample_name: String,
+    min_gq: isize,
 }
 
 impl GvcfReader {
-    pub fn new<P: AsRef<Path>>(src: P, sample_name: &str) -> Result<Self> {
+    pub fn new<P: AsRef<Path>>(src: P, sample_name: &str, min_gq: Option<isize>) -> Result<Self> {
         let src_path = src.as_ref().to_path_buf();
 
         let mut reader = noodles::vcf::io::indexed_reader::Builder::default()
@@ -37,6 +38,7 @@ impl GvcfReader {
             header,
             src: src_path,
             sample_name: sample_name.to_string(),
+            min_gq: min_gq.unwrap_or(1),
         })
     }
 }
@@ -56,7 +58,13 @@ impl DepthSource for GvcfReader {
             .query(&self.header, &region)
             .wrap_err_with(|| format!("Failed to query region: {}:{}-{}", chrom, start, end))?;
 
-        trace!("Querying GVCF{} region {}:{}-{}", self.src.display(), chrom, start, end);
+        trace!(
+            "Querying GVCF{} region {}:{}-{}",
+            self.src.display(),
+            chrom,
+            start,
+            end
+        );
 
         for result in query {
             let record = result.wrap_err("Failed to read GVCF record")?;
@@ -130,14 +138,14 @@ impl DepthSource for GvcfReader {
                 gq
             );
 
-            // Fill in depths for this interval
-            // If GQ is 0, treat depth as 0 (not callable)
-            let depth_value = if gq > 0 { dp as u32 } else { 0 };
-
-            for pos in array_start..array_end {
-                let idx = pos.saturating_sub(start as usize);
-                if idx < depths.len() {
-                    depths[idx] = depth_value;
+            // Fill in depths for this interval only if gq is greater than threshold
+            
+            if gq >= self.min_gq as i32 {
+                for pos in array_start..array_end {
+                    let idx = pos.saturating_sub(start as usize);
+                    if idx < depths.len() {
+                        depths[idx] = dp as u32;
+                    }
                 }
             }
         }
@@ -163,4 +171,3 @@ impl DepthSource for GvcfReader {
         &self.sample_name
     }
 }
-

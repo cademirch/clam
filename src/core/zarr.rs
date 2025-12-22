@@ -16,7 +16,7 @@ use zarrs::filesystem::FilesystemStore;
 use zarrs::group::{Group, GroupBuilder};
 use zarrs::storage::ReadableWritableListableStorage;
 
-/// Multi-chromosome zarr storage with typed values
+
 pub struct ChromosomeArrays<T: ElementOwned> {
     path: PathBuf,
     store: ReadableWritableListableStorage,
@@ -24,6 +24,22 @@ pub struct ChromosomeArrays<T: ElementOwned> {
     column_names: Vec<String>,
     chunk_size: u64,
     _marker: PhantomData<T>,
+}
+
+pub fn is_zarr_path(path: &Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+
+    if path.join("zarr.json").exists() {
+        return true;
+    }
+
+    if path.join(".zgroup").exists() || path.join(".zarray").exists() {
+        return true;
+    }
+
+    false
 }
 
 impl<T: ElementOwned + Default> ChromosomeArrays<T> {
@@ -38,7 +54,7 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
         let path = path.as_ref().to_path_buf();
         let store = Self::open_store(&path)?;
 
-        // Create root group and metadata
+        
         let mut group = GroupBuilder::new().build(store.clone(), "/")?;
         let metadata = serde_json::json!({
             "contigs": contigs.iter()
@@ -55,7 +71,7 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
             .insert("clam_metadata".to_string(), metadata);
         group.store_metadata()?;
 
-        // Create array for each chromosome
+        
         for (chrom_name, chrom_length) in contigs.iter() {
             let mut builder = ArrayBuilder::new(
                 vec![chrom_length as u64, column_names.len() as u64],
@@ -64,31 +80,27 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
                 fill_value.clone(),
             );
 
-            
             let builder = if matches!(data_type, DataType::Bool) {
-                
                 builder.array_to_bytes_codec(Arc::new(PackBitsCodec::default()))
             } else {
-                
                 let typesize = match &data_type {
                     DataType::UInt8 | DataType::Int8 => 1,
                     DataType::UInt16 | DataType::Int16 => 2,
                     DataType::UInt32 | DataType::Int32 | DataType::Float32 => 4,
                     DataType::UInt64 | DataType::Int64 | DataType::Float64 => 8,
-                    _ => 4, 
+                    _ => 4,
                 };
                 builder.bytes_to_bytes_codecs(vec![Arc::new(BloscCodec::new(
                     BloscCompressor::Zstd,
                     BloscCompressionLevel::try_from(5).unwrap(),
-                    None, 
+                    None,
                     BloscShuffleMode::Shuffle,
-                    Some(typesize), 
+                    Some(typesize),
                 )?)])
             };
 
             let mut array = builder.build(store.clone(), &format!("/{}", chrom_name))?;
 
-            
             let contig_metadata = serde_json::json!({
                 "contig": chrom_name,
                 "length": chrom_length,
@@ -110,12 +122,11 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
         })
     }
 
-    /// Open existing zarr
+    
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let store = Self::open_store(&path)?;
 
-        
         let group = Group::open(store.clone(), "/")?;
         let metadata = group
             .attributes()
@@ -174,13 +185,11 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
             .get_length(chrom)
             .ok_or_eyre("Failed to find contig")?;
 
-        
         let chunk_end = (chunk_idx + 1) * self.chunk_size;
 
         Ok(chunk_end > chrom_length as u64)
     }
 
-    
     pub fn write_chunk(&self, chrom: &str, chunk_idx: u64, data: Array2<T>) -> Result<()> {
         let array = Array::open(self.store.clone(), &format!("/{}", chrom))?;
 
@@ -189,10 +198,8 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
         }
 
         if data.shape()[0] == self.chunk_size as usize {
-            
             array.store_chunk_ndarray(&[chunk_idx, 0], data)?;
         } else if self.is_last_chunk(chrom, chunk_idx)? {
-            
             array.store_chunk_subset_ndarray(&[chunk_idx, 0], &[0, 0], data)?;
         } else {
             return Err(eyre!(
@@ -220,8 +227,6 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
     pub fn path(&self) -> &Path {
         &self.path
     }
-
-    
 
     /// Convert position to chunk index
     pub fn position_to_chunk(&self, position: u32) -> u64 {

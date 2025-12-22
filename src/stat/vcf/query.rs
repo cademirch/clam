@@ -57,7 +57,6 @@ impl VcfQuery {
         header: &Header,
     ) -> Result<Option<VariantResult>> {
         let variant_position = variant_start(record)?;
-        let pos_idx = variant_position - self.query_region.start_usize();
         let window_idx = match self.window_index.window_idx_for_pos(variant_position) {
             Some(idx) => idx,
             None => return Ok(None), // Variant outside all windows
@@ -76,34 +75,7 @@ impl VcfQuery {
 
         Ok(Some((window_idx, variant_position, allele_counts)))
     }
-    fn compute_invariant_refs(
-        &self,
-        position: usize, // 1-based genomic position
-        callable_per_pop: &Array2<u16>,
-    ) -> (Array1<usize>, Option<Array1<usize>>) {
-        let array_idx = self.genomic_to_array_idx(position);
 
-        let callable_at_pos = callable_per_pop.row(array_idx);
-        let ref_alleles_per_sample = self.ploidy.as_usize();
-
-        // All callable samples contribute ref alleles (invariant = all 0/0)
-        let refs_all = callable_at_pos.mapv(|count| count as usize * ref_alleles_per_sample);
-
-        // NON-ROH refs: callable - roh per population
-        let refs_non_roh = self.roh_index.as_ref().map(|roh_idx| {
-            let roh_counts_per_pop = roh_idx.roh_counts_per_pop(position);
-
-            callable_at_pos
-                .iter()
-                .zip(roh_counts_per_pop.iter())
-                .map(|(&callable, &roh)| {
-                    callable.saturating_sub(roh) as usize * ref_alleles_per_sample
-                })
-                .collect()
-        });
-
-        (refs_all, refs_non_roh)
-    }
     pub fn load_callable_data(&self) -> Result<Option<Array2<u16>>> {
         let res = match &self.callable_loci {
             Some(callable_arrays) => Some(
@@ -142,34 +114,76 @@ impl VcfQuery {
 
         if let Some(ref callable) = callable_per_pop {
             let num_pops = self.pop_map.num_populations();
+            let num_pop_pairs = if num_pops >= 2 {
+                num_pops * (num_pops - 1) / 2
+            } else {
+                0
+            };
 
             windows.par_iter_mut().try_for_each(|window| {
                 let window_start = window.region.start_usize();
                 let window_end = window.region.end_usize();
 
-                let mut total_refs = Array1::zeros(num_pops);
-                let mut total_refs_non_roh = if self.roh_index.is_some() {
+                let mut total_comparisons = Array1::zeros(num_pops);
+                let mut total_comparisons_non_roh = if self.roh_index.is_some() {
                     Some(Array1::zeros(num_pops))
                 } else {
                     None
                 };
+                let mut total_dxy_comparisons = vec![0; num_pop_pairs];
 
                 for position in window_start..=window_end {
                     if window.variant_positions.contains(&position) {
                         continue;
                     }
 
-                    let (refs, refs_non_roh) = self.compute_invariant_refs(position, callable);
+                    let array_idx = self.genomic_to_array_idx(position);
+                    let callable_at_pos = callable.row(array_idx);
 
-                    total_refs += &refs;
-                    if let (Some(total_non_roh), Some(refs_non_roh)) =
-                        (&mut total_refs_non_roh, refs_non_roh)
-                    {
-                        *total_non_roh += &refs_non_roh;
+                    for pop_idx in 0..num_pops {
+                        let callable_samples = callable_at_pos[pop_idx] as usize;
+                        let haps = callable_samples * self.ploidy.as_usize();
+
+                        let comps = if haps > 1 { (haps * (haps - 1)) / 2 } else { 0 };
+
+                        total_comparisons[pop_idx] += comps;
+                    }
+
+                    if num_pops >= 2 {
+                        let mut pair_idx = 0;
+                        for i in 0..num_pops {
+                            let haps_i = callable_at_pos[i] as usize * self.ploidy.as_usize();
+                            for j in (i + 1)..num_pops {
+                                let haps_j = callable_at_pos[j] as usize * self.ploidy.as_usize();
+                                total_dxy_comparisons[pair_idx] += haps_i * haps_j;
+                                pair_idx += 1;
+                            }
+                        }
+                    }
+
+                    if let Some(total_comps_non_roh) = &mut total_comparisons_non_roh {
+                        if let Some(roh_idx) = &self.roh_index {
+                            let roh_counts = roh_idx.roh_counts_per_pop(position);
+
+                            for pop_idx in 0..num_pops {
+                                let callable_samples = callable_at_pos[pop_idx];
+                                let non_roh_samples =
+                                    callable_samples.saturating_sub(roh_counts[pop_idx]);
+                                let haps = non_roh_samples as usize * self.ploidy.as_usize();
+
+                                let comps = if haps > 1 { (haps * (haps - 1)) / 2 } else { 0 };
+
+                                total_comps_non_roh[pop_idx] += comps;
+                            }
+                        }
                     }
                 }
 
-                window.add_invariants(total_refs, total_refs_non_roh);
+                window.add_invariant_comparisons(
+                    total_comparisons,
+                    total_comparisons_non_roh,
+                    total_dxy_comparisons,
+                );
 
                 Ok::<_, color_eyre::Report>(())
             })?;
