@@ -141,6 +141,10 @@ pub struct LociArgs {
     #[arg(long = "min-gq")]
     pub min_gq: Option<isize>,
 
+    /// Custom thresholds per chromosome. Tab-separated file: contig, min_depth, max_depth
+    #[arg(long = "thresholds-file")]
+    pub threshold_file: Option<PathBuf>,
+
     /// Shared options
     #[command(flatten)]
     pub shared: SharedOptions,
@@ -217,6 +221,7 @@ impl LociArgs {
     pub fn run(self) -> Result<()> {
         use clam::core::population::PopulationMap;
         use clam::core::zarr::is_zarr_path;
+        use clam::core::utils::parse_contig_thresholds;
         use clam::loci::{run_loci, run_loci_zarr, ThresholdConfig};
 
         self.shared.initialize_threading()?;
@@ -226,12 +231,17 @@ impl LociArgs {
         } else {
             None
         };
-
+        let per_contig = if let Some(ref path) = self.threshold_file {
+            Some(parse_contig_thresholds(path)?)
+        } else {
+            None
+        };
         let thresholds = ThresholdConfig {
             min_depth: self.min_depth,
             max_depth: self.max_depth,
             min_proportion: self.min_proportion,
             mean_depth_range: (self.mean_depth_min, self.mean_depth_max),
+            per_contig: per_contig
         };
 
         if self.input.len() == 1 && is_zarr_path(&self.input[0]) {

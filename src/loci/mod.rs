@@ -4,12 +4,26 @@ use crate::core::population::PopulationMap;
 use crate::core::zarr::{CallableArrays, DepthArrays, SampleMaskArrays};
 use color_eyre::Result;
 use std::path::PathBuf;
+use std::collections::HashMap;
 
 pub struct ThresholdConfig {
     pub min_depth: f64,
     pub max_depth: f64,
     pub min_proportion: f64,
     pub mean_depth_range: (f64, f64),
+    pub per_contig: Option<HashMap<String, (f64, f64)>>,  // contig -> (min, max)
+
+}
+
+impl ThresholdConfig {
+    
+    pub fn depth_range_for_contig(&self, contig: &str) -> (f64, f64) {
+        self.per_contig
+            .as_ref()
+            .and_then(|m| m.get(contig))
+            .copied()
+            .unwrap_or((self.min_depth, self.max_depth))
+    }
 }
 
 pub fn run_loci(
@@ -22,6 +36,7 @@ pub fn run_loci(
     min_gq: Option<isize>,
 ) -> Result<()> {
     let processor = DepthProcessor::from_paths(depth_files, min_gq)?;
+    //TODO: check that threshold per contig matches depth processor contigs
     let pop_map = pop_map
         .unwrap_or_else(|| PopulationMap::default_from_samples(processor.sample_names().to_vec()));
     pop_map.validate_exact_match(processor.sample_names())?;
@@ -226,6 +241,7 @@ mod tests {
             max_depth: f64::INFINITY,
             min_proportion: 0.0,
             mean_depth_range: (0.0, f64::INFINITY),
+            per_contig:None
         };
 
         run_loci(
@@ -277,6 +293,7 @@ mod tests {
             max_depth: f64::INFINITY,
             min_proportion: 0.0,
             mean_depth_range: (0.0, f64::INFINITY),
+            per_contig:None
         };
 
         run_loci(
@@ -331,6 +348,7 @@ mod tests {
             max_depth: f64::INFINITY,
             min_proportion: 0.0,
             mean_depth_range: (0.0, f64::INFINITY),
+            per_contig:None
         };
 
         run_loci(
@@ -383,6 +401,7 @@ mod tests {
             max_depth: f64::INFINITY,
             min_proportion: 0.0,
             mean_depth_range: (0.0, f64::INFINITY),
+            per_contig:None
         };
 
         run_loci(

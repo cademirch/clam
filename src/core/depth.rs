@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use indicatif::{ProgressBar, ProgressStyle};
 use crate::core::zarr::DepthArrays;
+use crate::core::utils::create_spinner;
 pub mod array;
 pub mod d4;
 pub mod gvcf;
@@ -130,20 +131,23 @@ pub struct DepthProcessor {
 
 impl DepthProcessor {
     pub fn from_paths(paths: Vec<PathBuf>, min_gq: Option<isize>) -> Result<Self> {
-        info!("Processing {} depth files: {:?}", paths.len(), &paths);
+        let spinner = create_spinner("Opening depth files...");
+        
         let (sources, sample_names, reference_contigs) =
             if paths.len() == 1 && is_multisample_d4(&paths[0])? {
+                spinner.set_message("Reading multisample D4 tracks...");
                 setup_multisample(&paths[0])?
             } else {
+                spinner.set_message(format!("Opening {} depth files...", paths.len()));
                 setup_individual_files(paths, min_gq)?
             };
-        Ok(Self {
-            sources,
-            sample_names,
-            reference_contigs,
-            min_gq
-        })
+        
+        spinner.finish_with_message(format!("✓ Loaded {} samples", sample_names.len()));
+        
+        Ok(Self { sources, sample_names, reference_contigs, min_gq })
     }
+
+
 
     pub fn sample_names(&self) -> &[String] {
         &self.sample_names
@@ -233,6 +237,8 @@ fn setup_multisample(path: &Path) -> Result<(DepthSources, Vec<String>, ContigSe
 }
 
 fn setup_individual_files(paths: Vec<PathBuf>, min_gq: Option<isize>) -> Result<(DepthSources, Vec<String>, ContigSet)> {
+    let spinner = create_spinner("Opening depth files...");
+    
     let readers: Vec<_> = paths
         .iter()
         .map(|path| open_depth_source(path, min_gq))
@@ -243,6 +249,8 @@ fn setup_individual_files(paths: Vec<PathBuf>, min_gq: Option<isize>) -> Result<
         .map(|r| r.sample_name().to_string())
         .collect();
 
+    spinner.set_message("Validating contigs across files...");
+    
     let contig_sets: Vec<_> = paths
         .iter()
         .zip(readers.iter())
@@ -250,13 +258,12 @@ fn setup_individual_files(paths: Vec<PathBuf>, min_gq: Option<isize>) -> Result<
         .collect();
 
     let reference_contigs = validate_contig_consistency(contig_sets)?;
+    
+    spinner.finish_and_clear(); 
 
-    Ok((
-        DepthSources::IndividualFiles(paths),
-        sample_names,
-        reference_contigs,
-    ))
+    Ok((DepthSources::IndividualFiles(paths), sample_names, reference_contigs))
 }
+
 
 #[cfg(test)]
 mod tests {
