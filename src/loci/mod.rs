@@ -4,7 +4,7 @@ use crate::core::population::PopulationMap;
 use crate::core::utils::create_progress_bar;
 use crate::core::zarr::{CallableArrays, DepthArrays, SampleMaskArrays};
 use color_eyre::Result;
-use rayon::prelude::*;
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -67,7 +67,7 @@ fn process_sample_masks(
         let depth_array = MultisampleDepthArray::from_samples(depths, sample_names.to_vec())?;
         let callable_mask =
             depth_array.apply_sample_thresholds(thresholds.min_depth, thresholds.max_depth);
-        output_zarr.write_chunk(&chunk.contig_name, chunk.chunk_idx, callable_mask)?;
+        output_zarr.write_chunk(&chunk.contig_name, chunk.chunk_idx, callable_mask, None)?;
         Ok(())
     })?;
 
@@ -102,7 +102,7 @@ fn process_population_counts(
             thresholds.min_proportion,
             thresholds.mean_depth_range,
         )?;
-        output_zarr.write_chunk(&chunk.contig_name, chunk.chunk_idx, callable_counts)?;
+        output_zarr.write_chunk(&chunk.contig_name, chunk.chunk_idx, callable_counts, None)?;
         Ok(())
     })?;
 
@@ -145,22 +145,41 @@ fn process_sample_masks_zarr(
         input_zarr.column_names().to_vec(),
         chunk_size,
     )?;
-    let input_chunks = input_zarr.chunks();
-    let pb = create_progress_bar(input_chunks.len());
 
-    input_chunks.par_iter().try_for_each(|chunk| {
-        let depths = input_zarr.read_chunk(&chunk.contig_name, chunk.chunk_idx)?;
-        let depth_array = MultisampleDepthArray {
-            depths,
-            sample_names: input_zarr.column_names().to_vec(),
-        };
-        let callable_mask =
-            depth_array.apply_sample_thresholds(thresholds.min_depth, thresholds.max_depth);
-        output_zarr.write_chunk(&chunk.contig_name, chunk.chunk_idx, callable_mask)?;
-        pb.inc(1);
-        Ok::<_, color_eyre::Report>(())
-    })?;
+    let sample_names = input_zarr.column_names().to_vec();
 
+    let total_chunks: usize = input_zarr
+        .contigs()
+        .iter()
+        .map(|(_, len)| ((len as u64 + chunk_size - 1) / chunk_size) as usize)
+        .sum();
+    let pb = create_progress_bar(total_chunks);
+
+    // Process by chromosome - open arrays once per chromosome
+    for (chrom_name, chrom_length) in input_zarr.contigs().iter() {
+        let num_chunks = (chrom_length as u64 + chunk_size - 1) / chunk_size;
+
+        let input_array = input_zarr.open_array(chrom_name)?;
+        let output_array = output_zarr.open_array(chrom_name)?;
+
+        (0..num_chunks).into_par_iter().try_for_each(|chunk_idx| {
+            let depths = input_zarr.read_chunk(chrom_name, chunk_idx, Some(&input_array))?;
+
+            let depth_array = MultisampleDepthArray {
+                depths,
+                sample_names: sample_names.clone(),
+            };
+
+            let callable_mask =
+                depth_array.apply_sample_thresholds(thresholds.min_depth, thresholds.max_depth);
+
+            output_zarr.write_chunk(chrom_name, chunk_idx, callable_mask, Some(&output_array))?;
+            pb.inc(1);
+            Ok::<_, color_eyre::Report>(())
+        })?;
+    }
+
+    pb.finish_with_message("done");
     Ok(output_zarr)
 }
 
@@ -181,31 +200,47 @@ fn process_population_counts_zarr(
     )?;
 
     let pop_membership = build_pop_membership(input_zarr.column_names(), &pop_map);
-    let input_chunks = input_zarr.chunks();
-    let pb = create_progress_bar(input_chunks.len());
-    input_chunks.par_iter().try_for_each(|chunk| {
-        let depths = input_zarr.read_chunk(&chunk.contig_name, chunk.chunk_idx)?;
+    let sample_names = input_zarr.column_names().to_vec();
 
-        let depth_array = MultisampleDepthArray {
-            depths,
-            sample_names: input_zarr.column_names().to_vec(),
-        };
+    let total_chunks: usize = input_zarr
+        .contigs()
+        .iter()
+        .map(|(_, len)| ((len as u64 + chunk_size - 1) / chunk_size) as usize)
+        .sum();
+    let pb = create_progress_bar(total_chunks);
 
-        let callable_mask =
-            depth_array.apply_sample_thresholds(thresholds.min_depth, thresholds.max_depth);
+    // Process by chromosome - open arrays once per chromosome
+    for (chrom_name, chrom_length) in input_zarr.contigs().iter() {
+        let num_chunks = (chrom_length as u64 + chunk_size - 1) / chunk_size;
 
-        let callable_counts = depth_array.count_callable_per_population(
-            &callable_mask,
-            &pop_membership,
-            thresholds.min_proportion,
-            thresholds.mean_depth_range,
-        )?;
+        let input_array = input_zarr.open_array(chrom_name)?;
+        let output_array = output_zarr.open_array(chrom_name)?;
 
-        output_zarr.write_chunk(&chunk.contig_name, chunk.chunk_idx, callable_counts)?;
-        pb.inc(1);
-        Ok::<_, color_eyre::Report>(())
-    })?;
+        (0..num_chunks).into_par_iter().try_for_each(|chunk_idx| {
+            let depths = input_zarr.read_chunk(chrom_name, chunk_idx, Some(&input_array))?;
 
+            let depth_array = MultisampleDepthArray {
+                depths,
+                sample_names: sample_names.clone(),
+            };
+
+            let callable_mask =
+                depth_array.apply_sample_thresholds(thresholds.min_depth, thresholds.max_depth);
+
+            let callable_counts = depth_array.count_callable_per_population(
+                &callable_mask,
+                &pop_membership,
+                thresholds.min_proportion,
+                thresholds.mean_depth_range,
+            )?;
+
+            output_zarr.write_chunk(chrom_name, chunk_idx, callable_counts, Some(&output_array))?;
+            pb.inc(1);
+            Ok::<_, color_eyre::Report>(())
+        })?;
+    }
+
+    pb.finish_with_message("done");
     Ok(output_zarr)
 }
 
@@ -258,7 +293,7 @@ mod tests {
         for (chrom_name, chrom_length) in arrays.contigs().iter() {
             let num_chunks = (chrom_length as u64 + 99) / 100;
             for chunk_idx in 0..num_chunks {
-                let chunk_data = arrays.read_chunk(chrom_name, chunk_idx).unwrap();
+                let chunk_data = arrays.read_chunk(chrom_name, chunk_idx, None).unwrap();
                 assert!(chunk_data.iter().all(|&x| x == expected));
             }
         }
@@ -311,7 +346,7 @@ mod tests {
         for (chrom_name, chrom_length) in arrays.contigs().iter() {
             let num_chunks = (chrom_length as u64 + 99) / 100;
             for chunk_idx in 0..num_chunks {
-                let chunk_data = arrays.read_chunk(chrom_name, chunk_idx).unwrap();
+                let chunk_data = arrays.read_chunk(chrom_name, chunk_idx, None).unwrap();
 
                 let expected_rows = std::cmp::min(100, chrom_length - (chunk_idx * 100) as usize);
                 assert_eq!(chunk_data.shape(), &[expected_rows, 2]);
@@ -366,7 +401,7 @@ mod tests {
         for (chrom_name, chrom_length) in arrays.contigs().iter() {
             let num_chunks = (chrom_length as u64 + 99) / 100;
             for chunk_idx in 0..num_chunks {
-                let chunk_data = arrays.read_chunk(chrom_name, chunk_idx).unwrap();
+                let chunk_data = arrays.read_chunk(chrom_name, chunk_idx, None).unwrap();
                 assert!(chunk_data.iter().all(|&x| x == expected));
             }
         }
@@ -419,7 +454,7 @@ mod tests {
         for (chrom_name, chrom_length) in arrays.contigs().iter() {
             let num_chunks = (chrom_length as u64 + 99) / 100;
             for chunk_idx in 0..num_chunks {
-                let chunk_data = arrays.read_chunk(chrom_name, chunk_idx).unwrap();
+                let chunk_data = arrays.read_chunk(chrom_name, chunk_idx, None).unwrap();
 
                 let expected_rows = std::cmp::min(100, chrom_length - (chunk_idx * 100) as usize);
                 assert_eq!(chunk_data.shape(), &[expected_rows, 2]);

@@ -27,7 +27,7 @@ pub fn run_collect(depth_files: Vec<PathBuf>, output_path: PathBuf, chunk_size: 
 
     processor.process_chunks(chunk_size, |chunk, depths, sample_names| {
         let depth_array = stack_depths(depths, sample_names.to_vec())?;
-        output_zarr.write_chunk(&chunk.contig_name, chunk.chunk_idx, depth_array)?;
+        output_zarr.write_chunk(&chunk.contig_name, chunk.chunk_idx, depth_array, None)?;
         Ok(())
     })?;
 
@@ -64,7 +64,7 @@ mod tests {
         for (chrom_name, chrom_length) in result.contigs().iter() {
             let num_chunks = (chrom_length as u64 + 99) / 100;
             for chunk_idx in 0..num_chunks {
-                let chunk_data = result.read_chunk(chrom_name, chunk_idx).unwrap();
+                let chunk_data = result.read_chunk(chrom_name, chunk_idx, None).unwrap();
 
                 let expected_rows = std::cmp::min(100, chrom_length - (chunk_idx * 100) as usize);
                 assert_eq!(chunk_data.shape(), &[expected_rows, 1]);
@@ -97,7 +97,7 @@ mod tests {
         for (chrom_name, chrom_length) in result.contigs().iter() {
             let num_chunks = (chrom_length as u64 + 99) / 100;
             for chunk_idx in 0..num_chunks {
-                let chunk_data = result.read_chunk(chrom_name, chunk_idx).unwrap();
+                let chunk_data = result.read_chunk(chrom_name, chunk_idx, None).unwrap();
 
                 let expected_rows = std::cmp::min(100, chrom_length - (chunk_idx * 100) as usize);
                 assert_eq!(chunk_data.shape(), &[expected_rows, 2]);

@@ -80,7 +80,7 @@ impl VcfQuery {
         let res = match &self.callable_loci {
             Some(callable_arrays) => Some(
                 callable_arrays
-                    .read_chunk(&self.query_chunk.contig_name, self.query_chunk.chunk_idx)?,
+                    .read_chunk(&self.query_chunk.contig_name, self.query_chunk.chunk_idx, None)?,
             ),
             None => None,
         };

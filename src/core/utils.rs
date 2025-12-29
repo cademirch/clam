@@ -22,7 +22,7 @@ pub fn create_progress_bar(total: usize) -> ProgressBar {
     let pb = ProgressBar::new(total as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} chunks ({eta})")
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} chunks ({per_sec}, {eta})")
             .unwrap()
             .progress_chars("#>-")
     );

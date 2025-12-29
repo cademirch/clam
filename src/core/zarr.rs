@@ -14,7 +14,10 @@ use zarrs::array::ElementOwned;
 use zarrs::array::{Array, ArrayBuilder, DataType, FillValue};
 use zarrs::filesystem::FilesystemStore;
 use zarrs::group::{Group, GroupBuilder};
-use zarrs::storage::ReadableWritableListableStorage;
+use zarrs::storage::{ReadableWritableListableStorage, ReadableWritableListableStorageTraits};
+
+
+pub type OpenArray = Array<dyn ReadableWritableListableStorageTraits>;
 
 
 pub struct ChromosomeArrays<T: ElementOwned> {
@@ -166,18 +169,27 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
             _marker: PhantomData,
         })
     }
-
+    
     fn open_store(path: &Path) -> Result<ReadableWritableListableStorage> {
         let store = Arc::new(FilesystemStore::new(path)?);
         Ok(store)
     }
 
-    pub fn read_chunk(&self, chrom: &str, chunk_idx: u64) -> Result<Array2<T>> {
-        let array = Array::open(self.store.clone(), &format!("/{}", chrom))?;
+    pub fn read_chunk(&self, chrom: &str, chunk_idx: u64, array: Option<&OpenArray>) -> Result<Array2<T>> {
+        let owned_array;
+        let array = match array {
+            Some(a) => a,
+            None => {
+                owned_array = self.open_array(chrom)?;
+                &owned_array
+            }
+        };
         let data = array.retrieve_chunk_ndarray(&[chunk_idx, 0])?;
         Ok(data.into_dimensionality()?)
     }
-
+    pub fn open_array(&self, chrom: &str) -> Result<OpenArray> {
+        Ok(Array::open(self.store.clone(), &format!("/{}", chrom))?)
+    }
     /// Check if this is the last (partial) chunk for a chromosome
     pub fn is_last_chunk(&self, chrom: &str, chunk_idx: u64) -> Result<bool> {
         let chrom_length = self
@@ -190,8 +202,15 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
         Ok(chunk_end > chrom_length as u64)
     }
 
-    pub fn write_chunk(&self, chrom: &str, chunk_idx: u64, data: Array2<T>) -> Result<()> {
-        let array = Array::open(self.store.clone(), &format!("/{}", chrom))?;
+    pub fn write_chunk(&self, chrom: &str, chunk_idx: u64, data: Array2<T>, array: Option<&OpenArray>) -> Result<()> {
+        let owned_array;
+        let array = match array {
+            Some(a) => a,
+            None => {
+                owned_array = self.open_array(chrom)?;
+                &owned_array
+            }
+        };
 
         if data.shape()[1] != self.column_names.len() {
             return Err(eyre!("Column count mismatch"));
@@ -211,7 +230,6 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
         }
 
         Ok(())
-    
     }
     pub fn chunks(&self) -> Vec<ContigChunk> {
     self.contigs.to_chunks(self.chunk_size)
@@ -365,8 +383,8 @@ mod tests {
         }
 
         // Write and read back
-        arrays.write_chunk("chr1", 0, data).unwrap();
-        let read_data = arrays.read_chunk("chr1", 0).unwrap();
+        arrays.write_chunk("chr1", 0, data, None).unwrap();
+        let read_data = arrays.read_chunk("chr1", 0, None).unwrap();
 
         assert_eq!(read_data.shape(), &[100, 2]);
         assert_eq!(read_data[[0, 0]], 10);
@@ -438,8 +456,8 @@ mod tests {
         }
 
         // Write and read back
-        arrays.write_chunk("chr1", 0, data.clone()).unwrap();
-        let read_data = arrays.read_chunk("chr1", 0).unwrap();
+        arrays.write_chunk("chr1", 0, data.clone(), None).unwrap();
+        let read_data = arrays.read_chunk("chr1", 0, None).unwrap();
 
         assert_eq!(read_data.shape(), &[100, 2]);
 
@@ -477,8 +495,8 @@ mod tests {
             }
         }
 
-        arrays.write_chunk("chr1", 0, data.clone()).unwrap();
-        let read_data = arrays.read_chunk("chr1", 0).unwrap();
+        arrays.write_chunk("chr1", 0, data.clone(), None).unwrap();
+        let read_data = arrays.read_chunk("chr1", 0, None).unwrap();
 
         // Verify data integrity after compression
         assert_eq!(read_data.shape(), data.shape());
