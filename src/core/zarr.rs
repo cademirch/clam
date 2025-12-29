@@ -1,4 +1,4 @@
-use crate::core::contig::ContigSet;
+use crate::core::contig::{ContigSet,ContigChunk};
 use color_eyre::eyre::OptionExt;
 use color_eyre::{eyre::eyre, Result};
 use ndarray::{s, Array2};
@@ -211,7 +211,11 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
         }
 
         Ok(())
+    
     }
+    pub fn chunks(&self) -> Vec<ContigChunk> {
+    self.contigs.to_chunks(self.chunk_size)
+}
     pub fn contigs(&self) -> &ContigSet {
         &self.contigs
     }

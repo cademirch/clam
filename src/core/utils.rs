@@ -17,6 +17,18 @@ pub fn create_spinner(message: &str) -> ProgressBar {
     pb
 }
 
+/// Helper to create a consistent progress bar
+pub fn create_progress_bar(total: usize) -> ProgressBar {
+    let pb = ProgressBar::new(total as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} chunks ({eta})")
+            .unwrap()
+            .progress_chars("#>-")
+    );
+    pb
+}
+
 #[derive(Debug, Deserialize)]
 struct ThresholdRecord {
     contig: String,

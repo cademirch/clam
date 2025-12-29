@@ -1,22 +1,22 @@
 use crate::core::depth::array::{build_pop_membership, MultisampleDepthArray};
 use crate::core::depth::DepthProcessor;
 use crate::core::population::PopulationMap;
+use crate::core::utils::create_progress_bar;
 use crate::core::zarr::{CallableArrays, DepthArrays, SampleMaskArrays};
 use color_eyre::Result;
-use std::path::PathBuf;
+use rayon::prelude::*;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 pub struct ThresholdConfig {
     pub min_depth: f64,
     pub max_depth: f64,
     pub min_proportion: f64,
     pub mean_depth_range: (f64, f64),
-    pub per_contig: Option<HashMap<String, (f64, f64)>>,  // contig -> (min, max)
-
+    pub per_contig: Option<HashMap<String, (f64, f64)>>, // contig -> (min, max)
 }
 
 impl ThresholdConfig {
-    
     pub fn depth_range_for_contig(&self, contig: &str) -> (f64, f64) {
         self.per_contig
             .as_ref()
@@ -145,24 +145,21 @@ fn process_sample_masks_zarr(
         input_zarr.column_names().to_vec(),
         chunk_size,
     )?;
+    let input_chunks = input_zarr.chunks();
+    let pb = create_progress_bar(input_chunks.len());
 
-    for (chrom_name, chrom_length) in input_zarr.contigs().iter() {
-        let num_chunks = (chrom_length as u64 + chunk_size - 1) / chunk_size;
-
-        for chunk_idx in 0..num_chunks {
-            let depths = input_zarr.read_chunk(chrom_name, chunk_idx)?;
-
-            let depth_array = MultisampleDepthArray {
-                depths,
-                sample_names: input_zarr.column_names().to_vec(),
-            };
-
-            let callable_mask =
-                depth_array.apply_sample_thresholds(thresholds.min_depth, thresholds.max_depth);
-
-            output_zarr.write_chunk(chrom_name, chunk_idx, callable_mask)?;
-        }
-    }
+    input_chunks.par_iter().try_for_each(|chunk| {
+        let depths = input_zarr.read_chunk(&chunk.contig_name, chunk.chunk_idx)?;
+        let depth_array = MultisampleDepthArray {
+            depths,
+            sample_names: input_zarr.column_names().to_vec(),
+        };
+        let callable_mask =
+            depth_array.apply_sample_thresholds(thresholds.min_depth, thresholds.max_depth);
+        output_zarr.write_chunk(&chunk.contig_name, chunk.chunk_idx, callable_mask)?;
+        pb.inc(1);
+        Ok::<_, color_eyre::Report>(())
+    })?;
 
     Ok(output_zarr)
 }
@@ -184,31 +181,30 @@ fn process_population_counts_zarr(
     )?;
 
     let pop_membership = build_pop_membership(input_zarr.column_names(), &pop_map);
+    let input_chunks = input_zarr.chunks();
+    let pb = create_progress_bar(input_chunks.len());
+    input_chunks.par_iter().try_for_each(|chunk| {
+        let depths = input_zarr.read_chunk(&chunk.contig_name, chunk.chunk_idx)?;
 
-    for (chrom_name, chrom_length) in input_zarr.contigs().iter() {
-        let num_chunks = (chrom_length as u64 + chunk_size - 1) / chunk_size;
+        let depth_array = MultisampleDepthArray {
+            depths,
+            sample_names: input_zarr.column_names().to_vec(),
+        };
 
-        for chunk_idx in 0..num_chunks {
-            let depths = input_zarr.read_chunk(chrom_name, chunk_idx)?;
+        let callable_mask =
+            depth_array.apply_sample_thresholds(thresholds.min_depth, thresholds.max_depth);
 
-            let depth_array = MultisampleDepthArray {
-                depths,
-                sample_names: input_zarr.column_names().to_vec(),
-            };
+        let callable_counts = depth_array.count_callable_per_population(
+            &callable_mask,
+            &pop_membership,
+            thresholds.min_proportion,
+            thresholds.mean_depth_range,
+        )?;
 
-            let callable_mask =
-                depth_array.apply_sample_thresholds(thresholds.min_depth, thresholds.max_depth);
-
-            let callable_counts = depth_array.count_callable_per_population(
-                &callable_mask,
-                &pop_membership,
-                thresholds.min_proportion,
-                thresholds.mean_depth_range,
-            )?;
-
-            output_zarr.write_chunk(chrom_name, chunk_idx, callable_counts)?;
-        }
-    }
+        output_zarr.write_chunk(&chunk.contig_name, chunk.chunk_idx, callable_counts)?;
+        pb.inc(1);
+        Ok::<_, color_eyre::Report>(())
+    })?;
 
     Ok(output_zarr)
 }
@@ -241,7 +237,7 @@ mod tests {
             max_depth: f64::INFINITY,
             min_proportion: 0.0,
             mean_depth_range: (0.0, f64::INFINITY),
-            per_contig:None
+            per_contig: None,
         };
 
         run_loci(
@@ -293,7 +289,7 @@ mod tests {
             max_depth: f64::INFINITY,
             min_proportion: 0.0,
             mean_depth_range: (0.0, f64::INFINITY),
-            per_contig:None
+            per_contig: None,
         };
 
         run_loci(
@@ -348,7 +344,7 @@ mod tests {
             max_depth: f64::INFINITY,
             min_proportion: 0.0,
             mean_depth_range: (0.0, f64::INFINITY),
-            per_contig:None
+            per_contig: None,
         };
 
         run_loci(
@@ -401,7 +397,7 @@ mod tests {
             max_depth: f64::INFINITY,
             min_proportion: 0.0,
             mean_depth_range: (0.0, f64::INFINITY),
-            per_contig:None
+            per_contig: None,
         };
 
         run_loci(

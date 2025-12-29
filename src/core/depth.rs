@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use indicatif::{ProgressBar, ProgressStyle};
 use crate::core::zarr::DepthArrays;
-use crate::core::utils::create_spinner;
+use crate::core::utils::{create_spinner, create_progress_bar};
 pub mod array;
 pub mod d4;
 pub mod gvcf;
@@ -164,13 +164,7 @@ where
 {
     let chunks = self.reference_contigs.to_chunks(chunk_size);
     
-    let pb = ProgressBar::new(chunks.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} chunks ({eta})")
-            .unwrap()
-            .progress_chars("#>-")
-    );
+    let pb = create_progress_bar(chunks.len());
 
     let results: Result<Vec<T>> = chunks
         .par_iter()
