@@ -3,11 +3,12 @@ use color_eyre::{
     Result,
 };
 use indexmap::IndexMap;
+use log::warn;
+use ndarray::Array2;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::path::Path;
-use ndarray::Array2;
 
 /// A single population with its samples
 #[derive(Debug, Clone)]
@@ -88,7 +89,6 @@ impl PopulationMap {
         Self::from_populations(populations).expect("Default population should always be valid")
     }
 
-    
     pub fn from_populations(pop_data: IndexMap<String, Vec<String>>) -> Result<Self> {
         let mut populations = IndexMap::new();
         let mut sample_lookup = HashMap::new();
@@ -144,9 +144,19 @@ impl PopulationMap {
             .map(|s| s.as_str())
             .collect();
         if !extra.is_empty() {
-            bail!(
-                "Samples in data not found in population file: {}",
+            let display = if extra.len() <= 5 {
                 extra.join(", ")
+            } else {
+                format!(
+                    "{}, ... and {} more",
+                    extra[..5].join(", "),
+                    extra.len() - 5
+                )
+            };
+            warn!(
+                "{} samples in data not found in population file: {}",
+                extra.len(),
+                display
             );
         }
 
@@ -154,12 +164,12 @@ impl PopulationMap {
     }
 
     /// Create a population membership matrix for the given samples
-    /// 
+    ///
     /// Returns an Array2 where:
     /// - Rows represent samples (in the order provided)
     /// - Columns represent populations (in the order they were added)
     /// - Values are 1 if sample belongs to that population, 0 otherwise
-    /// 
+    ///
     /// # Example
     /// For 3 samples across 2 populations:
     /// ```text
@@ -170,17 +180,18 @@ impl PopulationMap {
     pub fn membership_matrix(&self, samples: &[String]) -> Result<Array2<usize>> {
         let num_samples = samples.len();
         let num_pops = self.num_populations();
-        
+
         let mut data = vec![0usize; num_samples * num_pops];
-        
+
         for (sample_idx, sample) in samples.iter().enumerate() {
-            let (pop_idx, _) = self.lookup(sample)
+            let (pop_idx, _) = self
+                .lookup(sample)
                 .wrap_err_with(|| format!("Sample '{}' not found in population map", sample))?;
-            
+
             // Set the appropriate element to 1 (row-major order)
             data[sample_idx * num_pops + pop_idx] = 1;
         }
-        
+
         Array2::from_shape_vec((num_samples, num_pops), data)
             .wrap_err("Failed to create membership matrix")
     }
