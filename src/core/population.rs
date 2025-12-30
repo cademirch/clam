@@ -132,7 +132,7 @@ impl PopulationMap {
             .map(|s| s.as_str())
             .collect();
         if !missing.is_empty() {
-            bail!(
+            warn!(
                 "Samples in population file not found in data: {}",
                 missing.join(", ")
             );
