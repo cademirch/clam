@@ -122,7 +122,10 @@ impl PopulationMap {
     }
 
     /// Validate that this population map matches the given samples exactly
-    pub fn validate_exact_match(&self, available_samples: &[String]) -> Result<()> {
+    ///
+    /// If `force_samples` is true, samples in data but not in population file
+    /// will be excluded from analysis (different warning message).
+    pub fn validate_exact_match(&self, available_samples: &[String], force_samples: bool) -> Result<()> {
         let available: HashSet<_> = available_samples.iter().collect();
         let required: HashSet<_> = self.sample_lookup.keys().collect();
 
@@ -153,11 +156,20 @@ impl PopulationMap {
                     extra.len() - 5
                 )
             };
-            warn!(
-                "{} samples in data not found in population file: {}",
-                extra.len(),
-                display
-            );
+
+            if force_samples {
+                warn!(
+                    "{} sample(s) will be excluded from analysis (not in population file): {}",
+                    extra.len(),
+                    display
+                );
+            } else {
+                warn!(
+                    "{} samples in data not found in population file: {}",
+                    extra.len(),
+                    display
+                );
+            }
         }
 
         Ok(())
@@ -229,5 +241,26 @@ impl PopulationMap {
     /// Sample counts per population
     pub fn sample_counts_per_population(&self) -> Vec<usize> {
         self.populations.values().map(|p| p.num_samples()).collect()
+    }
+
+    /// Filter a sample list to only include samples in this population map.
+    /// Returns the filtered samples in the same order as the input.
+    pub fn filter_samples(&self, samples: &[String]) -> Vec<String> {
+        samples
+            .iter()
+            .filter(|s| self.sample_lookup.contains_key(*s))
+            .cloned()
+            .collect()
+    }
+
+    /// Get indices of samples that are in this population map.
+    /// Returns Vec of indices (into the input samples array) that should be kept.
+    pub fn filter_sample_indices(&self, samples: &[String]) -> Vec<usize> {
+        samples
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| self.sample_lookup.contains_key(*s))
+            .map(|(idx, _)| idx)
+            .collect()
     }
 }

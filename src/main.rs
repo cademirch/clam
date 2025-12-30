@@ -48,6 +48,11 @@ pub struct SharedOptions {
     /// Path to file with chromosomes to include, one per line
     #[arg(long = "include-file")]
     pub include_file: Option<PathBuf>,
+
+    /// Only warn about samples not in population file; exclude them from analysis
+    /// (only supported for 'stat' command)
+    #[arg(long = "force-samples")]
+    pub force_samples: bool,
 }
 
 impl SharedOptions {
@@ -223,8 +228,14 @@ impl LociArgs {
         use clam::core::zarr::is_zarr_path;
         use clam::core::utils::parse_contig_thresholds;
         use clam::loci::{run_loci, run_loci_zarr, ThresholdConfig};
+        use log::warn;
 
         self.shared.initialize_threading()?;
+
+        // Warn if force_samples is used with loci command
+        if self.shared.force_samples {
+            warn!("--force-samples is not supported for 'loci' command; flag will be ignored");
+        }
 
         let pop_map = if let Some(ref pop_file) = self.shared.population_file {
             Some(PopulationMap::from_file(pop_file)?)
@@ -310,8 +321,9 @@ impl StatArgs {
             self.roh,
             window_strategy,
             chunk_size,
-            exclude,
             include,
+            exclude,
+            self.shared.force_samples,
         )?;
 
         run_stat(config, &self.outdir)

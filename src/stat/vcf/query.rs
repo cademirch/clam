@@ -41,6 +41,8 @@ pub struct VcfQuery {
     pub pop_map: PopulationMap,
     pub ploidy: Ploidy,
     pub vcf_path: PathBuf,
+    /// Indices into VCF samples to filter genotypes (None = use all samples)
+    pub sample_filter_indices: Option<Vec<usize>>,
 }
 /// (window_idx, variant position, allele_counts)
 
@@ -61,13 +63,19 @@ impl VcfQuery {
             Some(idx) => idx,
             None => return Ok(None), // Variant outside all windows
         };
-        let genotypes = genotypes(record, header)?;
+        let mut gts = genotypes(record, header)?;
+
+        // Filter genotypes to only include analysis samples
+        if let Some(ref indices) = self.sample_filter_indices {
+            gts = indices.iter().map(|&i| gts[i]).collect();
+        }
+
         let samples_in_roh = self
             .roh_index
             .as_ref()
             .map(|roh_idx| roh_idx.samples_in_roh_at(variant_position));
         let allele_counts = AlleleCounts::from_genotypes(
-            &genotypes,
+            &gts,
             self.ploidy,
             samples_in_roh.as_deref(),
             &self.population_array,
@@ -78,10 +86,17 @@ impl VcfQuery {
 
     pub fn load_callable_data(&self) -> Result<Option<Array2<u16>>> {
         let res = match &self.callable_loci {
-            Some(callable_arrays) => Some(
-                callable_arrays
-                    .read_chunk(&self.query_chunk.contig_name, self.query_chunk.chunk_idx, None)?,
-            ),
+            Some(callable_arrays) => {
+                let mut data = callable_arrays
+                    .read_chunk(&self.query_chunk.contig_name, self.query_chunk.chunk_idx, None)?;
+
+                // Filter columns to match analysis samples
+                if let Some(ref indices) = self.sample_filter_indices {
+                    data = data.select(ndarray::Axis(1), indices);
+                }
+
+                Some(data)
+            }
             None => None,
         };
         Ok(res)

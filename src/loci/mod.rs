@@ -39,7 +39,7 @@ pub fn run_loci(
     //TODO: check that threshold per contig matches depth processor contigs
     let pop_map = pop_map
         .unwrap_or_else(|| PopulationMap::default_from_samples(processor.sample_names().to_vec()));
-    pop_map.validate_exact_match(processor.sample_names())?;
+    pop_map.validate_exact_match(processor.sample_names(), false)?;
 
     if output_per_sample_mask {
         process_sample_masks(processor, output_path, thresholds, chunk_size)?;
@@ -122,7 +122,7 @@ pub fn run_loci_zarr(
 
     let pop_map =
         pop_map.unwrap_or_else(|| PopulationMap::default_from_samples(input_zarr_samples.to_vec()));
-    pop_map.validate_exact_match(input_zarr_samples)?;
+    pop_map.validate_exact_match(input_zarr_samples, false)?;
 
     if output_per_sample_mask {
         process_sample_masks_zarr(input_zarr, output_path, thresholds, chunk_size)?;

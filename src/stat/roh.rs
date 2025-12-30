@@ -4,6 +4,7 @@ use color_eyre::{
     eyre::{bail, eyre, WrapErr},
     Result,
 };
+use log::debug;
 
 use noodles::vcf::Header;
 use rust_lapper::{Interval, Lapper};
@@ -103,6 +104,11 @@ impl RohIndex {
             if let Some(sample_name) = self.sample_names.get(sample_idx) {
                 if let Some((pop_idx, _)) = self.pop_map.lookup(sample_name) {
                     counts[pop_idx] += 1;
+                } else {
+                    debug!(
+                        "ROH entry for sample '{}' ignored (not in population map)",
+                        sample_name
+                    );
                 }
             }
         }

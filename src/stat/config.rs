@@ -8,8 +8,9 @@ use crate::stat::{
     vcf::{build_vcf_reader, query::VcfQuery, variants::Ploidy},
     windows::WindowStrategy,
 };
-use color_eyre::eyre::WrapErr;
+use color_eyre::eyre::{bail, WrapErr};
 use color_eyre::Result;
+use log::warn;
 use ndarray::Array2;
 use noodles::core::{Position, Region};
 use noodles::vcf::Header;
@@ -32,6 +33,9 @@ pub struct StatConfig {
     pub roh_bed_path: Option<PathBuf>,
 
     pub ploidy: Ploidy,
+
+    /// Indices into VCF samples to filter genotypes (None = use all samples)
+    pub sample_filter_indices: Option<Vec<usize>>,
 }
 
 impl StatConfig {
@@ -44,6 +48,7 @@ impl StatConfig {
         chunk_size: u64,
         include_contigs: Option<HashSet<String>>,
         exclude_contigs: Option<HashSet<String>>,
+        force_samples: bool,
     ) -> Result<Self> {
         let (_, vcf_header) = build_vcf_reader(&vcf_path)?;
 
@@ -55,15 +60,33 @@ impl StatConfig {
             .map(|s| s.to_string())
             .collect();
 
+        // Warn if force_samples is used without population file
+        if force_samples && pop_file.is_none() {
+            warn!("--force-samples has no effect without --population-file");
+        }
+
+        let has_pop_file = pop_file.is_some();
         let pop_map = if let Some(pop_file_path) = pop_file {
             let pop_map = PopulationMap::from_file(pop_file_path)?;
-            pop_map.validate_exact_match(&vcf_samples)?;
+            pop_map.validate_exact_match(&vcf_samples, force_samples)?;
             pop_map
         } else {
             PopulationMap::default_from_samples(vcf_samples.clone())
         };
 
-        let population_array = pop_map.membership_matrix(&vcf_samples)?;
+        // Filter samples when force_samples is enabled with a population file
+        let (analysis_samples, sample_filter_indices) = if force_samples && has_pop_file {
+            let filtered = pop_map.filter_samples(&vcf_samples);
+            if filtered.is_empty() {
+                bail!("No samples from VCF found in population file. Cannot proceed with analysis.");
+            }
+            let indices = pop_map.filter_sample_indices(&vcf_samples);
+            (filtered, Some(indices))
+        } else {
+            (vcf_samples, None)
+        };
+
+        let population_array = pop_map.membership_matrix(&analysis_samples)?;
 
         if let Some(ref zarr_path) = callable_zarr {
             let arrays = CallableArrays::open(zarr_path)?;
@@ -91,6 +114,7 @@ impl StatConfig {
             callable_zarr_path: callable_zarr,
             roh_bed_path: roh_bed,
             ploidy,
+            sample_filter_indices,
         })
     }
 
@@ -130,6 +154,7 @@ impl StatConfig {
             pop_map: self.pop_map.clone(),
             ploidy: self.ploidy,
             vcf_path: self.vcf_path.clone(),
+            sample_filter_indices: self.sample_filter_indices.clone(),
         })
     }
 }
