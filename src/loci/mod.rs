@@ -1,7 +1,7 @@
 use crate::core::depth::array::{build_pop_membership, MultisampleDepthArray};
 use crate::core::depth::DepthProcessor;
 use crate::core::population::PopulationMap;
-use crate::core::utils::create_progress_bar;
+use crate::core::utils::{create_progress_bar, create_spinner};
 use crate::core::zarr::{CallableArrays, DepthArrays, SampleMaskArrays};
 use color_eyre::Result;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -36,10 +36,13 @@ pub fn run_loci(
     min_gq: Option<isize>,
 ) -> Result<()> {
     let processor = DepthProcessor::from_paths(depth_files, min_gq)?;
+
+    let spinner = create_spinner("Validating population map...");
     //TODO: check that threshold per contig matches depth processor contigs
     let pop_map = pop_map
         .unwrap_or_else(|| PopulationMap::default_from_samples(processor.sample_names().to_vec()));
     pop_map.validate_exact_match(processor.sample_names(), false)?;
+    spinner.finish_and_clear();
 
     if output_per_sample_mask {
         process_sample_masks(processor, output_path, thresholds, chunk_size)?;
@@ -116,13 +119,19 @@ pub fn run_loci_zarr(
     thresholds: ThresholdConfig,
     output_per_sample_mask: bool,
 ) -> Result<()> {
+    let spinner = create_spinner("Opening depth zarr...");
     let input_zarr = DepthArrays::open(&input_zarr_path)?;
     let input_zarr_samples = input_zarr.column_names();
     let chunk_size = input_zarr.chunk_size();
 
+    spinner.set_message("Validating population map...");
     let pop_map =
         pop_map.unwrap_or_else(|| PopulationMap::default_from_samples(input_zarr_samples.to_vec()));
     pop_map.validate_exact_match(input_zarr_samples, false)?;
+    spinner.finish_with_message(format!(
+        "Loaded {} samples from zarr",
+        input_zarr_samples.len()
+    ));
 
     if output_per_sample_mask {
         process_sample_masks_zarr(input_zarr, output_path, thresholds, chunk_size)?;
