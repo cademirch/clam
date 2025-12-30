@@ -16,6 +16,7 @@ use noodles::core::{Position, Region};
 use noodles::vcf::Header;
 use std::{
     collections::HashSet,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -138,12 +139,28 @@ impl StatConfig {
         };
 
         let roh_index = if let Some(ref bed_path) = self.roh_bed_path {
-            Some(RohIndex::from_tabix_query(
+            match RohIndex::from_tabix_query(
                 bed_path,
                 &query_region,
                 &self.analysis_samples,
                 self.pop_map.clone(),
-            )?)
+            ) {
+                Ok(index) => Some(index),
+                Err(e) => {
+                    // "missing reference sequence name" occurs when contig isn't in tabix index
+                    if let Some(io_err) = e.root_cause().downcast_ref::<io::Error>() {
+                        if io_err.kind() == io::ErrorKind::InvalidInput
+                            && io_err.to_string().contains("missing reference sequence name")
+                        {
+                            None
+                        } else {
+                            return Err(e);
+                        }
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
         } else {
             None
         };

@@ -44,7 +44,7 @@ impl RohIndex {
         // Query the region
         let query = reader.query(region)
             .wrap_err_with(|| format!("Failed to query region: {:?}", region))?;
-        
+
         for result in query {
             let record = result.wrap_err("Failed to read ROH record")?;
             let line = std::str::from_utf8(record.as_ref().as_bytes())
