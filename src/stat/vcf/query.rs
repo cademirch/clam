@@ -7,11 +7,12 @@ use crate::{
     },
 };
 use color_eyre::eyre::{bail, Result};
+use log::debug;
 use ndarray::{Array1, Array2};
 use noodles::core::Region;
 use noodles::vcf::{Header, Record};
 use rayon::prelude::*;
-use std::path::PathBuf;
+use std::{io, path::PathBuf};
 
 /// Helper to get variant position from record as usize since its nested in option<result<position>>
 fn variant_start(record: &Record) -> Result<usize> {
@@ -98,7 +99,24 @@ impl VcfQuery {
 
     pub fn process(&self) -> Result<Vec<WindowStats>> {
         let (mut vcf_reader, vcf_header) = super::build_vcf_reader(&self.vcf_path)?;
-        let variants = vcf_reader.query(&vcf_header, &self.query_region)?;
+        let variants = match vcf_reader.query(&vcf_header, &self.query_region) {
+            Ok(v) => v,
+            Err(e) => {
+                // Handle case where contig exists in VCF header but not in tabix index
+                // This can happen when the VCF has no variants on that contig
+                if e.kind() == io::ErrorKind::InvalidInput
+                    && e.to_string()
+                        .contains("region reference sequence does not exist")
+                {
+                    debug!(
+                        "Skipping region {} (not in VCF index)",
+                        self.query_region
+                    );
+                    return Ok(vec![]);
+                }
+                return Err(e.into());
+            }
+        };
 
         let variant_stats: Vec<(WindowIdx, usize, AlleleCounts)> = variants
             .par_bridge()
