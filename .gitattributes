@@ -1,1 +1,5 @@
 tests/**/* linguist-vendored=true
+*.vcf.gz binary
+*.tbi binary
+*.d4.gz binary
+*.d4.gzi binary
