@@ -1,8 +1,21 @@
 site_name: clam
 repo_url: https://github.com/cademirch/clam
 
-
-
+nav:
+  - Home: index.md
+  - Explanation:
+    - Why clam?: explanation/why-clam.md
+    - Core Concepts: explanation/concepts.md
+  - Tutorial:
+    - Getting Started: tutorial/01_overview.md
+  - How-to Guides:
+    - Generate Callable Loci: how-to/generate-callable-loci.md
+    - Calculate Statistics: how-to/calculate-statistics.md
+    - Collect Depth Data: how-to/collect-depth-data.md
+  - Reference:
+    - CLI Reference: reference/cli.md
+    - Input Formats: reference/input-formats.md
+    - Output Formats: reference/output-formats.md
 
 markdown_extensions:
   - admonition
@@ -24,6 +37,13 @@ markdown_extensions:
   - def_list
   - pymdownx.caret
   - pymdownx.tilde
+  - pymdownx.arithmatex:
+      generic: true
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
 theme:
   name: "material"
   palette:
@@ -50,3 +70,4 @@ theme:
     - toc.follow
     - content.action.edit
     - navigation.footer
+    - navigation.sections
