@@ -10,11 +10,7 @@ clam solves a fundamental problem in population genomics: how to accurately esti
 
 The gold standard for calculating population genetic statistics like nucleotide diversity (π), absolute divergence (d~xy~), and F~ST~ requires knowing the genotype at every site in the genome, not just variable sites. Traditionally, this meant generating an "all-sites" VCF that includes both variant and invariant positions.
 
-For small datasets, this works fine. But for large population genomics projects with hundreds or thousands of samples, all-sites VCFs become impractical:
-
-- **Storage**: An all-sites VCF for 100 samples across a 3Gb genome can easily exceed 1TB
-- **Processing time**: Generating and parsing these files takes days or weeks
-- **Memory**: Many tools can't handle files this large
+For small datasets, this works fine. But for large population genomics projects with hundreds or thousands of samples, all-sites VCFs become impractical
 
 ## The Problem with Variants-Only VCFs
 
