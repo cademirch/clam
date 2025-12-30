@@ -5,6 +5,7 @@ pub mod vcf;
 pub mod windows;
 pub mod writer;
 
+use crate::core::utils::{create_progress_bar, create_spinner};
 use crate::stat::config::StatConfig;
 use crate::stat::windows::WindowStats;
 use crate::stat::writer::Writer;
@@ -17,17 +18,22 @@ pub fn run_stat(config: StatConfig, outdir: &Path) -> Result<()> {
     let has_roh = config.roh_bed_path.is_some();
     let dxy = config.pop_map.num_populations() > 1;
 
+    let pb = create_progress_bar(config.chunks.len());
+
     let mut results: Vec<(usize, Vec<WindowStats>)> = config
         .chunks
         .par_iter()
-        .map(|(chunk)| {
+        .map(|chunk| {
             let query = config.create_query(chunk)?;
             let stats = query.process()?;
+            pb.inc(1);
             Ok::<_, color_eyre::Report>((chunk.chunk_idx as usize, stats))
         })
         .collect::<Result<Vec<_>>>()?;
 
-    
+    pb.finish_with_message("Processing complete");
+
+    let spinner = create_spinner("Writing results...");
     results.sort_unstable_by_key(|(i, _)| *i);
 
     let mut writers = Writer::new(outdir, has_roh, dxy)?;
@@ -37,6 +43,7 @@ pub fn run_stat(config: StatConfig, outdir: &Path) -> Result<()> {
         }
     }
     writers.flush()?;
+    spinner.finish_with_message("Results written");
 
     Ok(())
 }

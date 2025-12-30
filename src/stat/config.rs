@@ -1,6 +1,7 @@
 use crate::core::{
     contig::{validate_contig_consistency, Contig, ContigChunk, ContigSet},
     population::PopulationMap,
+    utils::create_spinner,
     zarr::CallableArrays,
 };
 use crate::stat::{
@@ -54,8 +55,10 @@ impl StatConfig {
         exclude_contigs: Option<HashSet<String>>,
         force_samples: bool,
     ) -> Result<Self> {
+        let spinner = create_spinner("Opening VCF file...");
         let (_, vcf_header) = build_vcf_reader(&vcf_path)?;
 
+        spinner.set_message("Extracting contigs from VCF header...");
         let vcf_contigs = extract_contigs_from_vcf(&vcf_header)?;
 
         let vcf_samples: Vec<String> = vcf_header
@@ -69,6 +72,7 @@ impl StatConfig {
             warn!("--force-samples has no effect without --population-file");
         }
 
+        spinner.set_message("Loading population file...");
         let has_pop_file = pop_file.is_some();
         let pop_map = if let Some(pop_file_path) = pop_file {
             let pop_map = PopulationMap::from_file(pop_file_path)?;
@@ -93,6 +97,7 @@ impl StatConfig {
         let population_array = pop_map.membership_matrix(&analysis_samples)?;
 
         if let Some(ref zarr_path) = callable_zarr {
+            spinner.set_message("Validating callable sites zarr...");
             let arrays = CallableArrays::open(zarr_path)?;
             let zarr_contigs = arrays.contigs();
             validate_contig_consistency(vec![
@@ -100,12 +105,25 @@ impl StatConfig {
                 (zarr_path, zarr_contigs.clone()),
             ])?;
         }
+
+        if roh_bed.is_some() {
+            spinner.set_message("Checking ROH BED file...");
+        }
+
         //TODO: check zarr chunksize and use that
         let vcf_contigs = vcf_contigs.filter(include_contigs.as_ref(), exclude_contigs.as_ref());
 
+        spinner.set_message("Inferring ploidy from VCF...");
         let ploidy = infer_ploidy(&vcf_path, &vcf_header)?;
 
         let chunks = vcf_contigs.to_chunks(chunk_size);
+
+        spinner.finish_with_message(format!(
+            "Loaded {} samples, {} contigs, {} chunks",
+            analysis_samples.len(),
+            vcf_contigs.len(),
+            chunks.len()
+        ));
 
         Ok(Self {
             vcf_path,
