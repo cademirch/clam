@@ -36,6 +36,9 @@ pub struct StatConfig {
 
     /// Indices into VCF samples to filter genotypes (None = use all samples)
     pub sample_filter_indices: Option<Vec<usize>>,
+
+    /// Samples included in the analysis (filtered if force_samples is enabled)
+    pub analysis_samples: Vec<String>,
 }
 
 impl StatConfig {
@@ -115,6 +118,7 @@ impl StatConfig {
             roh_bed_path: roh_bed,
             ploidy,
             sample_filter_indices,
+            analysis_samples,
         })
     }
 
@@ -137,7 +141,7 @@ impl StatConfig {
             Some(RohIndex::from_tabix_query(
                 bed_path,
                 &query_region,
-                &self.vcf_header,
+                &self.analysis_samples,
                 self.pop_map.clone(),
             )?)
         } else {

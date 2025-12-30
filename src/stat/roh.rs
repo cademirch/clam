@@ -1,17 +1,13 @@
-use bstr::ByteSlice;
-use color_eyre::eyre::{Context, ContextCompat};
 use color_eyre::{
-    eyre::{bail, eyre, WrapErr},
+    eyre::{bail, Context},
     Result,
 };
 use log::debug;
 
-use noodles::vcf::Header;
-use rust_lapper::{Interval, Lapper};
-use std::io::BufRead;
 use noodles::core::Region;
 use noodles::tabix::io::indexed_reader::Builder as TabixReaderBuilder;
-
+use rust_lapper::{Interval, Lapper};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::core::population::PopulationMap;
@@ -27,17 +23,21 @@ impl RohIndex {
     pub fn from_tabix_query(
         bed_path: &Path,
         region: &Region,
-        vcf_header: &Header,
+        analysis_samples: &[String],
         pop_map: PopulationMap,
     ) -> Result<Self> {
-        
-        
         let mut reader = TabixReaderBuilder::default()
             .build_from_path(bed_path)
             .wrap_err_with(|| format!("Failed to open ROH BED file: {}", bed_path.display()))?;
         
-        let samples = vcf_header.sample_names();
-        let sample_names: Vec<String> = samples.iter().map(|s| s.to_string()).collect();
+        let sample_names: Vec<String> = analysis_samples.to_vec();
+        
+        // Build lookup from sample name to index in analysis_samples
+        let sample_lookup: HashMap<&str, usize> = analysis_samples
+            .iter()
+            .enumerate()
+            .map(|(idx, name)| (name.as_str(), idx))
+            .collect();
         
         let mut intervals: Vec<Interval<u32, usize>> = Vec::new();
         
@@ -62,8 +62,17 @@ impl RohIndex {
                 .wrap_err_with(|| format!("Invalid end position: {}", fields[2]))?;
             let sample_name = fields[3];
             
-            let sample_idx = samples.get_index_of(sample_name)
-                .ok_or_else(|| eyre!("ROH sample '{}' not found in VCF", sample_name))?;
+            // Skip ROH entries for samples not in analysis set
+            let sample_idx = match sample_lookup.get(sample_name) {
+                Some(&idx) => idx,
+                None => {
+                    debug!(
+                        "ROH entry for sample '{}' skipped (not in analysis samples)",
+                        sample_name
+                    );
+                    continue;
+                }
+            };
             
             intervals.push(Interval {
                 start: start + 1, // BED is 0-based, convert to 1-based
