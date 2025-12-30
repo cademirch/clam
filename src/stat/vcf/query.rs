@@ -87,14 +87,8 @@ impl VcfQuery {
     pub fn load_callable_data(&self) -> Result<Option<Array2<u16>>> {
         let res = match &self.callable_loci {
             Some(callable_arrays) => {
-                let mut data = callable_arrays
+                let data = callable_arrays
                     .read_chunk(&self.query_chunk.contig_name, self.query_chunk.chunk_idx, None)?;
-
-                // Filter columns to match analysis samples
-                if let Some(ref indices) = self.sample_filter_indices {
-                    data = data.select(ndarray::Axis(1), indices);
-                }
-
                 Some(data)
             }
             None => None,
