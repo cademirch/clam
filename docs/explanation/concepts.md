@@ -69,7 +69,7 @@ If yes, that site is callable for that sample.
 Next, clam can apply aggregate filters across all samples:
 
 - **Proportion callable** (`-d`): What fraction of samples must be callable? Setting `-d 0.8` requires 80% of samples to pass individual thresholds.
-- **Mean depth range** (`-u`, `-U`): What is the acceptable range for mean depth across all samples at a site?
+- **Mean depth range** (`--min-mean-depth`, `--max-mean-depth`): What is the acceptable range for mean depth across all samples at a site?
 
 These filters help identify sites that are systematically problematic across the dataset.
 

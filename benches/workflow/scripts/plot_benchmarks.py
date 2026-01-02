@@ -2,11 +2,10 @@
 Plot benchmarking results comparing clam collect vs d4tools merge.
 
 Generates two plots:
-1. runtime.pdf - Runtime vs sample count
-2. size.pdf - Output size vs sample count
+1. runtime.png - Runtime vs sample count
+2. size.png - Output size vs sample count
 """
 
-import os
 from pathlib import Path
 
 import pandas as pd

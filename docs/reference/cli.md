@@ -280,7 +280,7 @@ These options are available across multiple commands:
 | Option | Description | Commands |
 |--------|-------------|----------|
 | `-t, --threads` | Number of threads for parallel processing | all |
-| `-p, --population-file` | Population definitions file | all |
+| `-p, --population-file` | Population definitions file | `loci`, `stat` |
 | `-x, --exclude` | Chromosomes to exclude (comma-separated) | all |
 | `--exclude-file` | File with chromosomes to exclude | all |
 | `-i, --include` | Chromosomes to include (comma-separated) | all |
