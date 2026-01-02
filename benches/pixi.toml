@@ -1,0 +1,16 @@
+[workspace]
+authors = ["Cade Mirchandani <cmirchan@ucsc.edu>"]
+channels = ["conda-forge", "bioconda"]
+name = "benches"
+platforms = ["osx-arm64", "linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+snakemake = ">=9.14.5,<10"
+seaborn = ">=0.13.2,<0.14"
+pandas = ">=2.3.3,<3"
+samtools = ">=1.23,<2"
+mason = ">=2.0.12,<3"
+d4tools = ">=0.3.11,<0.4"

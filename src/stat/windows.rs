@@ -1,34 +1,39 @@
-use std::cmp::Ordering;
-use std::collections::{HashSet, VecDeque};
-use std::num::NonZeroUsize;
-use std::ops::Bound;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Instant;
-
-use anyhow::{bail, Result};
+use crate::core::population::PopulationMap;
+use crate::stat::vcf::variants::AlleleCounts;
 use bstr::ByteSlice;
-use indicatif::ProgressBar;
-use log::{info, trace};
-use noodles::core::Region;
-use noodles::vcf::variant::record::AlternateBases;
-use noodles::{tabix, vcf};
+use color_eyre::eyre::Ok;
+use color_eyre::Result;
+use ndarray::Array1;
+use noodles::core::{Position, Region};
+use rust_lapper::{Interval, Lapper};
+use serde::Serialize;
+use std::ops::Bound;
 
-use super::alleles::VCFData;
-use super::build_vcf_reader;
-use super::callable::*;
-use super::output::{DxyRecord, FstRecord, HetRecord, PiRecord};
-use crate::utils::{count_combinations, PopulationMapping};
+use std::collections::HashSet;
 
-pub trait RegionExt {
-    fn start_as_u32(&self) -> u32;
-    fn end_as_u32(&self) -> u32;
-    fn name_as_str(&self) -> &str;
+#[derive(Debug, Clone, Serialize)]
+pub struct SerializableRegion {
+    pub chrom: String,
+    pub start: usize,
+    pub end: usize,
 }
 
+impl From<&Region> for SerializableRegion {
+    fn from(region: &Region) -> Self {
+        Self {
+            chrom: region.name_as_str().to_string(),
+            start: region.start_usize(),
+            end: region.end_usize(),
+        }
+    }
+}
+pub trait RegionExt {
+    fn start_usize(&self) -> usize;
+    fn end_usize(&self) -> usize;
+    fn name_as_str(&self) -> &str;
+}
 impl RegionExt for Region {
-    fn start_as_u32(&self) -> u32 {
+    fn start_usize(&self) -> usize {
         match self.start() {
             Bound::Included(pos) => pos.get().try_into().unwrap(),
             Bound::Excluded(_) => panic!("Region starts should always be Included."),
@@ -36,7 +41,7 @@ impl RegionExt for Region {
         }
     }
 
-    fn end_as_u32(&self) -> u32 {
+    fn end_usize(&self) -> usize {
         match self.end() {
             Bound::Included(pos) => pos.get().try_into().unwrap(),
             Bound::Excluded(_) => panic!("Region ends should always be Included."),
@@ -50,648 +55,913 @@ impl RegionExt for Region {
             .expect("Region name is not valid UTF-8")
     }
 }
+pub type WindowIdx = usize;
+pub trait WindowIndex: Send + Sync {
+    /// Get the window index for a position
+    fn window_idx_for_pos(&self, pos: usize) -> Option<WindowIdx>;
 
-#[derive(Debug, Default)]
-pub struct Population {
-    pub name: String,
-    pub refs: u32,
-    pub alts: u32,
-    pub within_diffs: u32,
-    pub within_comps: u32,
-    pub sample_names: Vec<String>,
-    pub count_het_sites: Vec<u32>,
-    pub bases_in_roh: Vec<u32>,
+    /// Get the region for a specific window index
+    fn window_region(&self, idx: usize) -> Region;
+
+    /// Number of windows
+    fn num_windows(&self) -> usize;
 }
 
-impl Population {
-    pub fn new(name: String, sample_names: Vec<String>) -> Self {
-        let count_het_sites: Vec<u32> = vec![0; sample_names.len()];
-        let bases_in_roh = count_het_sites.clone();
+/// O(1) lookup for fixed-size windows - computes regions on demand
+pub struct FixedWindowIndex {
+    chrom: String,
+    region_start: usize,
+    region_end: usize,
+    window_size: usize,
+    num_windows: usize,
+}
+
+impl FixedWindowIndex {
+    pub fn new(region: &Region, window_size: usize) -> Self {
+        let start = region.start_usize();
+        let end = region.end_usize();
+        let chrom = region.name_as_str().to_string();
+
+        let num_windows = (end - start).div_ceil(window_size);
 
         Self {
-            name,
-            sample_names,
-            count_het_sites,
-            bases_in_roh,
-            ..Default::default()
-        }
-    }
-
-    pub fn to_het_records(
-        &self,
-        chrom: &str,
-        start: u32,
-        end: u32,
-        callable_bases: u32,
-    ) -> Vec<HetRecord> {
-        let mut records = Vec::with_capacity(self.sample_names.len());
-
-        for i in 0..self.sample_names.len() {
-            let record = HetRecord::new(
-                chrom,
-                start,
-                end,
-                callable_bases,
-                self.bases_in_roh[i],
-                &self.sample_names[i],
-                self.count_het_sites[i],
-            );
-            records.push(record);
-        }
-
-        records
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-    pub fn calc_pi(&self) -> f32 {
-        if self.within_comps > 0 {
-            self.within_diffs as f32 / self.within_comps as f32
-        } else {
-            f32::NAN
-        }
-    }
-
-    pub fn to_pi_record(&self, chrom: &str, begin: u32, end: u32) -> PiRecord {
-        let pi = self.calc_pi();
-        PiRecord::new(
-            &self.name,
             chrom,
-            begin,
-            end,
-            pi,
-            self.within_comps,
-            self.within_diffs,
-        )
+            region_start: start,
+            region_end: end,
+            window_size,
+            num_windows,
+        }
     }
 }
 
-#[derive(Debug)]
+impl WindowIndex for FixedWindowIndex {
+    #[inline]
+    fn window_idx_for_pos(&self, pos: usize) -> Option<usize> {
+        if pos < self.region_start || pos >= self.region_end {
+            return None;
+        }
+        let idx = (pos - self.region_start) / self.window_size;
+        if idx < self.num_windows {
+            Some(idx)
+        } else {
+            None
+        }
+    }
+
+    fn window_region(&self, idx: usize) -> Region {
+        let start = self.region_start + (idx * self.window_size);
+        // Use 1-based closed coordinates: window 0 is [1, 10000], window 1 is [10001, 20000], etc.
+        // This matches the old clam behavior and standard genomic conventions.
+        let end = (start + self.window_size - 1).min(self.region_end);
+        let start_pos = Position::try_from(start).expect("Valid position");
+        let end_pos = Position::try_from(end).expect("Valid position");
+
+        Region::new(&*self.chrom, start_pos..=end_pos)
+    }
+
+    fn num_windows(&self) -> usize {
+        self.num_windows
+    }
+}
+
+pub struct RegionWindowIndex {
+    windows: Vec<Region>,
+    lapper: Lapper<usize, usize>,
+}
+
+impl RegionWindowIndex {
+    pub fn new(region: &Region, all_windows: &[Region]) -> Self {
+        let windows: Vec<Region> = all_windows
+            .iter()
+            .filter(|w| {
+                w.name_as_str() == region.name_as_str()
+                    && w.start_usize() < region.end_usize()
+                    && w.end_usize() > region.start_usize()
+            })
+            .cloned()
+            .collect();
+
+        let intervals: Vec<Interval<usize, usize>> = windows
+            .iter()
+            .enumerate()
+            .map(|(idx, w)| Interval {
+                start: w.start_usize(),
+                stop: w.end_usize(),
+                val: idx,
+            })
+            .collect();
+
+        Self {
+            windows,
+            lapper: Lapper::new(intervals),
+        }
+    }
+}
+
+impl WindowIndex for RegionWindowIndex {
+    #[inline]
+    fn window_idx_for_pos(&self, pos: usize) -> Option<usize> {
+        self.lapper.find(pos, pos + 1).next().map(|iv| iv.val)
+    }
+
+    fn window_region(&self, idx: usize) -> Region {
+        self.windows[idx].clone()
+    }
+
+    fn num_windows(&self) -> usize {
+        self.windows.len()
+    }
+}
+
+/// Strategy for creating windows
+pub enum WindowStrategy {
+    FixedSize(usize),
+    Regions(Vec<Region>), // bed supplied windows
+}
+
+impl WindowStrategy {
+    pub fn create_index(&self, region: &Region) -> Box<dyn WindowIndex> {
+        match self {
+            WindowStrategy::FixedSize(size) => Box::new(FixedWindowIndex::new(region, *size)),
+            WindowStrategy::Regions(windows) => Box::new(RegionWindowIndex::new(region, windows)),
+        }
+    }
+}
+
 pub struct Window {
     pub region: Region,
-    pub populations: Vec<Population>,
-    pub dxy_stats: DxyStats,
-    pub fst_stats: FstStats,
-    pub sites: HashSet<u32>,
-    pub ploidy: u32,
-    pub callable_sites: u32,
+    pop_map: PopulationMap,
+    pub variant_positions: HashSet<usize>,
+
+    // Per-sample heterozygosity tracking (for all samples)
+    pub het_counts: Array1<usize>,
+    pub het_counts_not_in_roh: Option<Array1<usize>>,
+
+    // Per-sample callable site tracking (only when sample masks available)
+    pub callable_sites: Option<Array1<usize>>,
+    pub callable_sites_not_in_roh: Option<Array1<usize>>,
+
+    // Per-population callable site tracking (for population counts mode)
+    pub callable_sites_per_pop: Option<Array1<usize>>,
+    pub callable_sites_per_pop_not_in_roh: Option<Array1<usize>>,
+
+    // Per-population het tracking (summed across samples in pop)
+    pub het_counts_per_pop: Array1<usize>,
+    pub het_counts_per_pop_not_in_roh: Option<Array1<usize>>,
+
+    // Per-site statistics (accumulated across all variant sites)
+    pub variant_differences: Array1<usize>, // Pi differences per population
+    pub variant_comparisons: Array1<usize>, // Pi comparisons per population
+
+    // Dxy statistics (between populations)
+    pub dxy_differences: Vec<usize>, // Between-pop differences
+    pub dxy_comparisons: Vec<usize>, // Between-pop comparisons
+
+    // Invariant comparisons
+    pub invariant_comparisons: Array1<usize>,
+    pub invariant_dxy_comparisons: Vec<usize>,
+
+    pub fst_numerator: Vec<f64>,
+    pub fst_denominator: Vec<f64>,
+
+    // Track whether we have per-sample callable masks
+    has_sample_masks: bool,
 }
 
-#[derive(Debug, Default)]
-pub struct DxyStats {
-    pub comparisons: Vec<u32>,
-    pub differences: Vec<u32>,
-}
+impl Window {
+    pub fn new(
+        region: Region,
+        pop_map: PopulationMap,
+        has_roh_data: bool,
+        num_samples: usize,
+        has_sample_masks: bool,
+    ) -> Self {
+        let num_pops = pop_map.num_populations();
 
-impl DxyStats {
-    pub fn dxy(&self, pair_index: usize) -> f32 {
-        if pair_index >= self.differences.len() || pair_index >= self.comparisons.len() {
-            panic!("pair_index out of bounds");
-        }
-
-        let differences = self.differences[pair_index];
-        let comparisons = self.comparisons[pair_index];
-
-        if comparisons > 0 {
-            differences as f32 / comparisons as f32
+        // Calculate number of population pairs for dxy
+        let num_pop_pairs = if num_pops >= 2 {
+            num_pops * (num_pops - 1) / 2
         } else {
-            f32::NAN
+            0
+        };
+
+        Self {
+            region,
+            pop_map,
+            variant_positions: HashSet::new(),
+
+            // Per-sample het tracking
+            het_counts: Array1::zeros(num_samples),
+            het_counts_not_in_roh: if has_roh_data {
+                Some(Array1::zeros(num_samples))
+            } else {
+                None
+            },
+
+            // Per-sample callable sites (only for sample masks mode)
+            callable_sites: if has_sample_masks {
+                Some(Array1::zeros(num_samples))
+            } else {
+                None
+            },
+            callable_sites_not_in_roh: if has_sample_masks && has_roh_data {
+                Some(Array1::zeros(num_samples))
+            } else {
+                None
+            },
+
+            // Per-population callable sites (for population counts mode)
+            callable_sites_per_pop: if !has_sample_masks {
+                Some(Array1::zeros(num_pops))
+            } else {
+                None
+            },
+            callable_sites_per_pop_not_in_roh: if !has_sample_masks && has_roh_data {
+                Some(Array1::zeros(num_pops))
+            } else {
+                None
+            },
+
+            // Per-population het tracking
+            het_counts_per_pop: Array1::zeros(num_pops),
+            het_counts_per_pop_not_in_roh: if has_roh_data {
+                Some(Array1::zeros(num_pops))
+            } else {
+                None
+            },
+
+            variant_differences: Array1::zeros(num_pops),
+            variant_comparisons: Array1::zeros(num_pops),
+            dxy_differences: vec![0; num_pop_pairs],
+            dxy_comparisons: vec![0; num_pop_pairs],
+            invariant_comparisons: Array1::zeros(num_pops),
+            invariant_dxy_comparisons: vec![0; num_pop_pairs],
+            fst_numerator: vec![0 as f64; num_pop_pairs],
+            fst_denominator: vec![0 as f64; num_pop_pairs],
+            has_sample_masks,
         }
     }
-}
-#[derive(Debug, Default)]
-pub struct FstStats {
-    numerator: Vec<f32>,
-    denominator: Vec<f32>,
-}
 
-impl FstStats {
-    pub fn fst(&self, pop_pair_idx: usize) -> f32 {
-        if self.denominator[pop_pair_idx] > 0.0 {
-            self.numerator[pop_pair_idx] / self.denominator[pop_pair_idx]
+    /// Get index for population pair in the flat arrays
+    fn get_pair_index(&self, pop1: usize, pop2: usize) -> usize {
+        let num_pops = self.pop_map.num_populations();
+        if pop1 < pop2 {
+            pop1 * (num_pops - 1) - (pop1 * (pop1 + 1) / 2) + pop2 - 1
         } else {
-            f32::NAN
+            pop2 * (num_pops - 1) - (pop2 * (pop2 + 1) / 2) + pop1 - 1
+        }
+    }
+
+    pub fn add_variant(&mut self, pos_idx: usize, counts: AlleleCounts) {
+        // Track per-sample het counts (all samples)
+        for (sample_idx, &is_het) in counts.hets.iter().enumerate() {
+            if is_het {
+                self.het_counts[sample_idx] += 1;
+            }
+        }
+
+        // Track per-sample het counts (non-ROH only)
+        if let Some(pos_non_roh) = &counts.non_roh {
+            if let Some(het_counts_not_in_roh) = &mut self.het_counts_not_in_roh {
+                for (sample_idx, &is_het) in pos_non_roh.hets.iter().enumerate() {
+                    if is_het {
+                        het_counts_not_in_roh[sample_idx] += 1;
+                    }
+                }
+            }
+        }
+
+        // Track per-population het counts (summed)
+        for pop_idx in 0..self.pop_map.num_populations() {
+            // Count hets in this population
+            let het_count_in_pop: usize = self
+                .pop_map
+                .get_population_by_index(pop_idx)
+                .map(|pop| {
+                    pop.samples()
+                        .iter()
+                        .filter_map(|sample_name| {
+                            self.pop_map.lookup(sample_name).map(|(_, sample_idx)| {
+                                if counts.hets.get(sample_idx).copied().unwrap_or(false) {
+                                    1
+                                } else {
+                                    0
+                                }
+                            })
+                        })
+                        .sum()
+                })
+                .unwrap_or(0);
+            self.het_counts_per_pop[pop_idx] += het_count_in_pop;
+
+            // Non-ROH het counts per pop
+            if let (Some(pos_non_roh), Some(het_counts_pop_not_in_roh)) =
+                (&counts.non_roh, &mut self.het_counts_per_pop_not_in_roh)
+            {
+                let het_count_in_pop_non_roh: usize = self
+                    .pop_map
+                    .get_population_by_index(pop_idx)
+                    .map(|pop| {
+                        pop.samples()
+                            .iter()
+                            .filter_map(|sample_name| {
+                                self.pop_map.lookup(sample_name).map(|(_, sample_idx)| {
+                                    if pos_non_roh.hets.get(sample_idx).copied().unwrap_or(false) {
+                                        1
+                                    } else {
+                                        0
+                                    }
+                                })
+                            })
+                            .sum()
+                    })
+                    .unwrap_or(0);
+                het_counts_pop_not_in_roh[pop_idx] += het_count_in_pop_non_roh;
+            }
+        }
+
+        // Track per-sample callable sites at variant positions
+        if let Some(ref mut callable) = self.callable_sites {
+            for (sample_idx, &is_callable) in counts.callable.iter().enumerate() {
+                if is_callable {
+                    callable[sample_idx] += 1;
+                }
+            }
+        }
+
+        // Track per-sample callable sites not in ROH at variant positions
+        if let Some(pos_non_roh) = &counts.non_roh {
+            if let Some(ref mut callable_not_in_roh) = self.callable_sites_not_in_roh {
+                for (sample_idx, &is_callable) in pos_non_roh.callable.iter().enumerate() {
+                    if is_callable {
+                        callable_not_in_roh[sample_idx] += 1;
+                    }
+                }
+            }
+        }
+
+        // Track per-population callable sites at variant positions (for population counts mode)
+        if let Some(ref mut callable_per_pop) = self.callable_sites_per_pop {
+            for pop_idx in 0..self.pop_map.num_populations() {
+                let callable_count_in_pop: usize = self
+                    .pop_map
+                    .get_population_by_index(pop_idx)
+                    .map(|pop| {
+                        pop.samples()
+                            .iter()
+                            .filter_map(|sample_name| {
+                                self.pop_map.lookup(sample_name).map(|(_, sample_idx)| {
+                                    if counts.callable.get(sample_idx).copied().unwrap_or(false) {
+                                        1
+                                    } else {
+                                        0
+                                    }
+                                })
+                            })
+                            .sum()
+                    })
+                    .unwrap_or(0);
+                callable_per_pop[pop_idx] += callable_count_in_pop;
+            }
+        }
+
+        // Track per-population callable sites not in ROH at variant positions
+        if let Some(pos_non_roh) = &counts.non_roh {
+            if let Some(ref mut callable_per_pop_not_in_roh) =
+                self.callable_sites_per_pop_not_in_roh
+            {
+                for pop_idx in 0..self.pop_map.num_populations() {
+                    let callable_count_in_pop: usize = self
+                        .pop_map
+                        .get_population_by_index(pop_idx)
+                        .map(|pop| {
+                            pop.samples()
+                                .iter()
+                                .filter_map(|sample_name| {
+                                    self.pop_map.lookup(sample_name).map(|(_, sample_idx)| {
+                                        if pos_non_roh
+                                            .callable
+                                            .get(sample_idx)
+                                            .copied()
+                                            .unwrap_or(false)
+                                        {
+                                            1
+                                        } else {
+                                            0
+                                        }
+                                    })
+                                })
+                                .sum()
+                        })
+                        .unwrap_or(0);
+                    callable_per_pop_not_in_roh[pop_idx] += callable_count_in_pop;
+                }
+            }
+        }
+
+        let num_pops = counts.refs.len();
+        let mut within_pi: Vec<f64> = Vec::with_capacity(num_pops);
+        // Calculate per-site within-population statistics (Pi)
+        for pop_idx in 0..num_pops {
+            let refs = counts.refs[pop_idx];
+            let alts = counts.alts[pop_idx];
+            let total = refs + alts;
+
+            // Per-site calculations
+            let diffs = refs * alts;
+            let comps = if total > 1 {
+                (total * (total - 1)) / 2
+            } else {
+                0
+            };
+
+            self.variant_differences[pop_idx] += diffs;
+            self.variant_comparisons[pop_idx] += comps;
+
+            let pi = if comps > 0 {
+                diffs as f64 / comps as f64
+            } else {
+                f64::NAN
+            };
+            within_pi.push(pi);
+        }
+
+        // Calculate per-site between-population statistics (Dxy)
+        if num_pops >= 2 {
+            for i in 0..num_pops {
+                for j in (i + 1)..num_pops {
+                    let refs1 = counts.refs[i];
+                    let alts1 = counts.alts[i];
+                    let refs2 = counts.refs[j];
+                    let alts2 = counts.alts[j];
+
+                    let total1 = refs1 + alts1;
+                    let total2 = refs2 + alts2;
+
+                    let diffs = refs1 * alts2 + alts1 * refs2;
+                    let comps = total1 * total2;
+
+                    let pair_idx = self.get_pair_index(i, j);
+                    self.dxy_differences[pair_idx] += diffs;
+                    self.dxy_comparisons[pair_idx] += comps;
+
+                    let between = if comps > 0 {
+                        diffs as f64 / comps as f64
+                    } else {
+                        f64::NAN
+                    };
+
+                    // Accumulate FST numerator/denominator per site
+                    let pi_avg = (within_pi[i] + within_pi[j]) / 2.0;
+
+                    if !between.is_nan() && !pi_avg.is_nan() && between > 0.0 {
+                        let numerator = between - pi_avg;
+                        let denominator = between;
+
+                        self.fst_numerator[pair_idx] += numerator;
+                        self.fst_denominator[pair_idx] += denominator;
+                    }
+                }
+            }
+        }
+
+        self.variant_positions.insert(pos_idx);
+    }
+
+    pub fn add_invariant_comparisons(
+        &mut self,
+        comps: Array1<usize>,
+        dxy_comps: Vec<usize>,
+    ) {
+        self.invariant_comparisons += &comps;
+
+        for (idx, comp) in dxy_comps.iter().enumerate() {
+            self.invariant_dxy_comparisons[idx] += comp;
+        }
+    }
+
+    /// Add per-sample callable site counts from invariant positions (sample masks mode)
+    pub fn add_callable_sites(
+        &mut self,
+        callable: Array1<usize>,
+        callable_not_in_roh: Option<Array1<usize>>,
+    ) {
+        if let Some(ref mut sites) = self.callable_sites {
+            *sites += &callable;
+        }
+
+        if let (Some(ref mut sites_not_in_roh), Some(callable_nr)) =
+            (&mut self.callable_sites_not_in_roh, callable_not_in_roh)
+        {
+            *sites_not_in_roh += &callable_nr;
+        }
+    }
+
+    /// Add per-population callable site counts from invariant positions (population counts mode)
+    pub fn add_callable_sites_per_pop(
+        &mut self,
+        callable: Array1<usize>,
+        callable_not_in_roh: Option<Array1<usize>>,
+    ) {
+        if let Some(ref mut sites) = self.callable_sites_per_pop {
+            *sites += &callable;
+        }
+
+        if let (Some(ref mut sites_not_in_roh), Some(callable_nr)) =
+            (&mut self.callable_sites_per_pop_not_in_roh, callable_not_in_roh)
+        {
+            *sites_not_in_roh += &callable_nr;
         }
     }
 }
 
 impl Window {
-    pub fn from_regions(
-        regions: Vec<Region>,
-        population_info: &PopulationMapping,
-        sites: Option<Vec<HashSet<u32>>>,
-        ploidy: u32,
-    ) -> VecDeque<Self> {
-        let sites_iter = sites.unwrap_or_else(|| vec![HashSet::new(); regions.len()]);
-        let dxy_size = if population_info.num_populations() >= 2 {
-            count_combinations(population_info.num_populations() as u32, 2) as usize
-        } else {
-            0
-        };
+    fn compute_pi(&self) -> Vec<PiRecord> {
+        let mut results = Vec::new();
 
-        regions
-            .into_iter()
-            .zip(sites_iter)
-            .map(|(region, sites)| {
-                let populations = population_info
-                    .get_popname_refs()
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, name)| {
-                        Population::new(
-                            name.to_string(),
-                            population_info
-                                .get_sample_refs(idx)
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect(),
-                        )
-                    })
-                    .collect();
+        for (pop_idx, pop) in self.pop_map.populations().enumerate() {
+            let differences = self.variant_differences[pop_idx];
+            let comparisons =
+                self.variant_comparisons[pop_idx] + self.invariant_comparisons[pop_idx];
 
-                Self {
-                    region,
-                    populations,
-                    dxy_stats: DxyStats {
-                        comparisons: vec![0; dxy_size],
-                        differences: vec![0; dxy_size],
-                    },
-                    fst_stats: FstStats {
-                        numerator: vec![0.0; dxy_size],
-                        denominator: vec![0.0; dxy_size],
-                    },
-                    sites,
-                    ploidy,
-                    callable_sites: 0,
-                }
-            })
-            .collect()
+            let pi = if comparisons > 0 {
+                differences as f64 / comparisons as f64
+            } else {
+                f64::NAN
+            };
+
+            results.push(PiRecord::new(
+                &self.region,
+                pop.name.clone(),
+                pi,
+                comparisons,
+                differences,
+            ));
+        }
+
+        results
     }
 
-    pub fn to_fst_records(&self) -> Vec<FstRecord> {
-        let mut records = Vec::new();
-        let (chrom, start, end) = self.get_region_info();
-        let pop_names: Vec<&str> = self.populations.iter().map(|x| x.name()).collect();
 
-        // Iterate over population pairs
-        for i in 0..pop_names.len() {
-            for j in (i + 1)..pop_names.len() {
-                let idx = self.get_pair_index(i, j);
 
-                let fst = self.fst_stats.fst(idx);
-                records.push(FstRecord::new(
-                    pop_names[i],
-                    pop_names[j],
-                    chrom,
-                    start,
-                    end,
+    fn compute_dxy(&self) -> Option<Vec<DxyRecord>> {
+        let num_pops = self.pop_map.num_populations();
+
+        if num_pops < 2 {
+            return None;
+        }
+
+        let mut results = Vec::new();
+
+        for i in 0..num_pops {
+            for j in (i + 1)..num_pops {
+                let pop1 = self.pop_map.get_population_by_index(i).unwrap();
+                let pop2 = self.pop_map.get_population_by_index(j).unwrap();
+
+                let pair_idx = self.get_pair_index(i, j);
+                let differences = self.dxy_differences[pair_idx];
+                let comparisons =
+                    self.dxy_comparisons[pair_idx] + self.invariant_dxy_comparisons[pair_idx];
+
+                let dxy = if comparisons > 0 {
+                    differences as f64 / comparisons as f64
+                } else {
+                    f64::NAN
+                };
+
+                results.push(DxyRecord::new(
+                    &self.region,
+                    pop1.name.clone(),
+                    pop2.name.clone(),
+                    dxy,
+                    comparisons,
+                    differences,
+                ));
+            }
+        }
+
+        Some(results)
+    }
+
+    fn compute_fst(&self) -> Option<Vec<FstRecord>> {
+        let num_pops = self.pop_map.num_populations();
+
+        if num_pops < 2 {
+            return None;
+        }
+
+        let mut results = Vec::new();
+
+        for i in 0..num_pops {
+            for j in (i + 1)..num_pops {
+                let pop1 = self.pop_map.get_population_by_index(i).unwrap();
+                let pop2 = self.pop_map.get_population_by_index(j).unwrap();
+
+                let pair_idx = self.get_pair_index(i, j);
+
+                // FST = sum(numerators) / sum(denominators)
+                let fst = if self.fst_denominator[pair_idx] > 0.0 {
+                    self.fst_numerator[pair_idx] / self.fst_denominator[pair_idx]
+                } else {
+                    f64::NAN
+                };
+
+                results.push(FstRecord::new(
+                    &self.region,
+                    pop1.name.clone(),
+                    pop2.name.clone(),
                     fst,
                 ));
             }
         }
 
-        records
+        Some(results)
     }
+}
 
-    pub fn to_dxy_records(&self) -> Vec<DxyRecord> {
-        let mut records = Vec::new();
-        let (chrom, start, end) = self.get_region_info();
-        let pop_names: Vec<&str> = self.populations.iter().map(|x| x.name()).collect();
-        for i in 0..pop_names.len() {
-            for j in (i + 1)..pop_names.len() {
-                let idx = self.get_pair_index(i, j);
-                let dxy = self.dxy_stats.dxy(idx);
+/// Heterozygosity record for output
+#[derive(Debug, Serialize)]
+pub struct HeterozygosityRecord {
+    pub chrom: String,
+    pub start: usize,
+    pub end: usize,
+    pub sample: Option<String>,
+    pub population: String,
+    pub het_total: usize,
+    pub callable_total: usize,
+    pub heterozygosity: f64,
+    pub het_not_in_roh: Option<usize>,
+    pub callable_not_in_roh: Option<usize>,
+    pub heterozygosity_not_in_roh: Option<f64>,
+}
 
-                records.push(DxyRecord::new(
-                    pop_names[i],
-                    pop_names[j],
-                    chrom,
-                    start,
-                    end,
-                    dxy,
-                    self.dxy_stats.comparisons[idx],
-                    self.dxy_stats.differences[idx],
-                ));
-            }
-        }
-
-        records
-    }
-
-    pub fn to_pi_records(&self) -> Vec<PiRecord> {
-        let (chrom, start, end) = self.get_region_info();
-        self.populations
-            .iter()
-            .map(|x| x.to_pi_record(chrom, start, end))
-            .collect()
-    }
-
-    pub fn to_het_records(&self) -> Vec<HetRecord> {
-        let (chrom, start, end) = self.get_region_info();
-
-        self.populations
-            .iter()
-            .flat_map(|pop| pop.to_het_records(chrom, start, end, self.callable_sites))
-            .collect()
-    }
-
-    pub fn get_region_info(&self) -> (&str, u32, u32) {
-        let chrom = self.region.name_as_str();
-        let start = self.region.start_as_u32();
-        let end = self.region.end_as_u32();
-        (chrom, start, end)
-    }
-
-    pub fn get_pair_index(&self, pop1: usize, pop2: usize) -> usize {
-        if pop1 < pop2 {
-            pop1 * (self.populations.len() - 1) - (pop1 * (pop1 + 1) / 2) + pop2 - 1
+impl HeterozygosityRecord {
+    fn new_per_sample(
+        region: &Region,
+        sample: String,
+        population: String,
+        het_total: usize,
+        callable_total: usize,
+        het_not_in_roh: Option<usize>,
+        callable_not_in_roh: Option<usize>,
+    ) -> Self {
+        let heterozygosity = if callable_total > 0 {
+            het_total as f64 / callable_total as f64
         } else {
-            pop2 * (self.populations.len() - 1) - (pop2 * (pop2 + 1) / 2) + pop1 - 1
+            f64::NAN
+        };
+
+        let heterozygosity_not_in_roh = match (het_not_in_roh, callable_not_in_roh) {
+            (Some(het), Some(callable)) if callable > 0 => Some(het as f64 / callable as f64),
+            (Some(_), Some(_)) => Some(f64::NAN),
+            _ => None,
+        };
+
+        Self {
+            chrom: region.name_as_str().to_string(),
+            start: region.start_usize(),
+            end: region.end_usize(),
+            sample: Some(sample),
+            population,
+            het_total,
+            callable_total,
+            heterozygosity,
+            het_not_in_roh,
+            callable_not_in_roh,
+            heterozygosity_not_in_roh,
         }
     }
 
-    pub fn hudson_fst(&mut self, within1: f32, within2: f32, between: f32, pop_pair_idx: usize) {
-        // Calculate the average within-population heterozygosity
-        let average_within = (within1 + within2) / 2.0;
-
-        // If any value is NaN or invalid, skip this position
-        if average_within.is_nan() || between.is_nan() || between <= 0.0 {
-            return;
-        }
-
-        // Calculate and accumulate numerator and denominator separately
-        let numerator = between - average_within;
-        let denominator = between;
-        trace!(
-            "window: {:?}, avg_within: {}, btwn: {}, num: {}, den: {}",
-            self.get_region_info(),
-            average_within,
-            between,
-            numerator,
-            denominator
-        );
-
-        self.fst_stats.numerator[pop_pair_idx] += numerator;
-        self.fst_stats.denominator[pop_pair_idx] += denominator;
-    }
-
-    pub fn update_dxy_diffs(&mut self, pop1: usize, pop2: usize, diffs: u32, comps: u32) {
-        let idx = self.get_pair_index(pop1, pop2);
-        self.dxy_stats.differences[idx] += diffs;
-        self.dxy_stats.comparisons[idx] += comps;
-    }
-
-    pub fn get_population_mut(&mut self, population_idx: usize) -> Option<&mut Population> {
-        self.populations.get_mut(population_idx)
-    }
-
-    pub fn update_population(&mut self, population_idx: usize, values: [u32; 2]) -> f32 {
-        let population = self
-            .populations
-            .get_mut(population_idx)
-            .unwrap_or_else(|| panic!("Invalid population index: {}", population_idx));
-
-        let gts = values[0] + values[1];
-        let diffs = values[0] * values[1];
-        let comps = count_combinations(gts, 2);
-        trace!("update population {}, vals: {:?}, diffs: {} comps: {}, withindiffs: {}, withincomps: {}", population_idx, values, diffs, comps, population.within_diffs, population.within_comps);
-
-        population.refs += values[0];
-        population.alts += values[1];
-        population.within_diffs += diffs;
-        population.within_comps += comps;
-
-        if comps > 0 {
-            diffs as f32 / comps as f32
+    fn new_per_population(
+        region: &Region,
+        population: String,
+        het_total: usize,
+        callable_total: usize,
+        het_not_in_roh: Option<usize>,
+        callable_not_in_roh: Option<usize>,
+    ) -> Self {
+        let heterozygosity = if callable_total > 0 {
+            het_total as f64 / callable_total as f64
         } else {
-            f32::NAN
+            f64::NAN
+        };
+
+        let heterozygosity_not_in_roh = match (het_not_in_roh, callable_not_in_roh) {
+            (Some(het), Some(callable)) if callable > 0 => Some(het as f64 / callable as f64),
+            (Some(_), Some(_)) => Some(f64::NAN),
+            _ => None,
+        };
+
+        Self {
+            chrom: region.name_as_str().to_string(),
+            start: region.start_usize(),
+            end: region.end_usize(),
+            sample: None,
+            population,
+            het_total,
+            callable_total,
+            heterozygosity,
+            het_not_in_roh,
+            callable_not_in_roh,
+            heterozygosity_not_in_roh,
         }
     }
+}
 
-    pub fn update_allele_counts(&mut self, counts: Vec<[u32; 2]>) {
-        trace!("window: {:?} counts: {:?}", self.get_region_info(), counts);
-        if counts.len() >= 2 {
-            // First update all populations once
-            let within_values: Vec<f32> = (0..counts.len())
-                .map(|pop_idx| self.update_population(pop_idx, counts[pop_idx]))
-                .collect();
+#[derive(Debug, Serialize)]
+pub struct PiRecord {
+    pub chrom: String,
+    pub start: usize,
+    pub end: usize,
+    population: String,
+    pi: f64,
+    comparisons: usize,
+    differences: usize,
+}
+#[derive(Debug, Serialize)]
+pub struct DxyRecord {
+    pub chrom: String,
+    pub start: usize,
+    pub end: usize,
+    population1: String,
+    population2: String,
+    dxy: f64,
+    comparisons: usize,
+    differences: usize,
+}
 
-            // Then do FST calculations
-            for pop1 in 0..counts.len() {
-                let pop1_vals = counts[pop1];
-                for pop2 in (pop1 + 1)..counts.len() {
-                    let pop2_vals = counts[pop2];
+#[derive(Debug, Serialize)]
+pub struct FstRecord {
+    pub chrom: String,
+    pub start: usize,
+    pub end: usize,
+    population1: String,
+    population2: String,
+    fst: f64,
+}
 
-                    let pop1_total = pop1_vals[0] + pop1_vals[1]; // total alleles in pop1
-                    let pop2_total = pop2_vals[0] + pop2_vals[1]; // total alleles in pop2
+impl PiRecord {
+    fn new(
+        region: &Region,
+        population: String,
+        pi: f64,
+        comparisons: usize,
+        differences: usize,
+    ) -> Self {
+        Self {
+            chrom: region.name_as_str().to_string(),
+            start: region.start_usize(),
+            end: region.end_usize(),
+            population,
+            pi,
+            comparisons,
+            differences,
+        }
+    }
+}
 
-                    // Number of differences when comparing between populations
-                    let diffs = (pop1_vals[0] * pop2_vals[1]) + (pop1_vals[1] * pop2_vals[0]);
+impl DxyRecord {
+    fn new(
+        region: &Region,
+        population1: String,
+        population2: String,
+        dxy: f64,
+        comparisons: usize,
+        differences: usize,
+    ) -> Self {
+        Self {
+            chrom: region.name_as_str().to_string(),
+            start: region.start_usize(),
+            end: region.end_usize(),
+            population1,
+            population2,
+            dxy,
+            comparisons,
+            differences,
+        }
+    }
+}
 
-                    // Total number of possible comparisons between populations
-                    let comps = pop1_total * pop2_total;
-                    let between = if comps > 0 {
-                        diffs as f32 / comps as f32
-                    } else {
-                        f32::NAN
-                    };
-                    self.update_dxy_diffs(pop1, pop2, diffs, comps);
-                    let pair_idx = self.get_pair_index(pop1, pop2);
-                    self.hudson_fst(within_values[pop1], within_values[pop2], between, pair_idx);
+impl FstRecord {
+    fn new(region: &Region, population1: String, population2: String, fst: f64) -> Self {
+        Self {
+            chrom: region.name_as_str().to_string(),
+            start: region.start_usize(),
+            end: region.end_usize(),
+            population1,
+            population2,
+            fst,
+        }
+    }
+}
+
+pub struct WindowStats {
+    pub chrom: String,
+    pub start: usize,
+    pub end: usize,
+    pub pi: Vec<PiRecord>,
+    pub dxy: Option<Vec<DxyRecord>>,
+    pub fst: Option<Vec<FstRecord>>,
+    pub heterozygosity: Option<Vec<HeterozygosityRecord>>,
+}
+
+impl Window {
+    pub fn compute_stats(&self, sample_names: &[String]) -> Result<WindowStats> {
+        let pi = self.compute_pi();
+        let dxy = self.compute_dxy();
+        let fst = self.compute_fst();
+        let heterozygosity = self.compute_heterozygosity(sample_names);
+        Ok(WindowStats {
+            chrom: self.region.name_as_str().to_string(),
+            start: self.region.start_usize(),
+            end: self.region.end_usize(),
+            pi,
+            dxy,
+            fst,
+            heterozygosity,
+        })
+    }
+
+    /// Compute heterozygosity records
+    fn compute_heterozygosity(&self, sample_names: &[String]) -> Option<Vec<HeterozygosityRecord>> {
+        // Check if we have callable data (either per-sample or per-population)
+        if self.callable_sites.is_none() && self.callable_sites_per_pop.is_none() {
+            return None;
+        }
+
+        let mut results = Vec::new();
+
+        if self.has_sample_masks {
+            // Per-sample mode: output one record per sample
+            if let Some(ref callable) = self.callable_sites {
+                for (sample_idx, sample_name) in sample_names.iter().enumerate() {
+                    // Find which population this sample belongs to
+                    let pop_name = self
+                        .pop_map
+                        .lookup(sample_name)
+                        .map(|(pop_idx, _)| {
+                            self.pop_map
+                                .get_population_by_index(pop_idx)
+                                .map(|p| p.name.clone())
+                                .unwrap_or_else(|| "unknown".to_string())
+                        })
+                        .unwrap_or_else(|| "unknown".to_string());
+
+                    let het_total = self.het_counts[sample_idx];
+                    let callable_total = callable[sample_idx];
+
+                    let het_not_in_roh = self
+                        .het_counts_not_in_roh
+                        .as_ref()
+                        .map(|h| h[sample_idx]);
+                    let callable_not_in_roh = self
+                        .callable_sites_not_in_roh
+                        .as_ref()
+                        .map(|c| c[sample_idx]);
+
+                    results.push(HeterozygosityRecord::new_per_sample(
+                        &self.region,
+                        sample_name.clone(),
+                        pop_name,
+                        het_total,
+                        callable_total,
+                        het_not_in_roh,
+                        callable_not_in_roh,
+                    ));
                 }
             }
         } else {
-            self.update_population(0, counts[0]);
-        }
-    }
+            // Per-population mode: output one record per population (summed approach)
+            if let Some(ref callable) = self.callable_sites_per_pop {
+                for (pop_idx, pop) in self.pop_map.populations().enumerate() {
+                    let het_total = self.het_counts_per_pop[pop_idx];
+                    let callable_total = callable[pop_idx];
 
-    pub fn update_het_counts(&mut self, het_counts: Vec<Vec<u32>>) {
-        self.populations
-            .iter_mut()
-            .zip(het_counts)
-            .for_each(|(population, counts)| {
-                population
-                    .count_het_sites
-                    .iter_mut()
-                    .zip(counts)
-                    .for_each(|(site_count, count)| *site_count += count);
-            });
-    }
-    fn count_alleles(
-        &mut self,
-        record: &vcf::Record,
-        header: &vcf::Header,
-        population_info: &PopulationMapping,
-        samples_in_roh: HashSet<String>,
-    ) -> Result<()> {
-        let mut counts = VCFData::new(population_info.get_sample_counts_per_population());
+                    let het_not_in_roh = self
+                        .het_counts_per_pop_not_in_roh
+                        .as_ref()
+                        .map(|h| h[pop_idx]);
+                    let callable_not_in_roh = self
+                        .callable_sites_per_pop_not_in_roh
+                        .as_ref()
+                        .map(|c| c[pop_idx]);
 
-        let result = super::alleles::count_alleles(
-            record,
-            header,
-            population_info,
-            &mut counts,
-            samples_in_roh,
-        );
-        match result {
-            Ok(_) => {}
-            Err(e) => log::error!("count_alleles failed: {:?}", e),
-        }
-
-        self.update_allele_counts(counts.allele_counts);
-        self.update_het_counts(counts.het_counts);
-
-        Ok(())
-    }
-
-    fn update_comparisons_d4(
-        &mut self,
-        within_comps: &[u32],
-        dxy_comps: &[u32],
-        callable_sites: u32,
-    ) {
-        for (pop_idx, within_comp) in within_comps.iter().enumerate() {
-            if let Some(population) = self.get_population_mut(pop_idx) {
-                population.within_comps += *within_comp;
-            }
-        }
-        self.callable_sites = callable_sites;
-        self.dxy_stats
-            .comparisons
-            .iter_mut()
-            .zip(dxy_comps)
-            .for_each(|(existing, new)| *existing += new);
-    }
-}
-
-impl Ord for Window {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Compare by region name first
-        match self.region.name().cmp(other.region.name()) {
-            Ordering::Equal => {
-                // Compare by region start
-                let self_start = self.region.start_as_u32();
-                let other_start = other.region.start_as_u32();
-
-                self_start.cmp(&other_start)
-            }
-            other => other,
-        }
-    }
-}
-
-impl PartialOrd for Window {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl PartialEq for Window {
-    fn eq(&self, other: &Self) -> bool {
-        self.region.name() == other.region.name() && self.region.start() == other.region.start()
-    }
-}
-
-impl Eq for Window {}
-
-pub fn process_windows<P: AsRef<Path>>(
-    vcf_path: P,
-    callable_path: Option<P>,
-    roh_path: Option<P>,
-    worker_count: NonZeroUsize,
-    windows: VecDeque<Window>,
-    progress_bar: Option<ProgressBar>,
-    population_info: PopulationMapping,
-) -> Result<VecDeque<Window>> {
-    let num_windows = windows.len();
-    let res = Arc::new(Mutex::new(VecDeque::<Window>::with_capacity(num_windows)));
-    let work_queue = Arc::new(Mutex::new(windows));
-
-    let bar = if let Some(bar) = progress_bar {
-        bar.set_length(num_windows as u64);
-        Some(bar)
-    } else {
-        None
-    };
-    let start_time = Instant::now();
-    info!("Processing {} regions...", num_windows);
-
-    thread::scope(|scope| {
-        for i in 0..worker_count.get() {
-            trace!("Spawned worker {}", i);
-            let work_queue = Arc::clone(&work_queue);
-            let res = Arc::clone(&res);
-            let vcf_path = vcf_path.as_ref();
-            let callable_path = callable_path.as_ref().map(|p| p.as_ref().to_path_buf());
-            let roh_path = roh_path.as_ref().map(|p| p.as_ref().to_path_buf());
-            let bar = bar.clone();
-            let pop_info = population_info.clone();
-
-            scope.spawn(move || -> Result<()> {
-                trace!("Worker {} starting...", i);
-                let (mut vcf_reader, header) = build_vcf_reader(vcf_path)?;
-
-                while let Some(mut window) = {
-                    let mut queue = work_queue.lock().unwrap();
-                    queue.pop_front()
-                } {
-                    trace!("Worker {} aquired window", i);
-
-                    let mut callable_sites = if let Some(ref path) = callable_path {
-                        let extension = path.extension().and_then(|ext| ext.to_str());
-                        match extension {
-                            Some("d4") => Some(CallableSites::D4(D4CallableSites::from_file(
-                                pop_info.get_popname_refs(),
-                                &path,
-                            )?)),
-                            Some("gz") | Some("bed.gz") => {
-                                Some(CallableSites::Bed(BedCallableSites::from_file(
-                                    path,
-                                    pop_info.get_sample_counts_per_population(),
-                                )?))
-                            }
-                            _ => bail!(
-                                "Unsupported callable sites file format: {}",
-                                &path.display()
-                            ),
-                        }
-                    } else {
-                        None
-                    };
-
-                    let roh_tabix_query = if let Some(ref path) = roh_path {
-                        trace!("Roh path: {}", &path.display());
-                        let mut tabix_records = vec![];
-                        let mut reader =
-                            tabix::io::indexed_reader::Builder::default().build_from_path(path)?;
-                        trace!("roh region: {}", &window.region);
-                        let query = reader.query(&window.region)?;
-                        for result in query {
-                            let record = result?;
-                            let fields: Vec<&str> = record.as_ref().split("\t").collect();
-                            trace!("roh fields: {:?}", fields);
-                            if let (Some(start), Some(end), Some(sample)) =
-                                (fields.get(1), fields.get(2), fields.get(3))
-                            {
-                                let start: u32 = start.parse()?;
-                                let end: u32 = end.parse()?;
-
-                                trace!(
-                                    "Roh: region:{}, start:{}, end:{}, sample:{}",
-                                    &window.region,
-                                    start,
-                                    end,
-                                    sample
-                                );
-
-                                tabix_records.push((sample.to_string(), start..=end));
-                            }
-                        }
-                        Some(tabix_records)
-                    } else {
-                        None
-                    };
-
-                    let query = vcf_reader.query(&header, &window.region)?;
-                    let mut sites_skipped: HashSet<u32> = HashSet::new();
-
-                    for result in query {
-                        let record = result?;
-                        let start = record.variant_start().unwrap().unwrap().get();
-
-                        let samples_in_roh: HashSet<String> =
-                            if let Some(ref tabix_query) = roh_tabix_query {
-                                trace!("Tabix results: {:?}", tabix_query);
-                                tabix_query
-                                    .iter()
-                                    .filter_map(|(sample, interval)| {
-                                        if interval.contains(&(start as u32)) {
-                                            Some(sample.to_owned())
-                                        // Get index and copy value if it exists
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect() // Collect results into a HashSet
-                            } else {
-                                HashSet::with_capacity(0)
-                            };
-                        trace!("Samples in roh: {:?}", samples_in_roh);
-                        let should_process_site =
-                            window.sites.is_empty() || window.sites.contains(&(start as u32));
-
-                        let is_spanning_deletion = record.alternate_bases().iter().any(|alt| {
-                            alt.as_ref()
-                                .map(|a| String::from_utf8_lossy(a.as_ref()) == "*")
-                                .unwrap_or(false)
-                        });
-
-                        if !is_spanning_deletion && should_process_site && record.alternate_bases().len() <= 1 {
-                            window.count_alleles(&record, &header, &pop_info, samples_in_roh)?;
-                            sites_skipped.insert(start as u32); // skip this site in callable
-                        } else {
-                            sites_skipped.insert(start as u32);
-                        }
-                    }
-
-                    if let Some(reader) = callable_sites.as_mut() {
-                        let query_d4_time = Instant::now();
-                        let (chrom, window_begin, window_end) = &window.get_region_info();
-
-                        match reader.query(
-                            chrom,
-                            *window_begin,
-                            *window_end,
-                            window.ploidy,
-                            &sites_skipped,
-                        ) {
-                            Ok(QueryResult(within, dxy, callable_sites)) => {
-                                trace!(
-                                    "Worker {} queried callable counts d4 in: {:#?}",
-                                    i,
-                                    query_d4_time.elapsed()
-                                );
-                                window.update_comparisons_d4(&within, &dxy, callable_sites);
-                            }
-                            Err(e) => {
-                                bail!(
-                                    "Worker {} encountered an error querying callable counts: {}",
-                                    i,
-                                    e
-                                );
-                            }
-                        }
-                    }
-
-                    if let Some(roh) = roh_tabix_query {
-                        for (sample, range) in roh {
-                            let (pop_idx, sample_idx) = pop_info.lookup_sample_name(&sample)?;
-                            window.get_population_mut(pop_idx).unwrap().bases_in_roh[sample_idx] =
-                                range.end() - range.start()
-                        }
-                    }
-                    {
-                        let mut result_queue = res.lock().unwrap();
-                        result_queue.push_back(window);
-                    }
-
-                    if let Some(ref bar) = bar {
-                        bar.inc(1);
-                    }
+                    results.push(HeterozygosityRecord::new_per_population(
+                        &self.region,
+                        pop.name.clone(),
+                        het_total,
+                        callable_total,
+                        het_not_in_roh,
+                        callable_not_in_roh,
+                    ));
                 }
-                Ok(())
-            });
+            }
         }
-    });
-    info!("Finished processing in {:#?}", start_time.elapsed());
-    let sort_time = Instant::now();
 
-    {
-        let mut result_queue = res.lock().unwrap();
-        result_queue.make_contiguous().sort();
+        if results.is_empty() {
+            None
+        } else {
+            Some(results)
+        }
     }
-    info!("Sorted results in {:#?}", sort_time.elapsed());
-    let result = Ok(std::mem::take(&mut *res.lock().unwrap()));
-    result
 }

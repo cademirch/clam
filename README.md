@@ -25,10 +25,10 @@ clam loci -t 16 -m 10 sample1.d4.gz sample2.d4.gz sample3.d4.gz
 ```
 
 ### Using callable loci intervals to estimate popgen statistics
-The clam `stat` command can be used to estimate common population genetic statistics such as π, d<sub>xy</sub>, and F<sub>ST</sub> in windows. `stat` uses the callable loci interval file alongside a VCF to produce accurate estimates, even in the presence of missing data.
+The clam `stat` command can be used to estimate common population genetic statistics such as π, d<sub>xy</sub>, F<sub>ST</sub>, and heterozygosity in windows. `stat` uses the callable loci Zarr alongside a VCF to produce accurate estimates, even in the presence of missing data.
 
 ```bash
-clam stat -t 16 -w 10000 variants.vcf.gz callable-loci.d4
+clam stat -o results/ -w 10000 -c callable.zarr variants.vcf.gz
 ```
 ## Documentation
 Read the [documentation](https://cademirch.github.io/clam) for more information.
