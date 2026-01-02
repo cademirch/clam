@@ -160,13 +160,13 @@ fn process_sample_masks_zarr(
     let total_chunks: usize = input_zarr
         .contigs()
         .iter()
-        .map(|(_, len)| ((len as u64 + chunk_size - 1) / chunk_size) as usize)
+        .map(|(_, len)| (len as u64).div_ceil(chunk_size) as usize)
         .sum();
     let pb = create_progress_bar(total_chunks);
 
     // Process by chromosome - open arrays once per chromosome
     for (chrom_name, chrom_length) in input_zarr.contigs().iter() {
-        let num_chunks = (chrom_length as u64 + chunk_size - 1) / chunk_size;
+        let num_chunks = (chrom_length as u64).div_ceil(chunk_size);
 
         let input_array = input_zarr.open_array(chrom_name)?;
         let output_array = output_zarr.open_array(chrom_name)?;
@@ -214,13 +214,13 @@ fn process_population_counts_zarr(
     let total_chunks: usize = input_zarr
         .contigs()
         .iter()
-        .map(|(_, len)| ((len as u64 + chunk_size - 1) / chunk_size) as usize)
+        .map(|(_, len)| (len as u64).div_ceil(chunk_size) as usize)
         .sum();
     let pb = create_progress_bar(total_chunks);
 
     // Process by chromosome - open arrays once per chromosome
     for (chrom_name, chrom_length) in input_zarr.contigs().iter() {
-        let num_chunks = (chrom_length as u64 + chunk_size - 1) / chunk_size;
+        let num_chunks = (chrom_length as u64).div_ceil(chunk_size);
 
         let input_array = input_zarr.open_array(chrom_name)?;
         let output_array = output_zarr.open_array(chrom_name)?;

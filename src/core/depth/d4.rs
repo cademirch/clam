@@ -70,7 +70,7 @@ impl D4Reader {
 
         // Check for SFI index
         let track_root = d4_reader.as_root();
-        let ic = D4IndexCollection::from_root_container(&track_root);
+        let ic = D4IndexCollection::from_root_container(track_root);
         if ic.is_err() {
             warn_missing_index(&src_path);
         }
@@ -168,7 +168,7 @@ impl DepthSource for D4Reader {
             .get_header()
             .chrom_list()
             .iter()
-            .map(|chrom| Contig::new(chrom.name.clone(), chrom.size as usize))
+            .map(|chrom| Contig::new(chrom.name.clone(), chrom.size))
             .collect();
 
         ContigSet::new(contigs)
@@ -208,7 +208,7 @@ impl BgzfD4Reader {
 
         // Check for SFI index
         let track_root = d4_reader.as_root();
-        let ic = D4IndexCollection::from_root_container(&track_root);
+        let ic = D4IndexCollection::from_root_container(track_root);
         if ic.is_err() {
             warn!(
                 "SFI index not found for D4 file: {}, this will result in slower performance. \
@@ -266,7 +266,7 @@ impl DepthSource for BgzfD4Reader {
             .get_header()
             .chrom_list()
             .iter()
-            .map(|chrom| Contig::new(chrom.name.clone(), chrom.size as usize))
+            .map(|chrom| Contig::new(chrom.name.clone(), chrom.size))
             .collect();
 
         ContigSet::new(contigs)

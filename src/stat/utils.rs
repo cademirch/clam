@@ -41,12 +41,10 @@ pub fn get_exclude_chromosomes(
 
 pub fn read_bed_regions<P: AsRef<Path>>(bed_file: P) -> Result<Vec<Region>> {
     let mut res = vec![];
-    let mut rdr = bed::io::reader::Builder::<3>::default()
+    let mut rdr = bed::io::reader::Builder::<3>
         .build_from_path(bed_file.as_ref())
-        .expect(&format!(
-            "Failed to open bed file: {}",
-            bed_file.as_ref().display()
-        ));
+        .unwrap_or_else(|_| panic!("Failed to open bed file: {}",
+            bed_file.as_ref().display()));
     let mut record = bed::Record::<3>::default();
 
     while match rdr.read_record(&mut record) {

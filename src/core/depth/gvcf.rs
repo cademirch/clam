@@ -126,7 +126,7 @@ impl DepthSource for GvcfReader {
             };
 
             // Convert to 0-based array indices
-            let array_start = (startpos.get() - 1) as usize;
+            let array_start = (startpos.get() - 1);
             let array_end = endpos as usize;
 
             trace!(
@@ -160,7 +160,7 @@ impl DepthSource for GvcfReader {
             .filter_map(|(name, contig_map)| {
                 contig_map
                     .length()
-                    .map(|len| Contig::new(name.to_string(), len as usize))
+                    .map(|len| Contig::new(name.to_string(), len))
             })
             .collect();
 

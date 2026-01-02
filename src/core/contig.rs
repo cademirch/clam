@@ -101,7 +101,7 @@ impl ContigSet {
     pub fn to_chunks(&self, chunk_size: u64) -> Vec<ContigChunk> {
         let chunks: Vec<ContigChunk> = self.iter()
             .flat_map(|(contig, length)| {
-                let num_chunks = (length + chunk_size as usize - 1) / chunk_size as usize;
+                let num_chunks = length.div_ceil(chunk_size as usize);
                 (0..num_chunks)
                     .map(|chunk_idx| {
                         let start = (chunk_idx * chunk_size as usize) as u32;

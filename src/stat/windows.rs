@@ -82,7 +82,7 @@ impl FixedWindowIndex {
         let end = region.end_usize();
         let chrom = region.name_as_str().to_string();
 
-        let num_windows = ((end - start) + window_size - 1) / window_size;
+        let num_windows = (end - start).div_ceil(window_size);
 
         Self {
             chrom,

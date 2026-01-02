@@ -252,7 +252,7 @@ impl LociArgs {
             max_depth: self.max_depth,
             min_proportion: self.min_proportion,
             mean_depth_range: (self.mean_depth_min, self.mean_depth_max),
-            per_contig: per_contig
+            per_contig
         };
 
         if self.input.len() == 1 && is_zarr_path(&self.input[0]) {
@@ -308,8 +308,8 @@ impl StatArgs {
 
         let mut chunk_size = self.chunk_size;
         if let Some(callable_path) = self.callable.as_ref() {
-            if is_zarr_path(&callable_path) {
-                let callable_zarr = CallableArrays::open(&callable_path)?;
+            if is_zarr_path(callable_path) {
+                let callable_zarr = CallableArrays::open(callable_path)?;
                 chunk_size = callable_zarr.chunk_size();
             }
         }

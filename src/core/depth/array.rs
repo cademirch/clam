@@ -1,5 +1,5 @@
 use crate::core::population::PopulationMap;
-use color_eyre::{eyre::bail, eyre::eyre, Result};
+use color_eyre::{eyre::bail, Result};
 use ndarray::{Array1, Array2, Axis};
 
 /// Helper to stack depth vectors
