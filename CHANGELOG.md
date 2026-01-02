@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/cademirch/clam/compare/v0.2.2...v1.0.0) (2026-01-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* major refactor with new collect command, Zarr output format, and documentation overhaul ([#28](https://github.com/cademirch/clam/issues/28))
+
+### Features
+
+* major refactor with new collect command, Zarr output format, and documentation overhaul ([#28](https://github.com/cademirch/clam/issues/28)) ([8d796cc](https://github.com/cademirch/clam/commit/8d796cc9afe693a0b3a83bf6eeb99eaa3b359196))
+
 ## [0.2.2](https://github.com/cademirch/clam/compare/v0.2.1...v0.2.2) (2025-09-24)
 
 
