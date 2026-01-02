@@ -126,7 +126,7 @@ impl DepthSource for GvcfReader {
             };
 
             // Convert to 0-based array indices
-            let array_start = (startpos.get() - 1);
+            let array_start = startpos.get() - 1;
             let array_end = endpos as usize;
 
             trace!(
