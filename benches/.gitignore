@@ -1,0 +1,10 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+alns/*
+.snakemake
+logs
+reads
+results/**/
+!results/plots/
+benchmarks

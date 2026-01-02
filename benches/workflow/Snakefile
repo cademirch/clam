@@ -1,0 +1,199 @@
+# Benchmarking workflow: clam collect vs d4tools merge
+# Compares output size and runtime as sample count increases
+
+from pathlib import Path
+
+# === Configuration ===
+BASEDIR = Path(workflow.basedir)
+SAMPLES = [f"sample_{i:02d}" for i in range(1, 11)]  # 10 samples
+SAMPLE_COUNTS = list(range(2, 11))  # 2-10 samples
+CLAM_THREADS = [1, 2, 4, 8]
+TARGET_COVERAGE = 10
+BENCHMARK_REPEATS = 3
+
+# Read sequence length from fasta index (column 2)
+REF_INDEX = BASEDIR / "data" / "ecoli.fna.gz.fai"
+with open(REF_INDEX) as f:
+    SEQLEN = int(f.readline().split("\t")[1])
+
+NUM_READS = (SEQLEN * TARGET_COVERAGE) // 300
+
+# Create reproducible seeds for each sample
+SEEDS = {sample: i + 1 for i, sample in enumerate(SAMPLES)}
+
+
+# === Helper functions ===
+def get_samples_for_count(n):
+    """Return first n samples."""
+    return SAMPLES[:n]
+
+
+def get_d4_files_for_count(n):
+    """Return D4 file paths for first n samples."""
+    return expand("results/d4/{sample}.d4", sample=get_samples_for_count(n))
+
+
+# === Target rule ===
+rule all:
+    input:
+        "results/plots/runtime.png",
+        "results/plots/size.png",
+
+
+# === Decompress reference genome ===
+rule decompress_ref:
+    input:
+        Path(BASEDIR, "data", "ecoli.fna.gz"),
+    output:
+        Path(BASEDIR, "data", "ecoli.fna"),
+    shell:
+        "gunzip -c {input} > {output}"
+
+
+# === Build clam from source ===
+rule build_clam:
+    output:
+        binary=Path(BASEDIR, "..", "..", "target", "release", "clam"),
+    params:
+        srcdir=Path(BASEDIR, "..", ".."),
+    log:
+        "logs/build_clam.txt",
+    shell:
+        """
+        cd {params.srcdir} && cargo build --release &> {log}
+        """
+
+
+# === Simulate reads with mason ===
+rule simulate_reads_mason:
+    input:
+        ref=Path(BASEDIR, "data", "ecoli.fna"),
+    output:
+        fq1=temp("results/reads/{sample}_1.fq"),
+        fq2=temp("results/reads/{sample}_2.fq"),
+        sam=temp("results/alns/{sample}.sam"),
+    params:
+        seed=lambda wc: 42 * SEEDS[wc.sample],
+        num_reads=NUM_READS,
+        insert_size=350,
+        sd_insert=50,
+    log:
+        "logs/simulate_reads_mason/{sample}.txt",
+    shell:
+        """
+        mason_simulator \
+            --seed {params.seed} \
+            --fragment-mean-size {params.insert_size} \
+            --fragment-size-std-dev {params.sd_insert} \
+            -ir {input.ref} \
+            -n {params.num_reads} \
+            --illumina-read-length 150 \
+            -o {output.fq1} \
+            -or {output.fq2} \
+            -oa {output.sam} &> {log}
+        """
+
+
+# === Sort SAM to BAM and index ===
+rule samtools_sort:
+    input:
+        sam="results/alns/{sample}.sam",
+    output:
+        bam="results/alns/{sample}.bam",
+        bai="results/alns/{sample}.bam.bai",
+    log:
+        "logs/samtools_sort/{sample}.txt",
+    shell:
+        """
+        samtools sort -o {output.bam} {input.sam} 2> {log}
+        samtools index {output.bam} 2>> {log}
+        """
+
+
+# === Create per-sample D4 files ===
+rule d4tools_create:
+    input:
+        bam="results/alns/{sample}.bam",
+        bai="results/alns/{sample}.bam.bai",
+    output:
+        d4="results/d4/{sample}.d4",
+    log:
+        "logs/d4tools_create/{sample}.txt",
+    shell:
+        """
+        d4tools create {input.bam} {output.d4} &> {log}
+        d4tools index build {output.d4} &>> {log}
+        """
+
+
+# === Merge D4 files with d4tools ===
+rule d4tools_merge:
+    input:
+        d4_files=lambda wc: get_d4_files_for_count(int(wc.n)),
+    output:
+        merged="results/merged_d4/n{n}.d4",
+    benchmark:
+        repeat("benchmarks/d4tools_merge/n{n}.tsv", BENCHMARK_REPEATS)
+    log:
+        "logs/d4tools_merge/n{n}.txt",
+    resources:
+        io_heavy=1,
+    shell:
+        """
+        rm -f {output.merged}
+        d4tools merge {input.d4_files} {output.merged} &> {log}
+        """
+
+
+# === Collect D4 files with clam ===
+rule clam_collect:
+    input:
+        d4_files=lambda wc: get_d4_files_for_count(int(wc.n)),
+        clam=rules.build_clam.output.binary,
+    output:
+        zarr=directory("results/zarr/n{n}_t{threads}"),
+    benchmark:
+        repeat("benchmarks/clam_collect/n{n}_t{threads}.tsv", BENCHMARK_REPEATS)
+    log:
+        "logs/clam_collect/n{n}_t{threads}.txt",
+    threads: lambda wc: int(wc.threads)
+    resources:
+        io_heavy=1,
+    shell:
+        """
+        rm -rf {output.zarr}
+        {input.clam} collect \
+            --output {output.zarr} \
+            --threads {threads} \
+            {input.d4_files} &> {log}
+        """
+
+
+# === Generate plots ===
+rule plot_results:
+    input:
+        d4_benchmarks=expand(
+            "benchmarks/d4tools_merge/n{n}.tsv",
+            n=SAMPLE_COUNTS,
+        ),
+        clam_benchmarks=expand(
+            "benchmarks/clam_collect/n{n}_t{threads}.tsv",
+            n=SAMPLE_COUNTS,
+            threads=CLAM_THREADS,
+        ),
+        d4_outputs=expand("results/merged_d4/n{n}.d4", n=SAMPLE_COUNTS),
+        zarr_outputs=expand(
+            "results/zarr/n{n}_t{threads}",
+            n=SAMPLE_COUNTS,
+            threads=CLAM_THREADS,
+        ),
+    output:
+        runtime_plot="results/plots/runtime.png",
+        size_plot="results/plots/size.png",
+    params:
+        sample_counts=SAMPLE_COUNTS,
+        clam_threads=CLAM_THREADS,
+    log:
+        "logs/plot_results.txt",
+    script:
+        "scripts/plot_benchmarks.py"
