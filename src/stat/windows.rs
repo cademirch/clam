@@ -685,17 +685,13 @@ pub struct HeterozygosityRecord {
     pub chrom: String,
     pub start: usize,
     pub end: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub sample: Option<String>,
     pub population: String,
     pub het_total: usize,
     pub callable_total: usize,
     pub heterozygosity: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub het_not_in_roh: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub callable_not_in_roh: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub heterozygosity_not_in_roh: Option<f64>,
 }
 
