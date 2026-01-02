@@ -1,5 +1,0 @@
-tests/data/loci/test_no_pops/bgzf/per-sample-depth/no_pops_samp0.per-base.d4.gz
-tests/data/loci/test_no_pops/bgzf/per-sample-depth/no_pops_samp1.per-base.d4.gz
-tests/data/loci/test_no_pops/bgzf/per-sample-depth/no_pops_samp2.per-base.d4.gz
-tests/data/loci/test_no_pops/bgzf/per-sample-depth/no_pops_samp3.per-base.d4.gz
-tests/data/loci/test_no_pops/bgzf/per-sample-depth/no_pops_samp4.per-base.d4.gz

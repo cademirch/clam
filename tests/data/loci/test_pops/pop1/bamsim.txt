@@ -1,1 +1,0 @@
-./target/release/bamsim generate --num-bams 5 --num-chrs 1 --chr-length 1000 --min-depth 3 --max-depth 15 --min-mean-depth 6 --proportion 0.5 test_pops/pop1/bams/

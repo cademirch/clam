@@ -11,18 +11,19 @@ fn create_tsv_writer(outdir: &Path, filename: &str) -> Result<csv::Writer<File>>
     let file = File::create(&path)?;
     Ok(csv::WriterBuilder::new().delimiter(b'\t').from_writer(file))
 }
+
 pub struct Writer {
     pub pi: csv::Writer<File>,
-    pub pi_non_roh: Option<csv::Writer<File>>,
     pub dxy: Option<csv::Writer<File>>,
     pub fst: Option<csv::Writer<File>>,
+    pub heterozygosity: Option<csv::Writer<File>>,
 }
 
 impl Writer {
-    pub fn new<P: AsRef<Path>>(outdir: P, roh: bool, dxy: bool) -> Result<Self> {
+    pub fn new<P: AsRef<Path>>(outdir: P, has_callable: bool, dxy: bool) -> Result<Self> {
         let pi = create_tsv_writer(outdir.as_ref(), "pi.tsv")?;
-        let pi_non_roh = if roh {
-            Some(create_tsv_writer(outdir.as_ref(), "pi_non_roh.tsv")?)
+        let heterozygosity = if has_callable {
+            Some(create_tsv_writer(outdir.as_ref(), "heterozygosity.tsv")?)
         } else {
             None
         };
@@ -36,19 +37,20 @@ impl Writer {
         };
         Ok(Self {
             pi,
-            pi_non_roh,
             dxy,
             fst,
+            heterozygosity,
         })
     }
+
     pub fn write(&mut self, stats: WindowStats) -> Result<()> {
         for pi_stat in stats.pi {
             self.pi.serialize(pi_stat)?;
         }
 
-        if let (Some(writer), Some(pi_non_roh_stats)) = (&mut self.pi_non_roh, stats.pi_non_roh) {
-            for pi_stat in pi_non_roh_stats {
-                writer.serialize(pi_stat)?;
+        if let (Some(writer), Some(het_stats)) = (&mut self.heterozygosity, stats.heterozygosity) {
+            for het_stat in het_stats {
+                writer.serialize(het_stat)?;
             }
         }
 
@@ -65,10 +67,11 @@ impl Writer {
         }
         Ok(())
     }
+
     pub fn flush(&mut self) -> Result<()> {
         self.pi.flush()?;
 
-        if let Some(writer) = &mut self.pi_non_roh {
+        if let Some(writer) = &mut self.heterozygosity {
             writer.flush()?;
         }
         if let Some(writer) = &mut self.dxy {

@@ -15,7 +15,7 @@ use std::path::Path;
 
 
 pub fn run_stat(config: StatConfig, outdir: &Path) -> Result<()> {
-    let has_roh = config.roh_bed_path.is_some();
+    let has_callable = config.callable_zarr_path.is_some();
     let dxy = config.pop_map.num_populations() > 1;
 
     let pb = create_progress_bar(config.chunks.len());
@@ -36,7 +36,7 @@ pub fn run_stat(config: StatConfig, outdir: &Path) -> Result<()> {
     let spinner = create_spinner("Writing results...");
     results.sort_unstable_by_key(|(i, _)| *i);
 
-    let mut writers = Writer::new(outdir, has_roh, dxy)?;
+    let mut writers = Writer::new(outdir, has_callable, dxy)?;
     for (_, stats) in results {
         for ws in stats {
             writers.write(ws)?;

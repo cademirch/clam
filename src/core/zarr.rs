@@ -1,7 +1,8 @@
-use crate::core::contig::{ContigSet,ContigChunk};
+use crate::core::contig::{ContigChunk, ContigSet};
 use color_eyre::eyre::OptionExt;
 use color_eyre::{eyre::eyre, Result};
-use ndarray::{s, Array2};
+use ndarray::Array2;
+use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,16 @@ use zarrs::filesystem::FilesystemStore;
 use zarrs::group::{Group, GroupBuilder};
 use zarrs::storage::{ReadableWritableListableStorage, ReadableWritableListableStorageTraits};
 
+/// Type of callable loci data stored in a zarr file
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallableLociType {
+    /// Per-population counts (u16) - number of callable samples per population at each site
+    PopulationCounts,
+    /// Per-sample boolean masks - whether each sample is callable at each site
+    SampleMasks,
+}
+
 
 pub type OpenArray = Array<dyn ReadableWritableListableStorageTraits>;
 
@@ -26,6 +37,7 @@ pub struct ChromosomeArrays<T: ElementOwned> {
     contigs: ContigSet,
     column_names: Vec<String>,
     chunk_size: u64,
+    callable_loci_type: Option<CallableLociType>,
     _marker: PhantomData<T>,
 }
 
@@ -53,13 +65,13 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
         chunk_size: u64,
         data_type: DataType,
         fill_value: FillValue,
+        callable_loci_type: Option<CallableLociType>,
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let store = Self::open_store(&path)?;
 
-        
         let mut group = GroupBuilder::new().build(store.clone(), "/")?;
-        let metadata = serde_json::json!({
+        let mut metadata = serde_json::json!({
             "contigs": contigs.iter()
                 .map(|(name, len)| serde_json::json!({
                     "name": name,
@@ -69,6 +81,12 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
             "column_names": column_names,
             "chunk_size": chunk_size,
         });
+
+        // Add callable_loci_type to metadata if provided
+        if let Some(loci_type) = callable_loci_type {
+            metadata["callable_loci_type"] = serde_json::to_value(loci_type)?;
+        }
+
         group
             .attributes_mut()
             .insert("clam_metadata".to_string(), metadata);
@@ -121,11 +139,11 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
             contigs,
             column_names,
             chunk_size,
+            callable_loci_type,
             _marker: PhantomData,
         })
     }
 
-    
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let store = Self::open_store(&path)?;
@@ -160,12 +178,18 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
             .as_u64()
             .ok_or_else(|| eyre!("Invalid chunk_size in metadata"))?;
 
+        // Read callable_loci_type if present (backward compatibility: None if missing)
+        let callable_loci_type = metadata
+            .get("callable_loci_type")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+
         Ok(Self {
             path,
             store,
             contigs,
             column_names,
             chunk_size,
+            callable_loci_type,
             _marker: PhantomData,
         })
     }
@@ -250,6 +274,10 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
         &self.path
     }
 
+    pub fn callable_loci_type(&self) -> Option<CallableLociType> {
+        self.callable_loci_type
+    }
+
     /// Convert position to chunk index
     pub fn position_to_chunk(&self, position: u32) -> u64 {
         (position as u64) / self.chunk_size
@@ -287,6 +315,7 @@ impl DepthArrays {
             chunk_size,
             DataType::UInt32,
             FillValue::from(0u32),
+            None, // Not a callable loci file
         )
     }
 }
@@ -305,6 +334,7 @@ impl CallableArrays {
             chunk_size,
             DataType::UInt16,
             FillValue::from(0u16),
+            Some(CallableLociType::PopulationCounts),
         )
     }
 }
@@ -325,6 +355,7 @@ impl SampleMaskArrays {
             chunk_size,
             DataType::Bool,
             FillValue::from(false),
+            Some(CallableLociType::SampleMasks),
         )
     }
 }

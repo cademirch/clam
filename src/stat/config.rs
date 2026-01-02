@@ -2,7 +2,7 @@ use crate::core::{
     contig::{validate_contig_consistency, Contig, ContigChunk, ContigSet},
     population::PopulationMap,
     utils::create_spinner,
-    zarr::CallableArrays,
+    zarr::{CallableArrays, CallableLociType, SampleMaskArrays},
 };
 use crate::stat::{
     roh::RohIndex,
@@ -32,6 +32,7 @@ pub struct StatConfig {
 
     // Store paths, not loaded data (load per-chunk)
     pub callable_zarr_path: Option<PathBuf>,
+    pub callable_loci_type: Option<CallableLociType>,
     pub roh_bed_path: Option<PathBuf>,
 
     pub ploidy: Ploidy,
@@ -96,15 +97,53 @@ impl StatConfig {
 
         let population_array = pop_map.membership_matrix(&analysis_samples)?;
 
-        if let Some(ref zarr_path) = callable_zarr {
+        let callable_loci_type = if let Some(ref zarr_path) = callable_zarr {
             spinner.set_message("Validating callable sites zarr...");
+
+            // Try to open as CallableArrays first to get metadata
             let arrays = CallableArrays::open(zarr_path)?;
             let zarr_contigs = arrays.contigs();
             validate_contig_consistency(vec![
                 (&vcf_path, vcf_contigs.clone()),
                 (zarr_path, zarr_contigs.clone()),
             ])?;
-        }
+
+            // Detect callable loci type from metadata
+            let loci_type = arrays
+                .callable_loci_type()
+                .unwrap_or(CallableLociType::PopulationCounts); // Backward compatibility
+
+            // If it's SampleMasks, validate sample names match
+            if loci_type == CallableLociType::SampleMasks {
+                let mask_arrays = SampleMaskArrays::open(zarr_path)?;
+                let zarr_samples = mask_arrays.column_names();
+
+                // Verify all analysis samples are in the zarr
+                for sample in &analysis_samples {
+                    if !zarr_samples.contains(sample) {
+                        bail!(
+                            "Sample '{}' not found in callable loci zarr. \
+                             Zarr contains: {:?}",
+                            sample,
+                            zarr_samples
+                        );
+                    }
+                }
+            }
+
+            // Warn if using population counts with ROH data
+            if loci_type == CallableLociType::PopulationCounts && roh_bed.is_some() {
+                warn!(
+                    "Using population-level callable counts with ROH data. \
+                     Callable sites outside ROH will be approximated. \
+                     For accurate per-sample heterozygosity, use per-sample callable masks."
+                );
+            }
+
+            Some(loci_type)
+        } else {
+            None
+        };
 
         if roh_bed.is_some() {
             spinner.set_message("Checking ROH BED file...");
@@ -134,6 +173,7 @@ impl StatConfig {
             population_array,
             window_strategy,
             callable_zarr_path: callable_zarr,
+            callable_loci_type,
             roh_bed_path: roh_bed,
             ploidy,
             sample_filter_indices,
@@ -150,10 +190,19 @@ impl StatConfig {
 
         let window_index = self.window_strategy.create_index(&query_region);
 
-        let callable_loci = if let Some(ref zarr_path) = self.callable_zarr_path {
-            Some(CallableArrays::open(zarr_path)?)
-        } else {
-            None
+        let callable_loci = match (&self.callable_zarr_path, self.callable_loci_type) {
+            (Some(zarr_path), Some(CallableLociType::SampleMasks)) => {
+                Some(super::vcf::query::CallableData::SampleMasks(
+                    SampleMaskArrays::open(zarr_path)?,
+                ))
+            }
+            (Some(zarr_path), _) => {
+                // Default to PopulationCounts for backward compatibility
+                Some(super::vcf::query::CallableData::PopulationCounts(
+                    CallableArrays::open(zarr_path)?,
+                ))
+            }
+            (None, _) => None,
         };
 
         let roh_index = if let Some(ref bed_path) = self.roh_bed_path {
@@ -194,6 +243,7 @@ impl StatConfig {
             ploidy: self.ploidy,
             vcf_path: self.vcf_path.clone(),
             sample_filter_indices: self.sample_filter_indices.clone(),
+            analysis_samples: self.analysis_samples.clone(),
         })
     }
 }

@@ -6,7 +6,6 @@ use noodles::vcf::variant::record::samples::Series;
 use noodles::vcf::variant::record::Samples;
 use noodles::vcf::variant::RecordBuf;
 use noodles::vcf::{Header, Record};
-use std::ops::{Add, AddAssign};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -157,6 +156,9 @@ pub struct AlleleCounts {
     /// Heterozygous sites per sample
     pub hets: Array1<bool>,
 
+    /// Callable (non-missing) status per sample
+    pub callable: Array1<bool>,
+
     /// Counts excluding ROH samples (None if no ROH data)
     pub non_roh: Option<NonRohCounts>,
 }
@@ -164,14 +166,11 @@ pub struct AlleleCounts {
 /// Allele counts excluding samples in runs of homozygosity
 #[derive(Debug, Clone)]
 pub struct NonRohCounts {
-    /// Reference allele count per population (NON-ROH samples only)
-    pub refs: Array1<usize>,
-
-    /// Alternate allele count per population (NON-ROH samples only)
-    pub alts: Array1<usize>,
-
     /// Heterozygous sites per sample (NON-ROH samples only)
     pub hets: Array1<bool>,
+
+    /// Callable (non-missing and not in ROH) status per sample
+    pub callable: Array1<bool>,
 }
 
 impl AlleleCounts {
@@ -190,36 +189,33 @@ impl AlleleCounts {
             genotypes[i].is_missing() as usize * ploidy_usize
         });
         let hets = Array1::from_shape_fn(num_samples, |i| genotypes[i].is_het());
+        let callable = Array1::from_shape_fn(num_samples, |i| !genotypes[i].is_missing());
 
         let refs = ref_alleles.dot(pop_membership);
         let alts = alt_alleles.dot(pop_membership);
         let missing = missing.dot(pop_membership);
 
         let non_roh = samples_in_roh.map(|roh_samples| {
-            let mut ref_alleles_non_roh = ref_alleles.clone();
-            let mut alt_alleles_non_roh = alt_alleles.clone();
             let mut hets_non_roh = hets.clone();
+            let mut callable_non_roh = callable.clone();
 
             // Zero out ROH samples
             for &sample_idx in roh_samples {
-                ref_alleles_non_roh[sample_idx] = 0;
-                alt_alleles_non_roh[sample_idx] = 0;
                 hets_non_roh[sample_idx] = false;
+                callable_non_roh[sample_idx] = false;
             }
 
             // Zero out missing genotypes
             for (i, gt) in genotypes.iter().enumerate() {
                 if gt.is_missing() {
-                    ref_alleles_non_roh[i] = 0;
-                    alt_alleles_non_roh[i] = 0;
                     hets_non_roh[i] = false;
+                    callable_non_roh[i] = false;
                 }
             }
 
             NonRohCounts {
-                refs: ref_alleles_non_roh.dot(pop_membership),
-                alts: alt_alleles_non_roh.dot(pop_membership),
                 hets: hets_non_roh,
+                callable: callable_non_roh,
             }
         });
 
@@ -228,60 +224,13 @@ impl AlleleCounts {
             alts,
             missing,
             hets,
+            callable,
             non_roh,
         })
     }
 }
 
-impl Add for AlleleCounts {
-    type Output = Self;
 
-    fn add(self, other: Self) -> Self {
-        Self {
-            refs: &self.refs + &other.refs,
-            alts: &self.alts + &other.alts,
-            missing: &self.missing + &other.missing,
-            hets: self.hets | other.hets, 
-            non_roh: match (self.non_roh, other.non_roh) {
-                (Some(a), Some(b)) => Some(a + b),
-                _ => None,
-            },
-        }
-    }
-}
-
-impl Add for NonRohCounts {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        Self {
-            refs: &self.refs + &other.refs,
-            alts: &self.alts + &other.alts,
-            hets: self.hets | other.hets,
-        }
-    }
-}
-
-impl AddAssign for AlleleCounts {
-    fn add_assign(&mut self, other: Self) {
-        self.refs += &other.refs;
-        self.alts += &other.alts;
-        self.missing += &other.missing;
-        self.hets = &self.hets | &other.hets;
-
-        if let (Some(self_non_roh), Some(other_non_roh)) = (&mut self.non_roh, other.non_roh) {
-            *self_non_roh += other_non_roh;
-        }
-    }
-}
-
-impl AddAssign for NonRohCounts {
-    fn add_assign(&mut self, other: Self) {
-        self.refs += &other.refs;
-        self.alts += &other.alts;
-        self.hets = &self.hets | &other.hets;
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -575,13 +524,11 @@ mod tests {
 
         let non_roh = counts.non_roh.as_ref().unwrap();
 
-        // NON-ROH counts should only include sample2 (in pop1)
-        // sample1 and sample3 are in ROH, so excluded
-        assert_eq!(non_roh.refs, array![0, 1]);
-        assert_eq!(non_roh.alts, array![0, 1]);
-
         // Only sample2 is het and not in ROH
         assert_eq!(non_roh.hets, array![false, true, false]);
+
+        // Only sample2 is callable and not in ROH
+        assert_eq!(non_roh.callable, array![false, true, false]);
 
         Ok(())
     }
@@ -610,11 +557,14 @@ mod tests {
 
         let non_roh = counts.non_roh.as_ref().unwrap();
 
-        // NON-ROH counts should only include sample3 (sample1 in ROH, sample2 missing)
-        // Pop 0: sample3 (0 ref) = 0
-        // Pop 1: sample2 excluded (missing) = 0
-        assert_eq!(non_roh.refs, array![0, 0]);
-        assert_eq!(non_roh.alts, array![2, 0]);
+        // NON-ROH callable should only include sample3 (sample1 in ROH, sample2 missing)
+        // sample1: in ROH -> not callable
+        // sample2: missing -> not callable
+        // sample3: not in ROH and not missing -> callable
+        assert_eq!(non_roh.callable, array![false, false, true]);
+
+        // Hets: sample3 is not het (homozygous alt)
+        assert_eq!(non_roh.hets, array![false, false, false]);
 
         Ok(())
     }
