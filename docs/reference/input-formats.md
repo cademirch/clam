@@ -57,7 +57,7 @@ tabix -p vcf sample.g.vcf.gz
 
 **Sample name extraction:**
 
-Sample names are extracted from the VCF header.
+Sample names are extracted from the filename.
 
 ---
 

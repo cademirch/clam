@@ -148,15 +148,20 @@ clam uses a ratio-of-averages approach, summing numerators and denominators acro
 
 In populations with recent inbreeding or small effective population size, individuals may have long runs of homozygosity (ROH). When calculating diversity statistics, it can be useful to exclude samples that are within ROH regions at each site.
 
-Non-ROH heterozygosity can serve as a proxy for the inbreeding load in a population. This is because deleterious mutations that were previously masked as heterozygotes become exposed in ROH regions, and the abundance of such mutations scales with genetic diversity ([Kardos et al. 2025](https://www.sciencedirect.com/science/article/pii/S016953472500182X)).
+Non-ROH heterozygosity can serve as a proxy for the inbreeding load in a population. This is because deleterious mutations that were previously masked as heterozygotes become exposed in ROH regions, and the abundance of such mutations scales with genetic diversity ([Kyriazis et al. 2025](https://www.sciencedirect.com/science/article/pii/S016953472500182X)).
 
 clam can optionally accept ROH intervals (`--roh`) and will calculate heterozygosity excluding samples in ROH regions. At each site, any sample falling within an ROH region is excluded from the heterozygosity calculation for that site.
 
 ## Heterozygosity
 
-clam calculates heterozygosity as the proportion of heterozygous sites among callable sites:
+Heterozygosity is the proportion of heterozygous sites among callable sites:
 
-$$\text{Heterozygosity} = \frac{\text{het\_total}}{\text{callable\_total}}$$
+$$H = \frac{n_{\text{het}}}{n_{\text{callable}}}$$
+
+Where:
+
+- $n_{\text{het}}$ is the number of heterozygous genotypes
+- $n_{\text{callable}}$ is the number of callable sites
 
 When callable sites are provided, clam outputs a `heterozygosity.tsv` file with heterozygosity estimates per window.
 
