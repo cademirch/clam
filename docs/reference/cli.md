@@ -158,7 +158,7 @@ One of these options is required:
 ### ROH Options
 
 `-r, --roh <ROH>`
-:   Path to ROH (runs of homozygosity) regions BED file. Must be bgzipped and tabix indexed. Sample name should be in the 4th column. See [Input Formats](input-formats.md#roh-file).
+:   Path to ROH (runs of homozygosity) regions BED file. Must be bgzipped and tabix indexed. Sample name should be in the 4th column. When provided, the `heterozygosity.tsv` output includes additional columns for heterozygosity calculated after excluding samples in ROH regions. See [Input Formats](input-formats.md#roh-file).
 
 ### Chromosome Filtering
 

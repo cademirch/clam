@@ -72,19 +72,19 @@ depths.zarr/
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `contigs` | array | List of chromosomes with names and lengths |
-| `column_names` | array | Sample names in column order |
-| `chunk_size` | integer | Chunk size in base pairs |
+| Field          | Type    | Description                                |
+| -------------- | ------- | ------------------------------------------ |
+| `contigs`      | array   | List of chromosomes with names and lengths |
+| `column_names` | array   | Sample names in column order               |
+| `chunk_size`   | integer | Chunk size in base pairs                   |
 
 **Array Properties:**
 
-| Property | Value |
-|----------|-------|
-| Data type | `uint32` |
-| Shape | `(chromosome_length, num_samples)` |
-| Chunk shape | `(chunk_size, num_samples)` |
+| Property    | Value                               |
+| ----------- | ----------------------------------- |
+| Data type   | `uint32`                            |
+| Shape       | `(chromosome_length, num_samples)`  |
+| Chunk shape | `(chunk_size, num_samples)`         |
 | Compression | Blosc (Zstd, level 5, byte shuffle) |
 
 **Per-Chromosome Metadata (`contig_info`):**
@@ -119,20 +119,20 @@ By default, `clam loci` produces a Zarr store containing callable sample counts 
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `contigs` | array | List of chromosomes with names and lengths |
-| `column_names` | array | Population names in column order |
-| `chunk_size` | integer | Chunk size in base pairs |
+| Field          | Type    | Description                                |
+| -------------- | ------- | ------------------------------------------ |
+| `contigs`      | array   | List of chromosomes with names and lengths |
+| `column_names` | array   | Population names in column order           |
+| `chunk_size`   | integer | Chunk size in base pairs                   |
 
 **Array Properties:**
 
-| Property | Value |
-|----------|-------|
-| Data type | `uint16` |
-| Shape | `(chromosome_length, num_populations)` |
-| Chunk shape | `(chunk_size, num_populations)` |
-| Compression | Blosc (Zstd, level 5, byte shuffle) |
+| Property    | Value                                  |
+| ----------- | -------------------------------------- |
+| Data type   | `uint16`                               |
+| Shape       | `(chromosome_length, num_populations)` |
+| Chunk shape | `(chunk_size, num_populations)`        |
+| Compression | Blosc (Zstd, level 5, byte shuffle)    |
 
 **Data interpretation:**
 
@@ -156,12 +156,12 @@ When using `--per-sample`, `clam loci` outputs a boolean mask indicating callabi
 
 **Array Properties:**
 
-| Property | Value |
-|----------|-------|
-| Data type | `bool` |
-| Shape | `(chromosome_length, num_samples)` |
-| Chunk shape | `(chunk_size, num_samples)` |
-| Compression | PackBits |
+| Property    | Value                              |
+| ----------- | ---------------------------------- |
+| Data type   | `bool`                             |
+| Shape       | `(chromosome_length, num_samples)` |
+| Chunk shape | `(chunk_size, num_samples)`        |
+| Compression | PackBits                           |
 
 **Data interpretation:**
 
@@ -180,14 +180,14 @@ Nucleotide diversity (π) per population per window.
 
 **Always generated.**
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `chrom` | string | Chromosome name |
-| `start` | integer | Window start position (1-based) |
-| `end` | integer | Window end position (1-based, inclusive) |
-| `population` | string | Population name |
-| `pi` | float | Nucleotide diversity estimate |
-| `comparisons` | integer | Total pairwise comparisons (denominator) |
+| Column        | Type    | Description                               |
+| ------------- | ------- | ----------------------------------------- |
+| `chrom`       | string  | Chromosome name                           |
+| `start`       | integer | Window start position (1-based)           |
+| `end`         | integer | Window end position (1-based, inclusive)  |
+| `population`  | string  | Population name                           |
+| `pi`          | float   | Nucleotide diversity estimate             |
+| `comparisons` | integer | Total pairwise comparisons (denominator)  |
 | `differences` | integer | Pairwise differences observed (numerator) |
 
 **Example:**
@@ -205,30 +205,22 @@ chr1	10001	20000	PopA	0.00241	4600000	11086
 - `comparisons` includes both variant and invariant callable sites
 - `NaN` indicates no valid comparisons in the window
 
-### pi_non_roh.tsv
-
-Nucleotide diversity excluding samples in ROH regions (π~non-ROH~).
-
-**Generated only when `--roh` is provided.**
-
-Same columns as `pi.tsv`. At each site, samples that fall within an ROH region are excluded from the calculation. This provides a measure of non-ROH heterozygosity, which can serve as a proxy for the inbreeding load in a population ([Kardos et al. 2025](https://www.sciencedirect.com/science/article/pii/S016953472500182X)).
-
 ### dxy.tsv
 
 Absolute divergence (d~xy~) between population pairs.
 
 **Generated only when >1 population is defined.**
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `chrom` | string | Chromosome name |
-| `start` | integer | Window start position (1-based) |
-| `end` | integer | Window end position (1-based, inclusive) |
-| `population1` | string | First population name |
-| `population2` | string | Second population name |
-| `dxy` | float | Absolute divergence estimate |
-| `comparisons` | integer | Total between-population comparisons |
-| `differences` | integer | Between-population differences |
+| Column        | Type    | Description                              |
+| ------------- | ------- | ---------------------------------------- |
+| `chrom`       | string  | Chromosome name                          |
+| `start`       | integer | Window start position (1-based)          |
+| `end`         | integer | Window end position (1-based, inclusive) |
+| `population1` | string  | First population name                    |
+| `population2` | string  | Second population name                   |
+| `dxy`         | float   | Absolute divergence estimate             |
+| `comparisons` | integer | Total between-population comparisons     |
+| `differences` | integer | Between-population differences           |
 
 **Example:**
 
@@ -251,14 +243,14 @@ Fixation index (F~ST~) between population pairs.
 
 **Generated only when >1 population is defined.**
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `chrom` | string | Chromosome name |
-| `start` | integer | Window start position (1-based) |
-| `end` | integer | Window end position (1-based, inclusive) |
-| `population1` | string | First population name |
-| `population2` | string | Second population name |
-| `fst` | float | F~ST~ estimate (Hudson estimator) |
+| Column        | Type    | Description                              |
+| ------------- | ------- | ---------------------------------------- |
+| `chrom`       | string  | Chromosome name                          |
+| `start`       | integer | Window start position (1-based)          |
+| `end`         | integer | Window end position (1-based, inclusive) |
+| `population1` | string  | First population name                    |
+| `population2` | string  | Second population name                   |
+| `fst`         | float   | F~ST~ estimate (Hudson estimator)        |
 
 **Example:**
 
@@ -276,18 +268,60 @@ chr1	1	10000	PopB	PopC	0.201
 - Negative values can occur when within-population diversity exceeds between-population divergence
 - `NaN` indicates undefined F~ST~ (e.g., no polymorphic sites)
 
+### heterozygosity.tsv
+
+Per-sample or per-population heterozygosity.
+
+**Generated only when callable sites are provided.**
+
+| Column                      | Type    | Description                                        |
+| --------------------------- | ------- | -------------------------------------------------- |
+| `chrom`                     | string  | Chromosome name                                    |
+| `start`                     | integer | Window start position (1-based)                    |
+| `end`                       | integer | Window end position (1-based, inclusive)           |
+| `sample`                    | string  | Sample name (only in per-sample mode)              |
+| `population`                | string  | Population name                                    |
+| `het_total`                 | integer | Number of heterozygous sites                       |
+| `callable_total`            | integer | Number of callable sites                           |
+| `heterozygosity`            | float   | Heterozygosity rate (het_total / callable_total)   |
+| `het_not_in_roh`            | integer | Het sites excluding ROH (if `--roh` provided)      |
+| `callable_not_in_roh`       | integer | Callable sites excluding ROH (if `--roh` provided) |
+| `heterozygosity_not_in_roh` | float   | Heterozygosity excluding ROH (if `--roh` provided) |
+
+**Example (per-sample mode):**
+
+```
+chrom	start	end	sample	population	het_total	callable_total	heterozygosity	het_not_in_roh	callable_not_in_roh	heterozygosity_not_in_roh
+chr1	1	10000	sample1	PopA	234	9500	0.0246	220	9000	0.0244
+chr1	1	10000	sample2	PopA	198	9200	0.0215	198	9200	0.0215
+```
+
+**Example (per-population mode):**
+
+```
+chrom	start	end	population	het_total	callable_total	heterozygosity	het_not_in_roh	callable_not_in_roh	heterozygosity_not_in_roh
+chr1	1	10000	PopA	1856	94500	0.0196	1750	89000	0.0197
+chr1	1	10000	PopB	2134	96000	0.0222	2134	96000	0.0222
+```
+
+**Notes:**
+
+- Per-sample mode is used when callable sites were generated with `--per-sample` in `clam loci`
+- Per-population mode is used when callable sites contain population counts (default `clam loci` output)
+
+
 ---
 
 ## Output Summary
 
-| Command | Output | Format | Description |
-|---------|--------|--------|-------------|
-| `collect` | `*.zarr/` | Zarr | Raw depth values (uint32) |
-| `loci` | `*.zarr/` | Zarr | Callable counts (uint16) or masks (bool) |
-| `stat` | `pi.tsv` | TSV | Nucleotide diversity |
-| `stat` | `pi_non_roh.tsv` | TSV | π excluding ROH (if `--roh`) |
-| `stat` | `dxy.tsv` | TSV | Absolute divergence (if >1 pop) |
-| `stat` | `fst.tsv` | TSV | Fixation index (if >1 pop) |
+| Command   | Output               | Format | Description                                 |
+| --------- | -------------------- | ------ | ------------------------------------------- |
+| `collect` | `*.zarr/`            | Zarr   | Raw depth values (uint32)                   |
+| `loci`    | `*.zarr/`            | Zarr   | Callable counts (uint16) or masks (bool)    |
+| `stat`    | `pi.tsv`             | TSV    | Nucleotide diversity                        |
+| `stat`    | `dxy.tsv`            | TSV    | Absolute divergence (if >1 pop)             |
+| `stat`    | `fst.tsv`            | TSV    | Fixation index (if >1 pop)                  |
+| `stat`    | `heterozygosity.tsv` | TSV    | Heterozygosity (if callable sites provided) |
 
 ---
 

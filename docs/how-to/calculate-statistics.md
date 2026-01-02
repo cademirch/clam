@@ -84,7 +84,7 @@ clam stat -o results/ -w 10000 -c callable.zarr -p populations.tsv --force-sampl
 
 ## Using ROH Data
 
-If you have runs of homozygosity (ROH) calls, clam can calculate non-ROH heterozygosity (π~non-ROH~) by excluding samples within ROH regions at each site:
+If you have runs of homozygosity (ROH) calls, clam can calculate non-ROH heterozygosity by excluding samples within ROH regions at each site:
 
 ```bash
 clam stat -o results/ -w 10000 -c callable.zarr -r roh.bed.gz variants.vcf.gz
@@ -104,7 +104,7 @@ bgzip roh.sorted.bed
 tabix -p bed roh.sorted.bed.gz
 ```
 
-When ROH data is provided, clam outputs an additional file `pi_non_roh.tsv` with diversity estimates calculated after excluding samples in ROH regions at each site.
+When ROH data is provided, the `heterozygosity.tsv` output includes additional columns for ROH-excluded statistics (`het_not_in_roh`, `callable_not_in_roh`, `heterozygosity_not_in_roh`).
 
 See [Input Formats](../reference/input-formats.md#roh-file) for file format details.
 
@@ -129,9 +129,11 @@ clam stat -o results/ -w 10000 -c callable.zarr -i chr1,chr2,chr3 variants.vcf.g
 | File | Description | Generated |
 |------|-------------|-----------|
 | `pi.tsv` | Nucleotide diversity per population | Always |
-| `pi_non_roh.tsv` | π excluding samples in ROH | When `--roh` provided |
 | `dxy.tsv` | Absolute divergence between populations | When >1 population |
 | `fst.tsv` | Fixation index between populations | When >1 population |
+| `heterozygosity.tsv` | Per-sample or per-population heterozygosity | When callable sites provided |
+
+The `heterozygosity.tsv` file contains per-sample heterozygosity when using per-sample callable masks (`--per-sample` in `clam loci`), or per-population heterozygosity when using population counts. When ROH data is provided, additional columns report heterozygosity excluding samples in ROH regions.
 
 See [Output Formats](../reference/output-formats.md#clam-stat-output) for column descriptions.
 

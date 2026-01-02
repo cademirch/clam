@@ -148,6 +148,45 @@ clam uses a ratio-of-averages approach, summing numerators and denominators acro
 
 In populations with recent inbreeding or small effective population size, individuals may have long runs of homozygosity (ROH). When calculating diversity statistics, it can be useful to exclude samples that are within ROH regions at each site.
 
-Non-ROH heterozygosity (π~non-ROH~) can serve as a proxy for the inbreeding load in a population. This is because deleterious mutations that were previously masked as heterozygotes become exposed in ROH regions, and the abundance of such mutations scales with genetic diversity ([Kyriazis et al. 2025](https://www.sciencedirect.com/science/article/pii/S016953472500182X)).
+Non-ROH heterozygosity can serve as a proxy for the inbreeding load in a population. This is because deleterious mutations that were previously masked as heterozygotes become exposed in ROH regions, and the abundance of such mutations scales with genetic diversity ([Kardos et al. 2025](https://www.sciencedirect.com/science/article/pii/S016953472500182X)).
 
-clam can optionally accept ROH intervals and will output separate π estimates excluding samples in ROH regions (`pi_non_roh.tsv`). At each site, any sample falling within an ROH region is excluded from the calculation for that site.
+clam can optionally accept ROH intervals (`--roh`) and will calculate heterozygosity excluding samples in ROH regions. At each site, any sample falling within an ROH region is excluded from the heterozygosity calculation for that site.
+
+## Heterozygosity
+
+clam calculates heterozygosity as the proportion of heterozygous sites among callable sites:
+
+$$\text{Heterozygosity} = \frac{\text{het\_total}}{\text{callable\_total}}$$
+
+When callable sites are provided, clam outputs a `heterozygosity.tsv` file with heterozygosity estimates per window.
+
+### Per-Sample Mode
+
+When using per-sample callable masks (`--per-sample` in `clam loci`), heterozygosity is calculated for each sample individually. This provides the most accurate estimates because each sample has its own callable site mask.
+
+For each sample in each window:
+
+- `het_total`: Number of heterozygous genotypes for the sample
+- `callable_total`: Number of sites where the sample is callable
+- `heterozygosity`: `het_total / callable_total`
+
+### Per-Population Mode
+
+When using population-level callable counts (default `clam loci` output), heterozygosity is calculated per population by summing across all samples in the population.
+
+For each population in each window:
+
+- `het_total`: Sum of heterozygous genotypes across all samples in the population
+- `callable_total`: Sum of callable sites across all samples in the population
+- `heterozygosity`: `het_total / callable_total`
+
+!!! note
+    Per-population heterozygosity with ROH exclusion is approximate because the callable counts are aggregated at the population level. For accurate per-sample ROH exclusion, use per-sample callable masks.
+
+### ROH-Excluded Heterozygosity
+
+When ROH data is provided, clam also calculates heterozygosity after excluding samples in ROH regions:
+
+- `het_not_in_roh`: Heterozygous sites where the sample is not in an ROH region
+- `callable_not_in_roh`: Callable sites where the sample is not in an ROH region
+- `heterozygosity_not_in_roh`: `het_not_in_roh / callable_not_in_roh`

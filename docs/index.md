@@ -46,7 +46,7 @@ clam has three main commands:
 | Command | Description |
 |---------|-------------|
 | `loci` | Generate callable loci from depth files (D4, GVCF) |
-| `stat` | Calculate π, d~xy~, F~ST~ from VCF using callable sites |
+| `stat` | Calculate π, d~xy~, F~ST~, and heterozygosity from VCF using callable sites |
 | `collect` | Pre-process depth files into Zarr for repeated use |
 
 ## Citation

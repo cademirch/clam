@@ -574,19 +574,11 @@ fn parse_heterozygosity_tsv(path: &str) -> Result<std::collections::HashMap<HetK
 }
 
 /// Compare heterozygosity values between output and truth
-/// 
-/// When comparing against Python-generated truth, callable counts may differ slightly
-/// because Python counts callable at variant positions using gVCF callable status,
-/// while clam uses VCF non-missing status. The het counts should match exactly.
 fn compare_heterozygosity_values(
     output_map: &std::collections::HashMap<HetKey, HetValues>,
     truth_map: &std::collections::HashMap<HetKey, HetValues>,
     tolerance: f64,
 ) -> Result<()> {
-    // Allow callable counts to differ by up to 1% or 100 positions
-    let callable_tolerance_pct = 0.01;
-    let callable_tolerance_abs = 100;
-    
     for (truth_key, truth_val) in truth_map {
         let output_val = output_map.get(truth_key);
 
@@ -598,17 +590,14 @@ fn compare_heterozygosity_values(
                 truth_key, output_val.het_total, truth_val.het_total
             );
 
-            // Compare callable_total with tolerance (Python vs clam may differ at variant positions)
-            let callable_diff = (output_val.callable_total as i64 - truth_val.callable_total as i64).abs() as usize;
-            let callable_pct_diff = callable_diff as f64 / truth_val.callable_total.max(1) as f64;
-            assert!(
-                callable_diff <= callable_tolerance_abs || callable_pct_diff <= callable_tolerance_pct,
-                "callable_total mismatch for {:?}: output={}, truth={}, diff={} ({:.2}%)",
-                truth_key, output_val.callable_total, truth_val.callable_total, 
-                callable_diff, callable_pct_diff * 100.0
+            // Compare callable_total exactly
+            assert_eq!(
+                output_val.callable_total, truth_val.callable_total,
+                "callable_total mismatch for {:?}: output={}, truth={}",
+                truth_key, output_val.callable_total, truth_val.callable_total
             );
 
-            // Compare heterozygosity (with tolerance)
+            // Compare heterozygosity (with tolerance for floating point)
             if !truth_val.heterozygosity.is_nan() {
                 let diff = (output_val.heterozygosity - truth_val.heterozygosity).abs();
                 assert!(
@@ -629,16 +618,14 @@ fn compare_heterozygosity_values(
                 );
             }
 
-            // Compare callable_not_in_roh with tolerance
+            // Compare callable_not_in_roh exactly
             if let (Some(out_call), Some(truth_call)) =
                 (output_val.callable_not_in_roh, truth_val.callable_not_in_roh)
             {
-                let diff = (out_call as i64 - truth_call as i64).abs() as usize;
-                let pct_diff = diff as f64 / truth_call.max(1) as f64;
-                assert!(
-                    diff <= callable_tolerance_abs || pct_diff <= callable_tolerance_pct,
-                    "callable_not_in_roh mismatch for {:?}: output={}, truth={}, diff={} ({:.2}%)",
-                    truth_key, out_call, truth_call, diff, pct_diff * 100.0
+                assert_eq!(
+                    out_call, truth_call,
+                    "callable_not_in_roh mismatch for {:?}: output={}, truth={}",
+                    truth_key, out_call, truth_call
                 );
             }
 
@@ -922,13 +909,10 @@ fn test_stat_heterozygosity_with_sample_masks() -> Result<()> {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // Compare heterozygosity output to Python-generated truth
-    // Note: callable counts may differ slightly because Python counts callable at variant
-    // positions using gVCF callable status, while clam uses VCF non-missing status.
-    // The het counts should match exactly.
-    let float_tolerance = 0.001; // 0.1% tolerance for heterozygosity rate
+    // Compare heterozygosity output to truth
+    let float_tolerance = 1e-10; // Floating point tolerance
     let output_het = parse_heterozygosity_tsv(&output_dir.join("heterozygosity.tsv").to_string_lossy())?;
-    let truth_het = parse_heterozygosity_tsv("tests/data/integration/truth/python/het_sample_masks.tsv")?;
+    let truth_het = parse_heterozygosity_tsv("tests/data/integration/truth/gatk/clam_heterozygosity_sample_masks.tsv")?;
     compare_heterozygosity_values(&output_het, &truth_het, float_tolerance)?;
 
     Ok(())
@@ -989,13 +973,10 @@ fn test_stat_heterozygosity_with_pop_counts() -> Result<()> {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // Compare heterozygosity output to Python-generated truth
-    // Note: callable counts may differ slightly because Python counts callable at variant
-    // positions using gVCF callable status, while clam uses VCF non-missing status.
-    // The het counts should match exactly.
-    let float_tolerance = 0.001; // 0.1% tolerance for heterozygosity rate
+    // Compare heterozygosity output to truth
+    let float_tolerance = 1e-10; // Floating point tolerance
     let output_het = parse_heterozygosity_tsv(&output_dir.join("heterozygosity.tsv").to_string_lossy())?;
-    let truth_het = parse_heterozygosity_tsv("tests/data/integration/truth/python/het_pop_counts.tsv")?;
+    let truth_het = parse_heterozygosity_tsv("tests/data/integration/truth/gatk/clam_heterozygosity_pop_counts.tsv")?;
     compare_heterozygosity_values(&output_het, &truth_het, float_tolerance)?;
 
     Ok(())
