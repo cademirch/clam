@@ -15,33 +15,24 @@ name = "clam"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.91"
 bstr = "1.10.0"
 clap = { version = "4.5.20", features = ["derive"] }
 csv = "1.3.0"
-fnv = "1.0.7"
 log = "0.4.22"
 noodles = { version = "0.89.0", features = ["core", "vcf", "bgzf", "bed", "tabix", "csi"] }
-noodles-bgzf = { version = "0.33.0", features = ["libdeflate"] }
 serde = { version = "1.0.214", features = ["derive"] }
 d4 = { git = "https://github.com/cademirch/d4-format.git", default-features = false, features = ["reader_only"] }
 rayon = "1.10.0"
 tempfile = "3.13.0"
 env_logger = "0.11.5"
 camino = "1.1.9"
-clap-markdown = "0.1.4"
 indexmap = "2.6.0"
 indicatif = "0.17.9"
-indicatif-log-bridge = "0.2.3"
-bitvec = "1.0.1"
 rust-lapper = "1.2.0"
-flate2 = "1.1.2"
 color-eyre = { version = "0.6", default-features = false }
 serde_json = "1.0"
 zarrs = "0.22.8"
 ndarray = "0.16"
-crossbeam = "0.8.4"
-natord = "1.0.9"
 
 
 [dev-dependencies]
