@@ -2,8 +2,8 @@ site_name: clam
 repo_url: https://github.com/cademirch/clam
 
 nav:
-  - Home: index.md
-  - Explanation:
+  - clam:
+    - Home: index.md
     - Why clam?: explanation/why-clam.md
     - Core Concepts: explanation/concepts.md
   - Tutorial:
