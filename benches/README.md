@@ -1,6 +1,17 @@
 # Benchmarking: clam collect vs d4tools merge
 
-Compares `clam collect` and `d4tools merge` for combining per-sample depth files, measuring runtime and output size as sample count increases.
+Compares different approaches for combining per-sample depth files into a single multi-sample store:
+
+| Tool                   | Output Format         | Description                                  |
+| ---------------------- | --------------------- | -------------------------------------------- |
+| `clam collect`         | Zarr (Blosc + Zstd)   | Collects D4 files into a chunked Zarr array  |
+| `d4tools merge`        | D4 (uncompressed)     | Merges D4 files into a multi-track D4 file   |
+| `d4tools merge + gzip` | D4 (bgzip compressed) | Same as above, followed by bgzip compression |
+
+The benchmark measures:
+- **Runtime**: How long each tool takes as sample count increases (2-10 samples)
+- **Output size**: Resulting file/directory size in MB
+- **Thread scaling**: `clam collect` is tested with 1, 2, 4, and 8 threads (`d4tools merge` does not support multithreading)
 
 ## System
 
@@ -33,5 +44,4 @@ The `io_heavy=1` resource ensures benchmarked rules run sequentially to avoid I/
 
 ## TODO
 
-- Add gzipped D4 comparison
 - Add downstream analysis (sum, mean, etc.) benchmarks using D4 or Zarr (with Dask)

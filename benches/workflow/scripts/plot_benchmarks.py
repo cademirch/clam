@@ -55,6 +55,21 @@ def collect_benchmark_data(
                     }
                 )
 
+    # d4tools merge + gzip benchmarks
+    for n in sample_counts:
+        bench_file = benchmark_dir / "d4tools_merge_gzip" / f"n{n}.tsv"
+        if bench_file.exists():
+            df = parse_benchmark_file(bench_file)
+            for _, row in df.iterrows():
+                records.append(
+                    {
+                        "tool": "d4tools merge + gzip",
+                        "samples": n,
+                        "threads": 1,
+                        "time_s": row["s"],
+                    }
+                )
+
     # clam collect benchmarks
     for n in sample_counts:
         for t in clam_threads:
@@ -78,6 +93,7 @@ def collect_size_data(
     sample_counts: list[int],
     clam_threads: list[int],
     merged_d4_dir: Path,
+    merged_d4_gz_dir: Path,
     zarr_dir: Path,
 ) -> pd.DataFrame:
     """Collect output size data."""
@@ -91,6 +107,19 @@ def collect_size_data(
             records.append(
                 {
                     "tool": "d4tools merge",
+                    "samples": n,
+                    "size_mb": size_bytes / (1024 * 1024),
+                }
+            )
+
+    # d4tools merge gzipped output sizes
+    for n in sample_counts:
+        d4_gz_file = merged_d4_gz_dir / f"n{n}.d4.gz"
+        if d4_gz_file.exists():
+            size_bytes = get_file_size(d4_gz_file)
+            records.append(
+                {
+                    "tool": "d4tools merge (gzip)",
                     "samples": n,
                     "size_mb": size_bytes / (1024 * 1024),
                 }
@@ -173,6 +202,7 @@ def main() -> None:
     # Directories (relative to working directory)
     benchmark_dir = Path("benchmarks")
     merged_d4_dir = Path("results/merged_d4")
+    merged_d4_gz_dir = Path("results/merged_d4_gz")
     zarr_dir = Path("results/zarr")
 
     # Output paths
@@ -184,7 +214,9 @@ def main() -> None:
 
     # Collect data
     runtime_df = collect_benchmark_data(sample_counts, clam_threads, benchmark_dir)
-    size_df = collect_size_data(sample_counts, clam_threads, merged_d4_dir, zarr_dir)
+    size_df = collect_size_data(
+        sample_counts, clam_threads, merged_d4_dir, merged_d4_gz_dir, zarr_dir
+    )
 
     # Generate plots
     plot_runtime(runtime_df, runtime_plot)

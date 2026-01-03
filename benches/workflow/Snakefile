@@ -145,6 +145,26 @@ rule d4tools_merge:
         """
 
 
+# === Merge D4 files with d4tools + bgzip ===
+rule d4tools_merge_gzip:
+    input:
+        d4_files=lambda wc: get_d4_files_for_count(int(wc.n)),
+    output:
+        merged_gz="results/merged_d4_gz/n{n}.d4.gz",
+    benchmark:
+        repeat("benchmarks/d4tools_merge_gzip/n{n}.tsv", BENCHMARK_REPEATS)
+    log:
+        "logs/d4tools_merge_gzip/n{n}.txt",
+    resources:
+        io_heavy=1,
+    shell:
+        """
+        rm -f {output.merged_gz} results/merged_d4_gz/n{wildcards.n}.d4
+        d4tools merge {input.d4_files} results/merged_d4_gz/n{wildcards.n}.d4 &> {log}
+        bgzip results/merged_d4_gz/n{wildcards.n}.d4
+        """
+
+
 # === Collect D4 files with clam ===
 rule clam_collect:
     input:
@@ -176,12 +196,17 @@ rule plot_results:
             "benchmarks/d4tools_merge/n{n}.tsv",
             n=SAMPLE_COUNTS,
         ),
+        d4_gz_benchmarks=expand(
+            "benchmarks/d4tools_merge_gzip/n{n}.tsv",
+            n=SAMPLE_COUNTS,
+        ),
         clam_benchmarks=expand(
             "benchmarks/clam_collect/n{n}_t{threads}.tsv",
             n=SAMPLE_COUNTS,
             threads=CLAM_THREADS,
         ),
         d4_outputs=expand("results/merged_d4/n{n}.d4", n=SAMPLE_COUNTS),
+        d4_gz_outputs=expand("results/merged_d4_gz/n{n}.d4.gz", n=SAMPLE_COUNTS),
         zarr_outputs=expand(
             "results/zarr/n{n}_t{threads}",
             n=SAMPLE_COUNTS,

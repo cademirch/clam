@@ -8,3 +8,4 @@ reads
 results/**/
 !results/plots/
 benchmarks
+workflow/data/ecoli.fna
