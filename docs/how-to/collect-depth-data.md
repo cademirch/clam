@@ -20,7 +20,7 @@ If you only need to run `loci` once with known thresholds, you can skip `collect
 ## Prerequisites
 
 - Depth files in one of the supported formats:
-    - D4 files (uncompressed or bgzipped with index)
+    - Per-sample D4 files (uncompressed or bgzipped with index)
     - Merged D4 files (uncompressed only)
     - GVCF files (bgzipped and tabix indexed)
 

@@ -9,7 +9,8 @@ This guide covers how to use `clam loci` to identify genomic regions with suffic
 ## Prerequisites
 
 - Depth files in one of the supported formats:
-    - D4 files (bgzipped and indexed)
+    - Per-sample D4 files (uncompressed or bgzipped with index)
+    - Merged D4 files (uncompressed only)
     - GVCF files (bgzipped and tabix indexed)
     - A Zarr store from `clam collect`
 - Optional: population file if analyzing multiple populations
