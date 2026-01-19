@@ -112,6 +112,35 @@ sample6	PopC
 
 ---
 
+## Sample Name File
+
+Override automatic sample name detection from filenames. Useful when filenames contain dots (e.g., "L.sample1.d4" would be auto-detected as "L" instead of "L.sample1").
+
+**Format:** Tab-separated, two columns, no header.
+
+| Column | Description |
+|--------|-------------|
+| 1 | Filename (not full path) |
+| 2 | Sample name |
+
+**Example:**
+
+```
+L.sample1.d4.gz	L.sample1
+L.sample2.d4.gz	L.sample2
+sample3.d4	sample3_renamed
+```
+
+**Notes:**
+
+- Use the filename only, not the full path
+- All input files must be listed when using this option
+- Sample names must be unique
+- Useful when files have dots in sample identifiers (e.g., species abbreviations like "L." or "D.")
+- Does not apply to multisample D4 files (sample names come from internal track names)
+
+---
+
 ## Chromosome Include/Exclude Files
 
 Specify chromosomes to include or exclude from analysis.
@@ -263,6 +292,7 @@ chr2	38814	46588
 | GVCF | `.g.vcf.gz` | `.g.vcf.gz.tbi` | `loci`, `collect` |
 | VCF | `.vcf.gz` | `.vcf.gz.tbi` | `stat` |
 | Population | `.tsv` | No | `loci`, `stat` |
+| Sample names | `.tsv` | No | `loci`, `collect` |
 | Chromosome list | `.txt` | No | `loci`, `stat`, `collect` |
 | Thresholds | `.tsv` | No | `loci` |
 | ROH | `.bed.gz` | `.bed.gz.tbi` | `stat` |
