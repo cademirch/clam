@@ -981,3 +981,86 @@ fn test_stat_heterozygosity_with_pop_counts() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_collect_with_sample_file() -> Result<()> {
+    use clam::core::zarr::DepthArrays;
+
+    color_eyre::install().ok();
+
+    let temp_dir = TempDir::new()?;
+    let output_zarr = temp_dir.path().join("depths.zarr");
+
+    // Create sample file that maps filenames to custom sample names
+    let sample_file = temp_dir.path().join("samples.tsv");
+    std::fs::write(
+        &sample_file,
+        "sample1.d4\tcustom_sample1\nsample2.d4\tcustom_sample2\n",
+    )?;
+
+    let mut cmd = Command::cargo_bin("clam")?;
+    cmd.arg("collect")
+        .arg("tests/data/depth/all20/sample1.d4")
+        .arg("tests/data/depth/all20/sample2.d4")
+        .arg("-o")
+        .arg(&output_zarr)
+        .arg("--sample-file")
+        .arg(&sample_file);
+
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "clam collect failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Verify custom sample names in output
+    let result = DepthArrays::open(&output_zarr)?;
+    assert_eq!(
+        result.column_names(),
+        &["custom_sample1", "custom_sample2"]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_loci_with_sample_file() -> Result<()> {
+    color_eyre::install().ok();
+
+    let temp_dir = TempDir::new()?;
+    let output_zarr = temp_dir.path().join("callable.zarr");
+
+    // Create sample file that maps filenames to custom sample names
+    let sample_file = temp_dir.path().join("samples.tsv");
+    std::fs::write(
+        &sample_file,
+        "sample1.d4\tcustom_sample1\nsample2.d4\tcustom_sample2\n",
+    )?;
+
+    let mut cmd = Command::cargo_bin("clam")?;
+    cmd.arg("loci")
+        .arg("tests/data/depth/all20/sample1.d4")
+        .arg("tests/data/depth/all20/sample2.d4")
+        .arg("-o")
+        .arg(&output_zarr)
+        .arg("--sample-file")
+        .arg(&sample_file)
+        .arg("--per-sample");
+
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "clam loci failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Verify custom sample names in output
+    let result = SampleMaskArrays::open(&output_zarr)?;
+    assert_eq!(
+        result.column_names(),
+        &["custom_sample1", "custom_sample2"]
+    );
+
+    Ok(())
+}

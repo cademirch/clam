@@ -1,12 +1,13 @@
 use crate::core::contig::{validate_contig_consistency, ContigChunk, ContigSet};
 use crate::core::depth::d4::D4Reader;
+use crate::core::sample_map::SampleMap;
+use crate::core::utils::{create_progress_bar, create_spinner};
+use crate::core::zarr::DepthArrays;
 use color_eyre::eyre::eyre;
 use color_eyre::Help;
 use color_eyre::Result;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
-use crate::core::zarr::DepthArrays;
-use crate::core::utils::{create_spinner, create_progress_bar};
 pub mod array;
 pub mod d4;
 pub mod gvcf;
@@ -45,7 +46,11 @@ impl DepthFileType {
     
 }
 
-pub fn open_depth_source(path: impl AsRef<Path>, min_gq: Option<isize>) -> Result<Box<dyn DepthSource>> {
+pub fn open_depth_source(
+    path: impl AsRef<Path>,
+    min_gq: Option<isize>,
+    sample_map: Option<&SampleMap>,
+) -> Result<Box<dyn DepthSource>> {
     let path = path.as_ref();
     let path_str = path.to_string_lossy();
 
@@ -56,14 +61,32 @@ pub fn open_depth_source(path: impl AsRef<Path>, min_gq: Option<isize>) -> Resul
         )
     })?;
 
-    let sample_name = path
-        .file_prefix()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| eyre!("Could not extract sample name from path: {}", path_str))
-        .suggestion(
-            "Sample names are derived from file prefixes (e.g., 'sample' from 'sample.d4.gz')",
-        )?
-        .to_string();
+    let sample_name = if let Some(map) = sample_map {
+        // Use sample map to get sample name from filename
+        let filename = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| eyre!("Could not extract filename from path: {}", path_str))?;
+
+        map.get_sample_name(filename)
+            .ok_or_else(|| {
+                eyre!(
+                    "File '{}' not found in sample file. All input files must be listed when using --sample-file",
+                    filename
+                )
+            })?
+            .to_string()
+    } else {
+        // Original auto-detection logic
+        path.file_prefix()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| eyre!("Could not extract sample name from path: {}", path_str))
+            .suggestion(
+                "Sample names are derived from file prefixes (e.g., 'sample' from 'sample.d4.gz')",
+            )?
+            .to_string()
+    };
+
     match file_type {
         DepthFileType::D4Gz => {
             // BGZF-compressed D4 file
@@ -79,7 +102,11 @@ pub fn open_depth_source(path: impl AsRef<Path>, min_gq: Option<isize>) -> Resul
         }
     }
 }
-pub fn open_depth_sources(paths: Vec<PathBuf>, min_gq: Option<isize>) -> Result<Vec<Box<dyn DepthSource>>> {
+pub fn open_depth_sources(
+    paths: Vec<PathBuf>,
+    min_gq: Option<isize>,
+    sample_map: Option<&SampleMap>,
+) -> Result<Vec<Box<dyn DepthSource>>> {
     let mut all_sources = Vec::new();
 
     for path in paths {
@@ -87,7 +114,7 @@ pub fn open_depth_sources(paths: Vec<PathBuf>, min_gq: Option<isize>) -> Result<
         if is_multisample_d4(&path)? {
             all_sources.extend(D4Reader::from_multisample_file(&path)?);
         } else {
-            all_sources.push(open_depth_source(&path, min_gq)?);
+            all_sources.push(open_depth_source(&path, min_gq, sample_map)?);
         }
     }
 
@@ -124,25 +151,36 @@ pub struct DepthProcessor {
     sources: DepthSources,
     sample_names: Vec<String>,
     reference_contigs: ContigSet,
-    min_gq: Option<isize>
+    min_gq: Option<isize>,
+    sample_map: Option<SampleMap>,
 }
 
 impl DepthProcessor {
-    pub fn from_paths(paths: Vec<PathBuf>, min_gq: Option<isize>) -> Result<Self> {
+    pub fn from_paths(
+        paths: Vec<PathBuf>,
+        min_gq: Option<isize>,
+        sample_map: Option<&SampleMap>,
+    ) -> Result<Self> {
         let spinner = create_spinner("Opening depth files...");
-        
+
         let (sources, sample_names, reference_contigs) =
             if paths.len() == 1 && is_multisample_d4(&paths[0])? {
                 spinner.set_message("Reading multisample D4 tracks...");
                 setup_multisample(&paths[0])?
             } else {
                 spinner.set_message(format!("Opening {} depth files...", paths.len()));
-                setup_individual_files(paths, min_gq)?
+                setup_individual_files(paths, min_gq, sample_map)?
             };
-        
+
         spinner.finish_with_message(format!("✓ Loaded {} samples", sample_names.len()));
-        
-        Ok(Self { sources, sample_names, reference_contigs, min_gq })
+
+        Ok(Self {
+            sources,
+            sample_names,
+            reference_contigs,
+            min_gq,
+            sample_map: sample_map.cloned(),
+        })
     }
 
 
@@ -183,7 +221,8 @@ where
             DepthSources::IndividualFiles(paths) => paths
                 .iter()
                 .map(|path| {
-                    let mut reader = open_depth_source(path, self.min_gq)?;
+                    let mut reader =
+                        open_depth_source(path, self.min_gq, self.sample_map.as_ref())?;
                     reader.read_depths(&chunk.contig_name, chunk.start, chunk.end)
                 })
                 .collect(),
@@ -228,12 +267,16 @@ fn setup_multisample(path: &Path) -> Result<(DepthSources, Vec<String>, ContigSe
     ))
 }
 
-fn setup_individual_files(paths: Vec<PathBuf>, min_gq: Option<isize>) -> Result<(DepthSources, Vec<String>, ContigSet)> {
+fn setup_individual_files(
+    paths: Vec<PathBuf>,
+    min_gq: Option<isize>,
+    sample_map: Option<&SampleMap>,
+) -> Result<(DepthSources, Vec<String>, ContigSet)> {
     let spinner = create_spinner("Opening depth files...");
-    
+
     let readers: Vec<_> = paths
         .iter()
-        .map(|path| open_depth_source(path, min_gq))
+        .map(|path| open_depth_source(path, min_gq, sample_map))
         .collect::<Result<_>>()?;
 
     let sample_names: Vec<String> = readers
@@ -274,7 +317,7 @@ mod tests {
     #[case(TEST_D4, "sample1")]
     #[case(TEST_D4_GZ, "sample1")]
     fn test_open_depth_source(#[case] path: &str, #[case] expected_sample: &str) {
-        let result = open_depth_source(path, None);
+        let result = open_depth_source(path, None, None);
         assert!(
             result.is_ok(),
             "Failed to open {}: {:?}",
@@ -288,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_unsupported_format() {
-        let result = open_depth_source("test.bam", None);
+        let result = open_depth_source("test.bam", None, None);
         assert!(result.is_err());
 
         let err = result.err().unwrap();
@@ -323,7 +366,7 @@ mod tests {
     #[case(TEST_D4)]
     #[case(TEST_D4_GZ)]
     fn test_sample_name(#[case] path: &str) {
-        let reader = open_depth_source(path, None).unwrap();
+        let reader = open_depth_source(path, None, None).unwrap();
         assert_eq!(reader.sample_name(), SAMPLE_NAME);
     }
 
@@ -332,7 +375,7 @@ mod tests {
     #[case(TEST_D4)]
     #[case(TEST_D4_GZ)]
     fn test_contigs(#[case] path: &str) {
-        let reader = open_depth_source(path, None).unwrap();
+        let reader = open_depth_source(path, None, None).unwrap();
         let contigs = reader.contigs();
 
         // Should have 4 chromosomes
@@ -349,7 +392,7 @@ mod tests {
     #[case(TEST_D4)]
     #[case(TEST_D4_GZ)]
     fn test_read_depths_full_region(#[case] path: &str) {
-        let mut reader = open_depth_source(path, None).unwrap();
+        let mut reader = open_depth_source(path, None, None).unwrap();
 
         // Read first 100 positions of chr1
         let depths = reader.read_depths("chr1", 0, 100).unwrap();
@@ -365,7 +408,7 @@ mod tests {
     #[case(TEST_D4)]
     #[case(TEST_D4_GZ)]
     fn test_read_depths_partial_region(#[case] path: &str) {
-        let mut reader = open_depth_source(path, None).unwrap();
+        let mut reader = open_depth_source(path, None, None).unwrap();
 
         // Read a smaller region
         let depths = reader.read_depths("chr2", 100, 200).unwrap();
@@ -381,7 +424,7 @@ mod tests {
     #[case(TEST_D4)]
     #[case(TEST_D4_GZ)]
     fn test_read_depths_all_chromosomes(#[case] path: &str) {
-        let mut reader = open_depth_source(path, None).unwrap();
+        let mut reader = open_depth_source(path, None, None).unwrap();
 
         for chrom in ["chr1", "chr2", "chr3", "chr4"] {
             let depths = reader.read_depths(chrom, 0, 1000).unwrap();
@@ -396,7 +439,7 @@ mod tests {
     #[test]
     fn test_processor_individual_files() {
         let paths = vec![PathBuf::from(TEST_D4), PathBuf::from(TEST_D4_GZ)];
-        let processor = DepthProcessor::from_paths(paths, None).unwrap();
+        let processor = DepthProcessor::from_paths(paths, None, None).unwrap();
 
         assert_eq!(processor.sample_names(), &["sample1", "sample1"]);
         assert_eq!(processor.reference_contigs().len(), 4);
@@ -405,7 +448,7 @@ mod tests {
     #[test]
     fn test_processor_multisample() {
         let paths = vec![PathBuf::from(TEST_MULTISAMPLE_D4)];
-        let processor = DepthProcessor::from_paths(paths, None).unwrap();
+        let processor = DepthProcessor::from_paths(paths, None, None).unwrap();
 
         assert_eq!(processor.sample_names(), &["sample1", "sample2"]);
         assert_eq!(processor.reference_contigs().len(), 4);
@@ -414,7 +457,7 @@ mod tests {
     #[test]
     fn test_processor_process_chunks() {
         let paths = vec![PathBuf::from(TEST_D4)];
-        let processor = DepthProcessor::from_paths(paths, None).unwrap();
+        let processor = DepthProcessor::from_paths(paths, None, None).unwrap();
 
         let results: Vec<()> = processor
             .process_chunks(100, |chunk, depths, sample_names| {
@@ -433,7 +476,7 @@ mod tests {
     #[test]
     fn test_processor_multisample_chunks() {
         let paths = vec![PathBuf::from(TEST_MULTISAMPLE_D4)];
-        let processor = DepthProcessor::from_paths(paths, None).unwrap();
+        let processor = DepthProcessor::from_paths(paths, None, None).unwrap();
 
         let results: Vec<()> = processor
             .process_chunks(100, |chunk, depths, sample_names| {
@@ -445,5 +488,21 @@ mod tests {
             })
             .unwrap();
         assert_eq!(results.len(), 40);
+    }
+
+    #[test]
+    fn test_open_depth_source_with_sample_map() {
+        use crate::core::sample_map::SampleMap;
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create sample map that overrides the default "sample1" name
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "sample1.d4\tcustom_name").unwrap();
+
+        let map = SampleMap::from_file(file.path()).unwrap();
+        let reader = open_depth_source(TEST_D4, None, Some(&map)).unwrap();
+
+        assert_eq!(reader.sample_name(), "custom_name");
     }
 }

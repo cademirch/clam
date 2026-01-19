@@ -74,6 +74,9 @@ Usage: clam loci [OPTIONS] --output <OUTPUT> <INPUT>...
 `--min-gq <MIN_GQ>`
 :   Minimum genotype quality (GQ) to count depth. Only applies to GVCF input.
 
+`--sample-file <SAMPLE_FILE>`
+:   Path to file mapping filenames to sample names. Tab-separated with columns: filename, sample_name (no header). Useful when filenames contain dots that interfere with automatic sample name extraction. See [Input Formats](input-formats.md#sample-name-file).
+
 ### Chromosome Filtering
 
 `-x, --exclude <EXCLUDE>...`
@@ -234,6 +237,9 @@ Usage: clam collect [OPTIONS] --output <OUTPUT> <INPUT>...
 `--min-gq <MIN_GQ>`
 :   Minimum genotype quality (GQ) to count depth. Only applies to GVCF input.
 
+`--sample-file <SAMPLE_FILE>`
+:   Path to file mapping filenames to sample names. Tab-separated with columns: filename, sample_name (no header). See [Input Formats](input-formats.md#sample-name-file).
+
 ### Chromosome Filtering
 
 `-x, --exclude <EXCLUDE>...`
@@ -286,3 +292,4 @@ These options are available across multiple commands:
 | `-i, --include` | Chromosomes to include (comma-separated) | all |
 | `--include-file` | File with chromosomes to include | all |
 | `--chunk-size` | Processing chunk size in bp | all |
+| `--sample-file` | Custom sample name mappings file | `loci`, `collect` |

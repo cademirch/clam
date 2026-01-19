@@ -1,6 +1,7 @@
 use crate::core::depth::array::{build_pop_membership, MultisampleDepthArray};
 use crate::core::depth::DepthProcessor;
 use crate::core::population::PopulationMap;
+use crate::core::sample_map::SampleMap;
 use crate::core::utils::{create_progress_bar, create_spinner};
 use crate::core::zarr::{CallableArrays, DepthArrays, SampleMaskArrays};
 use color_eyre::Result;
@@ -34,8 +35,9 @@ pub fn run_loci(
     chunk_size: u64,
     output_per_sample_mask: bool,
     min_gq: Option<isize>,
+    sample_map: Option<&SampleMap>,
 ) -> Result<()> {
-    let processor = DepthProcessor::from_paths(depth_files, min_gq)?;
+    let processor = DepthProcessor::from_paths(depth_files, min_gq, sample_map)?;
 
     let spinner = create_spinner("Validating population map...");
     //TODO: check that threshold per contig matches depth processor contigs
@@ -292,6 +294,7 @@ mod tests {
             100,
             false,
             None,
+            None,
         )
         .unwrap();
 
@@ -343,6 +346,7 @@ mod tests {
             thresholds,
             100,
             false,
+            None,
             None,
         )
         .unwrap();
@@ -399,6 +403,7 @@ mod tests {
             100,
             true,
             None,
+            None,
         )
         .unwrap();
 
@@ -451,6 +456,7 @@ mod tests {
             thresholds,
             100,
             true,
+            None,
             None,
         )
         .unwrap();

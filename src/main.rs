@@ -150,6 +150,10 @@ pub struct LociArgs {
     #[arg(long = "thresholds-file")]
     pub threshold_file: Option<PathBuf>,
 
+    /// Path to file mapping filenames to sample names. Tab-separated: filename\tsample_name (no header)
+    #[arg(long = "sample-file")]
+    pub sample_file: Option<PathBuf>,
+
     /// Shared options
     #[command(flatten)]
     pub shared: SharedOptions,
@@ -171,6 +175,10 @@ pub struct CollectArgs {
     /// Minimum gq to count depth (GVCF input only)
     #[arg(long = "min-gq")]
     pub min_gq: Option<isize>,
+
+    /// Path to file mapping filenames to sample names. Tab-separated: filename\tsample_name (no header)
+    #[arg(long = "sample-file")]
+    pub sample_file: Option<PathBuf>,
 
     /// Shared options
     #[command(flatten)]
@@ -216,8 +224,23 @@ pub struct StatArgs {
 impl CollectArgs {
     pub fn run(self) -> Result<()> {
         use clam::collect::run_collect;
+        use clam::core::sample_map::SampleMap;
+
         self.shared.initialize_threading()?;
-        run_collect(self.input, self.output, self.chunk_size, self.min_gq)?;
+
+        let sample_map = if let Some(ref path) = self.sample_file {
+            Some(SampleMap::from_file(path)?)
+        } else {
+            None
+        };
+
+        run_collect(
+            self.input,
+            self.output,
+            self.chunk_size,
+            self.min_gq,
+            sample_map.as_ref(),
+        )?;
         Ok(())
     }
 }
@@ -225,8 +248,9 @@ impl CollectArgs {
 impl LociArgs {
     pub fn run(self) -> Result<()> {
         use clam::core::population::PopulationMap;
-        use clam::core::zarr::is_zarr_path;
+        use clam::core::sample_map::SampleMap;
         use clam::core::utils::parse_contig_thresholds;
+        use clam::core::zarr::is_zarr_path;
         use clam::loci::{run_loci, run_loci_zarr, ThresholdConfig};
         use log::warn;
 
@@ -247,12 +271,17 @@ impl LociArgs {
         } else {
             None
         };
+        let sample_map = if let Some(ref path) = self.sample_file {
+            Some(SampleMap::from_file(path)?)
+        } else {
+            None
+        };
         let thresholds = ThresholdConfig {
             min_depth: self.min_depth,
             max_depth: self.max_depth,
             min_proportion: self.min_proportion,
             mean_depth_range: (self.mean_depth_min, self.mean_depth_max),
-            per_contig
+            per_contig,
         };
 
         if self.input.len() == 1 && is_zarr_path(&self.input[0]) {
@@ -273,6 +302,7 @@ impl LociArgs {
                 self.chunk_size,
                 self.per_sample,
                 self.min_gq,
+                sample_map.as_ref(),
             )
         }
     }
