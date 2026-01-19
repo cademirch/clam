@@ -10,7 +10,7 @@ This page documents the file formats accepted by clam.
 
 ### D4 Files
 
-D4 is a compact format for storing per-base depth information.
+[D4](https://github.com/38/d4-format) is a compact format for storing per-base depth information.
 
 **Formats accepted:**
 
@@ -23,9 +23,8 @@ D4 is a compact format for storing per-base depth information.
 # Generate D4 from BAM using mosdepth
 mosdepth --d4 sample sample.bam
 
-# Optionally compress and index for smaller file size
-bgzip sample.per-base.d4
-bgzip --index sample.per-base.d4.gz
+# Optionally bgzip and index to save disk space
+bgzip --index sample.per-base.d4
 ```
 
 **Sample name extraction:**
@@ -37,11 +36,11 @@ clam extracts sample names from D4 filenames. For a file named `sample1.per-base
 A merged D4 file contains depth information for multiple samples in a single file. clam automatically detects merged D4 files and extracts all sample names from the file header.
 
 !!! warning "Merged D4 files must not be bgzipped"
-    Unlike single-sample D4 files, merged D4 files should remain uncompressed (`.d4`).
+    Unlike single-sample D4 files, merged D4 files should remain uncompressed.
 
 ### GVCF Files
 
-GVCF (Genomic VCF) files contain per-sample depth and genotype quality information at every position.
+[GVCF (Genomic VCF)](https://github.com/broadinstitute/gatk-docs/blob/master/gatk3-faqs/What_is_a_GVCF_and_how_is_it_different_from_a_%27regular%27_VCF%3F.md) files contain per-sample depth and genotype quality information at every position.
 
 **Requirements:**
 
@@ -57,7 +56,7 @@ tabix -p vcf sample.g.vcf.gz
 
 **Sample name extraction:**
 
-Sample names are extracted from the filename.
+Sample names are extracted from the filename. For a file named `sample1.g.vcf.gz`, the sample name is `sample1`.
 
 ---
 
@@ -69,14 +68,6 @@ For `clam stat`, input VCF files must be bgzipped and tabix indexed.
 
 - Must be bgzipped (`.vcf.gz`)
 - Must be tabix indexed (`.vcf.gz.tbi`)
-- Should contain contig lengths in the header (recommended)
-
-**Indexing:**
-
-```bash
-bgzip variants.vcf
-tabix -p vcf variants.vcf.gz
-```
 
 ---
 

@@ -1,5 +1,6 @@
 use assert_cmd::prelude::*;
 use clam::core::zarr::{CallableArrays, SampleMaskArrays};
+use color_eyre::eyre;
 use color_eyre::Result;
 use d4::find_tracks_in_file;
 use d4::ssio::D4TrackReader;
@@ -9,7 +10,10 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use tempfile::TempDir;
+use zarrs::filesystem::FilesystemStore;
+use zarrs::group::Group;
 
 /// Represents a window key for matching between output and truth
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -19,6 +23,38 @@ struct WindowKey {
     end: u32,
     population: String,          // For pi: single population
     population2: Option<String>, // For dxy/fst: second population
+}
+
+/// Helper to read population metadata from a zarr file
+fn read_populations_from_zarr(zarr_path: &Path) -> Result<Vec<(String, Vec<String>)>> {
+    let store = Arc::new(FilesystemStore::new(zarr_path)?);
+    let group = Group::open(store, "/")?;
+    let metadata = group
+        .attributes()
+        .get("clam_metadata")
+        .ok_or_else(|| eyre::eyre!("Missing clam_metadata"))?;
+
+    let populations = metadata
+        .get("populations")
+        .ok_or_else(|| eyre::eyre!("Missing populations in metadata"))?
+        .as_array()
+        .ok_or_else(|| eyre::eyre!("populations is not an array"))?;
+
+    let result = populations
+        .iter()
+        .map(|p| {
+            let name = p["name"].as_str().unwrap().to_string();
+            let samples: Vec<String> = p["samples"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s.as_str().unwrap().to_string())
+                .collect();
+            (name, samples)
+        })
+        .collect();
+
+    Ok(result)
 }
 
 /// Helper to compare zarr output against D4 truth file
@@ -687,6 +723,16 @@ fn test_loci_gvcf_with_populations() -> Result<()> {
     let zarr = CallableArrays::open(&output_zarr)?;
     compare_zarr_to_d4_truth(&zarr, "tests/data/integration/gvcf/callable_sites.d4", "chr2l")?;
 
+    // Verify population metadata is stored correctly
+    let populations = read_populations_from_zarr(&output_zarr)?;
+    assert_eq!(populations.len(), 2);
+    assert_eq!(populations[0].0, "Pop1");
+    assert_eq!(populations[0].1.len(), 10);
+    assert!(populations[0].1.contains(&"Pop1_sample_0".to_string()));
+    assert_eq!(populations[1].0, "Pop2");
+    assert_eq!(populations[1].1.len(), 10);
+    assert!(populations[1].1.contains(&"Pop2_sample_0".to_string()));
+
     Ok(())
 }
 
@@ -726,6 +772,16 @@ fn test_loci_d4_with_populations() -> Result<()> {
     // Compare output to truth
     let zarr = CallableArrays::open(&output_zarr)?;
     compare_zarr_to_d4_truth(&zarr, "tests/data/integration/d4/callable_sites.d4", "chr2l")?;
+
+    // Verify population metadata is stored correctly
+    let populations = read_populations_from_zarr(&output_zarr)?;
+    assert_eq!(populations.len(), 2);
+    assert_eq!(populations[0].0, "Pop1");
+    assert_eq!(populations[0].1.len(), 10);
+    assert!(populations[0].1.contains(&"Pop1_sample_0".to_string()));
+    assert_eq!(populations[1].0, "Pop2");
+    assert_eq!(populations[1].1.len(), 10);
+    assert!(populations[1].1.contains(&"Pop2_sample_0".to_string()));
 
     Ok(())
 }
@@ -774,6 +830,16 @@ fn test_loci_gvcf_per_sample_masks() -> Result<()> {
         "tests/data/integration/popmap.txt",
         "chr2l",
     )?;
+
+    // Verify population metadata is stored correctly
+    let populations = read_populations_from_zarr(&output_zarr)?;
+    assert_eq!(populations.len(), 2);
+    assert_eq!(populations[0].0, "Pop1");
+    assert_eq!(populations[0].1.len(), 10);
+    assert!(populations[0].1.contains(&"Pop1_sample_0".to_string()));
+    assert_eq!(populations[1].0, "Pop2");
+    assert_eq!(populations[1].1.len(), 10);
+    assert!(populations[1].1.contains(&"Pop2_sample_0".to_string()));
 
     Ok(())
 }

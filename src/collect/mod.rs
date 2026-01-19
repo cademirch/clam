@@ -23,6 +23,7 @@ pub fn run_collect(depth_files: Vec<PathBuf>, output_path: PathBuf, chunk_size: 
         processor.reference_contigs().clone(),
         processor.sample_names().to_vec(),
         chunk_size,
+        None,
     )?;
 
     processor.process_chunks(chunk_size, |chunk, depths, sample_names| {

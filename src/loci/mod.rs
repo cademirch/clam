@@ -45,7 +45,7 @@ pub fn run_loci(
     spinner.finish_and_clear();
 
     if output_per_sample_mask {
-        process_sample_masks(processor, output_path, thresholds, chunk_size)?;
+        process_sample_masks(processor, output_path, thresholds, chunk_size, pop_map)?;
     } else {
         process_population_counts(processor, output_path, pop_map, thresholds, chunk_size)?;
     }
@@ -58,12 +58,14 @@ fn process_sample_masks(
     output_path: PathBuf,
     thresholds: ThresholdConfig,
     chunk_size: u64,
+    pop_map: PopulationMap,
 ) -> Result<SampleMaskArrays> {
     let output_zarr = SampleMaskArrays::create_new(
         output_path,
         processor.reference_contigs().clone(),
         processor.sample_names().to_vec(),
         chunk_size,
+        Some(pop_map.populations_owned())
     )?;
 
     processor.process_chunks(chunk_size, |chunk, depths, sample_names| {
@@ -91,6 +93,7 @@ fn process_population_counts(
         processor.reference_contigs().clone(),
         population_names,
         chunk_size,
+        Some(pop_map.populations_owned())
     )?;
 
     let pop_membership = build_pop_membership(processor.sample_names(), &pop_map);
@@ -134,7 +137,7 @@ pub fn run_loci_zarr(
     ));
 
     if output_per_sample_mask {
-        process_sample_masks_zarr(input_zarr, output_path, thresholds, chunk_size)?;
+        process_sample_masks_zarr(input_zarr, output_path, thresholds, chunk_size, pop_map)?;
     } else {
         process_population_counts_zarr(input_zarr, output_path, pop_map, thresholds, chunk_size)?;
     }
@@ -147,12 +150,14 @@ fn process_sample_masks_zarr(
     output_path: PathBuf,
     thresholds: ThresholdConfig,
     chunk_size: u64,
+    pop_map: PopulationMap
 ) -> Result<SampleMaskArrays> {
     let output_zarr = SampleMaskArrays::create_new(
         output_path,
         input_zarr.contigs().clone(),
         input_zarr.column_names().to_vec(),
         chunk_size,
+        Some(pop_map.populations_owned())
     )?;
 
     let sample_names = input_zarr.column_names().to_vec();
@@ -206,6 +211,7 @@ fn process_population_counts_zarr(
         input_zarr.contigs().clone(),
         population_names,
         chunk_size,
+        Some(pop_map.populations_owned())
     )?;
 
     let pop_membership = build_pop_membership(input_zarr.column_names(), &pop_map);

@@ -9,9 +9,10 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
 use std::path::Path;
+use serde::Serialize;
 
 /// A single population with its samples
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Population {
     pub name: String,
     samples: Vec<String>,
@@ -221,6 +222,11 @@ impl PopulationMap {
     /// Iterate over all populations
     pub fn populations(&self) -> impl Iterator<Item = &Population> {
         self.populations.values()
+    }
+
+    /// Get vector of owned poulations
+    pub fn populations_owned(&self) -> Vec<Population> {
+        self.populations().cloned().collect()
     }
 
     /// Get population by index
