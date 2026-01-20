@@ -1,12 +1,13 @@
 use crate::core::contig::{validate_contig_consistency, ContigChunk, ContigSet};
 use crate::core::depth::d4::D4Reader;
+use crate::core::population::SamplesConfig;
+use crate::core::utils::{create_progress_bar, create_spinner};
+use crate::core::zarr::DepthArrays;
 use color_eyre::eyre::eyre;
 use color_eyre::Help;
 use color_eyre::Result;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
-use crate::core::zarr::DepthArrays;
-use crate::core::utils::{create_spinner, create_progress_bar};
 pub mod array;
 pub mod d4;
 pub mod gvcf;
@@ -49,6 +50,26 @@ pub fn open_depth_source(path: impl AsRef<Path>, min_gq: Option<isize>) -> Resul
     let path = path.as_ref();
     let path_str = path.to_string_lossy();
 
+    let sample_name = path
+        .file_prefix()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| eyre!("Could not extract sample name from path: {}", path_str))
+        .suggestion(
+            "Sample names are derived from file prefixes (e.g., 'sample' from 'sample.d4.gz')",
+        )?;
+
+    open_depth_source_with_name(path, sample_name, min_gq)
+}
+
+/// Open a depth source with an explicit sample name (not derived from filename)
+pub fn open_depth_source_with_name(
+    path: impl AsRef<Path>,
+    sample_name: &str,
+    min_gq: Option<isize>,
+) -> Result<Box<dyn DepthSource>> {
+    let path = path.as_ref();
+    let path_str = path.to_string_lossy();
+
     let file_type = DepthFileType::from_path(&path_str).ok_or_else(|| {
         eyre!(
             "Unsupported depth file format: {}. Supported formats: .d4, .d4.gz, .g.vcf.gz, .gvcf.gz",
@@ -56,26 +77,15 @@ pub fn open_depth_source(path: impl AsRef<Path>, min_gq: Option<isize>) -> Resul
         )
     })?;
 
-    let sample_name = path
-        .file_prefix()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| eyre!("Could not extract sample name from path: {}", path_str))
-        .suggestion(
-            "Sample names are derived from file prefixes (e.g., 'sample' from 'sample.d4.gz')",
-        )?
-        .to_string();
     match file_type {
         DepthFileType::D4Gz => {
-            // BGZF-compressed D4 file
-            Ok(Box::new(d4::BgzfD4Reader::new(path, &sample_name, None)?))
+            Ok(Box::new(d4::BgzfD4Reader::new(path, sample_name, None)?))
         }
         DepthFileType::D4 => {
-            // Uncompressed D4 file
-            Ok(Box::new(d4::D4Reader::new(path, &sample_name, None)?))
+            Ok(Box::new(d4::D4Reader::new(path, sample_name, None)?))
         }
         DepthFileType::GvcfGz => {
-            // GVCF file
-            Ok(Box::new(gvcf::GvcfReader::new(path, &sample_name, min_gq)?))
+            Ok(Box::new(gvcf::GvcfReader::new(path, sample_name, min_gq)?))
         }
     }
 }
@@ -130,7 +140,7 @@ pub struct DepthProcessor {
 impl DepthProcessor {
     pub fn from_paths(paths: Vec<PathBuf>, min_gq: Option<isize>) -> Result<Self> {
         let spinner = create_spinner("Opening depth files...");
-        
+
         let (sources, sample_names, reference_contigs) =
             if paths.len() == 1 && is_multisample_d4(&paths[0])? {
                 spinner.set_message("Reading multisample D4 tracks...");
@@ -139,10 +149,45 @@ impl DepthProcessor {
                 spinner.set_message(format!("Opening {} depth files...", paths.len()));
                 setup_individual_files(paths, min_gq)?
             };
-        
+
         spinner.finish_with_message(format!("✓ Loaded {} samples", sample_names.len()));
-        
+
         Ok(Self { sources, sample_names, reference_contigs, min_gq })
+    }
+
+    /// Create from SamplesConfig (file_path column is required in SamplesConfig)
+    pub fn from_samples_config(config: &SamplesConfig, min_gq: Option<isize>) -> Result<Self> {
+        let file_paths = config.file_paths();
+        let sample_names = config.sample_names();
+
+        let spinner = create_spinner("Opening depth files from samples config...");
+        spinner.set_message(format!("Opening {} depth files...", file_paths.len()));
+
+        // Open each file with its explicit sample name
+        let readers: Vec<_> = file_paths
+            .iter()
+            .zip(sample_names.iter())
+            .map(|(path, name)| open_depth_source_with_name(path, name, min_gq))
+            .collect::<Result<_>>()?;
+
+        spinner.set_message("Validating contigs across files...");
+
+        let contig_sets: Vec<_> = file_paths
+            .iter()
+            .zip(readers.iter())
+            .map(|(path, reader)| (path, reader.contigs()))
+            .collect();
+
+        let reference_contigs = validate_contig_consistency(contig_sets)?;
+
+        spinner.finish_with_message(format!("✓ Loaded {} samples", sample_names.len()));
+
+        Ok(Self {
+            sources: DepthSources::IndividualFiles(file_paths),
+            sample_names,
+            reference_contigs,
+            min_gq,
+        })
     }
 
 

@@ -29,7 +29,12 @@ pub struct SharedOptions {
     #[arg(short = 't', long = "threads", default_value_t = 1)]
     pub threads: usize,
 
-    /// Path to file that defines populations. Tab separated: sample\tpopulation_name
+    /// Path to samples TSV file (with header). Columns: sample_name, file_path (both required), population (optional).
+    /// When provided, input files are read from the TSV instead of positional arguments.
+    #[arg(short = 's', long = "samples", conflicts_with = "population_file")]
+    pub samples: Option<PathBuf>,
+
+    /// [DEPRECATED: use --samples] Path to file that defines populations. Tab separated: sample\tpopulation_name
     #[arg(short = 'p', long = "population-file")]
     pub population_file: Option<PathBuf>,
 
@@ -106,8 +111,7 @@ impl SharedOptions {
 /// Calculate callable sites from depth statistics
 #[derive(Args, Debug)]
 pub struct LociArgs {
-    /// Input depth files
-    #[arg(required = true)]
+    /// Input depth files (not needed when using --samples)
     pub input: Vec<PathBuf>,
 
     /// Output path for callable sites zarr array
@@ -157,7 +161,7 @@ pub struct LociArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct CollectArgs {
-    #[arg(required = true)]
+    /// Input depth files (not needed when using --samples)
     pub input: Vec<PathBuf>,
 
     /// Output path for callable sites zarr array
@@ -216,18 +220,44 @@ pub struct StatArgs {
 impl CollectArgs {
     pub fn run(self) -> Result<()> {
         use clam::collect::run_collect;
+        use clam::core::population::SamplesConfig;
+        use color_eyre::eyre::bail;
+        use log::warn;
+
         self.shared.initialize_threading()?;
-        run_collect(self.input, self.output, self.chunk_size, self.min_gq)?;
-        Ok(())
+
+        // Warn if force_samples is used with collect command
+        if self.shared.force_samples {
+            warn!("--force-samples is not supported for 'collect' command; flag will be ignored");
+        }
+
+        // Build SamplesConfig from either --samples or positional args
+        let config = if let Some(ref samples_path) = self.shared.samples {
+            if !self.input.is_empty() {
+                bail!("Cannot provide input files when using --samples");
+            }
+            SamplesConfig::from_file(samples_path)?
+        } else {
+            if self.input.is_empty() {
+                bail!("Must provide input files or use --samples");
+            }
+            if self.shared.population_file.is_some() {
+                warn!("--population-file is ignored for 'collect' command; use --samples instead");
+            }
+            SamplesConfig::from_paths(self.input)?
+        };
+
+        run_collect(&config, self.output, self.chunk_size, self.min_gq)
     }
 }
 
 impl LociArgs {
     pub fn run(self) -> Result<()> {
-        use clam::core::population::PopulationMap;
-        use clam::core::zarr::is_zarr_path;
+        use clam::core::population::{PopulationMap, SamplesConfig};
         use clam::core::utils::parse_contig_thresholds;
+        use clam::core::zarr::is_zarr_path;
         use clam::loci::{run_loci, run_loci_zarr, ThresholdConfig};
+        use color_eyre::eyre::bail;
         use log::warn;
 
         self.shared.initialize_threading()?;
@@ -237,11 +267,6 @@ impl LociArgs {
             warn!("--force-samples is not supported for 'loci' command; flag will be ignored");
         }
 
-        let pop_map = if let Some(ref pop_file) = self.shared.population_file {
-            Some(PopulationMap::from_file(pop_file)?)
-        } else {
-            None
-        };
         let per_contig = if let Some(ref path) = self.threshold_file {
             Some(parse_contig_thresholds(path)?)
         } else {
@@ -252,21 +277,37 @@ impl LociArgs {
             max_depth: self.max_depth,
             min_proportion: self.min_proportion,
             mean_depth_range: (self.mean_depth_min, self.mean_depth_max),
-            per_contig
+            per_contig,
         };
 
-        if self.input.len() == 1 && is_zarr_path(&self.input[0]) {
-            let zarr = &self.input[0];
-            run_loci_zarr(
-                zarr.to_path_buf(),
-                self.output,
-                pop_map,
-                thresholds,
-                self.per_sample,
-            )
+        // Build SamplesConfig from either --samples or positional args
+        let config = if let Some(ref samples_path) = self.shared.samples {
+            if !self.input.is_empty() {
+                bail!("Cannot provide input files when using --samples");
+            }
+            SamplesConfig::from_file(samples_path)?
+        } else {
+            if self.input.is_empty() {
+                bail!("Must provide input files or use --samples");
+            }
+            SamplesConfig::from_paths(self.input)?
+        };
+
+        // Handle deprecated --population-file override
+        let pop_map = if let Some(ref pop_file) = self.shared.population_file {
+            warn!("--population-file is deprecated; use --samples instead");
+            Some(PopulationMap::from_file(pop_file)?)
+        } else {
+            None // run_loci will use config.to_population_map()
+        };
+
+        // Check for Zarr input (single zarr path)
+        if config.file_paths().len() == 1 && is_zarr_path(&config.file_paths()[0]) {
+            let zarr = &config.file_paths()[0];
+            run_loci_zarr(zarr.to_path_buf(), self.output, pop_map, thresholds, self.per_sample)
         } else {
             run_loci(
-                self.input,
+                &config,
                 self.output,
                 pop_map,
                 thresholds,

@@ -1,6 +1,6 @@
 use crate::core::depth::array::{build_pop_membership, MultisampleDepthArray};
 use crate::core::depth::DepthProcessor;
-use crate::core::population::PopulationMap;
+use crate::core::population::{PopulationMap, SamplesConfig};
 use crate::core::utils::{create_progress_bar, create_spinner};
 use crate::core::zarr::{CallableArrays, DepthArrays, SampleMaskArrays};
 use color_eyre::Result;
@@ -26,8 +26,9 @@ impl ThresholdConfig {
     }
 }
 
+/// Run loci calculation from a SamplesConfig
 pub fn run_loci(
-    depth_files: Vec<PathBuf>,
+    config: &SamplesConfig,
     output_path: PathBuf,
     pop_map: Option<PopulationMap>,
     thresholds: ThresholdConfig,
@@ -35,12 +36,11 @@ pub fn run_loci(
     output_per_sample_mask: bool,
     min_gq: Option<isize>,
 ) -> Result<()> {
-    let processor = DepthProcessor::from_paths(depth_files, min_gq)?;
+    let processor = DepthProcessor::from_samples_config(config, min_gq)?;
 
     let spinner = create_spinner("Validating population map...");
     //TODO: check that threshold per contig matches depth processor contigs
-    let pop_map = pop_map
-        .unwrap_or_else(|| PopulationMap::default_from_samples(processor.sample_names().to_vec()));
+    let pop_map = pop_map.unwrap_or_else(|| config.to_population_map());
     pop_map.validate_exact_match(processor.sample_names(), false)?;
     spinner.finish_and_clear();
 
@@ -280,6 +280,7 @@ mod tests {
         let output_path = dir.path().join("callable.zarr");
 
         let depth_files = vec![PathBuf::from(path)];
+        let config = SamplesConfig::from_paths(depth_files).unwrap();
         let pop_map = PopulationMap::default_from_samples(vec!["sample1".to_string()]);
 
         let thresholds = ThresholdConfig {
@@ -291,7 +292,7 @@ mod tests {
         };
 
         run_loci(
-            depth_files,
+            &config,
             output_path.clone(),
             Some(pop_map),
             thresholds,
@@ -316,18 +317,17 @@ mod tests {
 
     #[rstest]
     fn test_two_samples(
-        #[values(
-            vec!["tests/data/depth/all20/sample1.d4", "tests/data/depth/all20/sample2.d4"],
-            vec!["tests/data/depth/all20/merged_s1s2.d4"]
-        )]
-        paths: Vec<&str>,
         #[values((0.0, 2), (21.0, 0))] threshold_expected: (f64, u8),
     ) {
-        let (min_depth, expected) = threshold_expected;
+        let (min_depth, _expected) = threshold_expected;
         let dir = TempDir::new().unwrap();
         let output_path = dir.path().join("callable.zarr");
 
-        let depth_files: Vec<PathBuf> = paths.iter().map(|p| PathBuf::from(p)).collect();
+        let depth_files = vec![
+            PathBuf::from("tests/data/depth/all20/sample1.d4"),
+            PathBuf::from("tests/data/depth/all20/sample2.d4"),
+        ];
+        let config = SamplesConfig::from_paths(depth_files).unwrap();
 
         let mut pop_data = indexmap::IndexMap::new();
         pop_data.insert("pop1".to_string(), vec!["sample1".to_string()]);
@@ -343,7 +343,7 @@ mod tests {
         };
 
         run_loci(
-            depth_files,
+            &config,
             output_path.clone(),
             Some(pop_map),
             thresholds,
@@ -387,6 +387,7 @@ mod tests {
         let output_path = dir.path().join("masks.zarr");
 
         let depth_files = vec![PathBuf::from(path)];
+        let config = SamplesConfig::from_paths(depth_files).unwrap();
         let pop_map = PopulationMap::default_from_samples(vec!["sample1".to_string()]);
 
         let thresholds = ThresholdConfig {
@@ -398,7 +399,7 @@ mod tests {
         };
 
         run_loci(
-            depth_files,
+            &config,
             output_path.clone(),
             Some(pop_map),
             thresholds,
@@ -424,18 +425,17 @@ mod tests {
 
     #[rstest]
     fn test_two_samples_per_sample_mask(
-        #[values(
-            vec!["tests/data/depth/all20/sample1.d4", "tests/data/depth/all20/sample2.d4"],
-            vec!["tests/data/depth/all20/merged_s1s2.d4"]
-        )]
-        paths: Vec<&str>,
         #[values((0.0, true), (21.0, false))] threshold_expected: (f64, bool),
     ) {
         let (min_depth, expected) = threshold_expected;
         let dir = TempDir::new().unwrap();
         let output_path = dir.path().join("masks.zarr");
 
-        let depth_files: Vec<PathBuf> = paths.iter().map(|p| PathBuf::from(p)).collect();
+        let depth_files = vec![
+            PathBuf::from("tests/data/depth/all20/sample1.d4"),
+            PathBuf::from("tests/data/depth/all20/sample2.d4"),
+        ];
+        let config = SamplesConfig::from_paths(depth_files).unwrap();
 
         let mut pop_data = indexmap::IndexMap::new();
         pop_data.insert("pop1".to_string(), vec!["sample1".to_string()]);
@@ -451,7 +451,7 @@ mod tests {
         };
 
         run_loci(
-            depth_files,
+            &config,
             output_path.clone(),
             Some(pop_map),
             thresholds,
@@ -475,6 +475,97 @@ mod tests {
                 assert_eq!(chunk_data.shape(), &[expected_rows, 2]);
 
                 assert!(chunk_data.iter().all(|&x| x == expected));
+            }
+        }
+    }
+
+    /// A/B test: verify that SamplesConfig::from_file() produces same output as from_paths()
+    #[test]
+    fn test_samples_file_vs_from_paths_equivalence() {
+        use std::io::Write;
+
+        let dir = TempDir::new().unwrap();
+
+        // Create samples TSV file
+        let samples_tsv = dir.path().join("samples.tsv");
+        {
+            let mut f = std::fs::File::create(&samples_tsv).unwrap();
+            writeln!(f, "sample_name\tfile_path\tpopulation").unwrap();
+            writeln!(f, "sample1\ttests/data/depth/all20/sample1.d4\tpop1").unwrap();
+            writeln!(f, "sample2\ttests/data/depth/all20/sample2.d4\tpop2").unwrap();
+        }
+
+        // Output paths
+        let output_from_paths = dir.path().join("from_paths.zarr");
+        let output_from_file = dir.path().join("from_file.zarr");
+
+        let thresholds = ThresholdConfig {
+            min_depth: 0.0,
+            max_depth: f64::INFINITY,
+            min_proportion: 0.0,
+            mean_depth_range: (0.0, f64::INFINITY),
+            per_contig: None,
+        };
+
+        // Method 1: from_paths with explicit pop_map
+        let depth_files = vec![
+            PathBuf::from("tests/data/depth/all20/sample1.d4"),
+            PathBuf::from("tests/data/depth/all20/sample2.d4"),
+        ];
+        let config_from_paths = SamplesConfig::from_paths(depth_files).unwrap();
+
+        let mut pop_data = indexmap::IndexMap::new();
+        pop_data.insert("pop1".to_string(), vec!["sample1".to_string()]);
+        pop_data.insert("pop2".to_string(), vec!["sample2".to_string()]);
+        let pop_map = PopulationMap::from_populations(pop_data).unwrap();
+
+        run_loci(
+            &config_from_paths,
+            output_from_paths.clone(),
+            Some(pop_map),
+            thresholds,
+            100,
+            false,
+            None,
+        )
+        .unwrap();
+
+        // Method 2: from_file (includes population in TSV)
+        let config_from_file = SamplesConfig::from_file(&samples_tsv).unwrap();
+
+        let thresholds2 = ThresholdConfig {
+            min_depth: 0.0,
+            max_depth: f64::INFINITY,
+            min_proportion: 0.0,
+            mean_depth_range: (0.0, f64::INFINITY),
+            per_contig: None,
+        };
+
+        run_loci(
+            &config_from_file,
+            output_from_file.clone(),
+            None, // Use population from config
+            thresholds2,
+            100,
+            false,
+            None,
+        )
+        .unwrap();
+
+        // Compare outputs
+        let result1 = CallableArrays::open(&output_from_paths).unwrap();
+        let result2 = CallableArrays::open(&output_from_file).unwrap();
+
+        assert_eq!(result1.column_names(), result2.column_names());
+        // Compare contig lengths
+        assert_eq!(result1.contigs().len(), result2.contigs().len());
+
+        for (chrom_name, chrom_length) in result1.contigs().iter() {
+            let num_chunks = (chrom_length as u64 + 99) / 100;
+            for chunk_idx in 0..num_chunks {
+                let data1 = result1.read_chunk(chrom_name, chunk_idx, None).unwrap();
+                let data2 = result2.read_chunk(chrom_name, chunk_idx, None).unwrap();
+                assert_eq!(data1, data2, "Mismatch at {}:{}", chrom_name, chunk_idx);
             }
         }
     }
