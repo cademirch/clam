@@ -3,7 +3,7 @@ name = "clam"
 authors = ["Cade Mirchandani <cmirchan@ucsc.edu>"]
 repository = "https://github.com/cademirch/clam"
 homepage = "https://github.com/cademirch/clam"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 
 [lib]
