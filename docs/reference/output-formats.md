@@ -8,40 +8,10 @@ This page documents the output files produced by clam commands.
 
 ## Zarr Format Overview
 
-clam uses [Zarr](https://zarr.dev/) for its intermediate and output files. Zarr is a format for storing chunked, compressed N-dimensional arrays.
+clam uses [Zarr](https://zarr.dev/) for its intermediate and output files. Zarr is a format for storing chunked, compressed N-dimensional arrays. Zarr enables better compression for storing multisample per-base values (depth in this case) than. Please see this [small benchmark](https://github.com/cademirch/clam/tree/486827890a54585545e208f895211d237e896c7d/benches) for a comparison. 
 
 !!! warning "Schema Stability"
-    The Zarr schema (metadata structure, array layout) is not yet stable and may change in future versions of clam. If you are building tools that read clam's Zarr outputs, be prepared to update them when upgrading clam.
-
-### Why Zarr?
-
-**Efficient Compression**
-:   clam's Zarr outputs use Zstd compression with byte shuffling, typically achieving 5-10x compression ratios. The Zarr output from `clam collect` is often smaller than the equivalent merged D4 file.
-
-**Chunked Storage**
-:   Zarr stores data in chunks, enabling parallel processing, random access to specific genomic regions, and streaming without loading everything into memory.
-
-**Interoperability**
-:   Zarr is widely supported: Python (`zarr`, `xarray`, `dask`), R (`pizzarr`), Julia (`Zarr.jl`), and JavaScript (`zarr.js`). Load clam outputs directly into your analysis environment without format conversion.
-
-**Self-Describing**
-:   Zarr files include metadata describing the array structure, dimensions, and custom attributes. clam stores contig information, sample names, and chunk sizes in the metadata.
-
-### Compression Details
-
-**Numeric Data (depth, counts)**
-
-- Codec: Blosc with Zstd compressor
-- Compression level: 5
-- Shuffle: Byte shuffle (improves compression of numeric data)
-
-**Boolean Data (per-sample masks)**
-
-- Codec: PackBits (efficient for boolean arrays)
-
----
-
-## clam collect Output
+    The Zarr schema (metadata structure, array layout) is not yet stable and may change in future versions of clam. If you are building tools that read clam's Zarr outputs, please reach out via Github issue with any feedback and/or your use case(s).  
 
 ### Depth Zarr Store
 
@@ -115,15 +85,30 @@ By default, `clam loci` produces a Zarr store containing callable sample counts 
     {"name": "chr2", "length": 242193529}
   ],
   "column_names": ["PopA", "PopB", "PopC"],
-  "chunk_size": 1000000
+  "chunk_size": 1000000,
+  "callable_loci_type": "population_counts",
+  "populations": [
+    {"name": "PopA", "samples": ["sample1", "sample2", "sample3"]},
+    {"name": "PopB", "samples": ["sample4", "sample5"]},
+    {"name": "PopC", "samples": ["sample6", "sample7", "sample8"]}
+  ]
 }
 ```
 
-| Field          | Type    | Description                                |
-| -------------- | ------- | ------------------------------------------ |
-| `contigs`      | array   | List of chromosomes with names and lengths |
-| `column_names` | array   | Population names in column order           |
-| `chunk_size`   | integer | Chunk size in base pairs                   |
+| Field                | Type    | Description                                               |
+| -------------------- | ------- | --------------------------------------------------------- |
+| `contigs`            | array   | List of chromosomes with names and lengths                |
+| `column_names`       | array   | Population names in column order                          |
+| `chunk_size`         | integer | Chunk size in base pairs                                  |
+| `callable_loci_type` | string  | Type of callable loci data (`population_counts`)          |
+| `populations`        | array   | Population definitions with sample membership (see below) |
+
+**Population metadata:**
+
+| Field     | Type   | Description                             |
+| --------- | ------ | --------------------------------------- |
+| `name`    | string | Population name                         |
+| `samples` | array  | List of sample names in this population |
 
 **Array Properties:**
 
@@ -150,9 +135,22 @@ When using `--per-sample`, `clam loci` outputs a boolean mask indicating callabi
     {"name": "chr1", "length": 248956422}
   ],
   "column_names": ["sample1", "sample2", "sample3"],
-  "chunk_size": 1000000
+  "chunk_size": 1000000,
+  "callable_loci_type": "sample_masks",
+  "populations": [
+    {"name": "PopA", "samples": ["sample1", "sample2"]},
+    {"name": "PopB", "samples": ["sample3"]}
+  ]
 }
 ```
+
+| Field                | Type    | Description                                   |
+| -------------------- | ------- | --------------------------------------------- |
+| `contigs`            | array   | List of chromosomes with names and lengths    |
+| `column_names`       | array   | Sample names in column order                  |
+| `chunk_size`         | integer | Chunk size in base pairs                      |
+| `callable_loci_type` | string  | Type of callable loci data (`sample_masks`)   |
+| `populations`        | array   | Population definitions with sample membership |
 
 **Array Properties:**
 
@@ -349,20 +347,4 @@ region = store["chr1"][1000000:2000000, :]
 
 For more detailed examples of working with Zarr outputs, including exploring depth distributions, see the [example notebooks](https://github.com/cademirch/clam/tree/main/notebooks) (coming soon).
 
-### Reading TSV in Python
 
-```python
-import pandas as pd
-
-pi = pd.read_csv("results/pi.tsv", sep="\t")
-dxy = pd.read_csv("results/dxy.tsv", sep="\t")
-fst = pd.read_csv("results/fst.tsv", sep="\t")
-```
-
-### Reading TSV in R
-
-```r
-pi <- read.table("results/pi.tsv", header=TRUE, sep="\t")
-dxy <- read.table("results/dxy.tsv", header=TRUE, sep="\t")
-fst <- read.table("results/fst.tsv", header=TRUE, sep="\t")
-```

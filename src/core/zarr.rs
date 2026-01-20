@@ -1,4 +1,5 @@
 use crate::core::contig::{ContigChunk, ContigSet};
+use crate::core::population::Population;
 use color_eyre::eyre::OptionExt;
 use color_eyre::{eyre::eyre, Result};
 use ndarray::Array2;
@@ -27,9 +28,7 @@ pub enum CallableLociType {
     SampleMasks,
 }
 
-
 pub type OpenArray = Array<dyn ReadableWritableListableStorageTraits>;
-
 
 pub struct ChromosomeArrays<T: ElementOwned> {
     path: PathBuf,
@@ -66,6 +65,7 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
         data_type: DataType,
         fill_value: FillValue,
         callable_loci_type: Option<CallableLociType>,
+        populations: Option<Vec<Population>>,
     ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let store = Self::open_store(&path)?;
@@ -86,13 +86,16 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
         if let Some(loci_type) = callable_loci_type {
             metadata["callable_loci_type"] = serde_json::to_value(loci_type)?;
         }
+        // Add population info to metadata if provided
+        if let Some(populations) = populations {
+            metadata["populations"] = serde_json::to_value(populations)?;
+        }
 
         group
             .attributes_mut()
             .insert("clam_metadata".to_string(), metadata);
         group.store_metadata()?;
 
-        
         for (chrom_name, chrom_length) in contigs.iter() {
             let mut builder = ArrayBuilder::new(
                 vec![chrom_length as u64, column_names.len() as u64],
@@ -193,13 +196,18 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
             _marker: PhantomData,
         })
     }
-    
+
     fn open_store(path: &Path) -> Result<ReadableWritableListableStorage> {
         let store = Arc::new(FilesystemStore::new(path)?);
         Ok(store)
     }
 
-    pub fn read_chunk(&self, chrom: &str, chunk_idx: u64, array: Option<&OpenArray>) -> Result<Array2<T>> {
+    pub fn read_chunk(
+        &self,
+        chrom: &str,
+        chunk_idx: u64,
+        array: Option<&OpenArray>,
+    ) -> Result<Array2<T>> {
         let owned_array;
         let array = match array {
             Some(a) => a,
@@ -226,7 +234,13 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
         Ok(chunk_end > chrom_length as u64)
     }
 
-    pub fn write_chunk(&self, chrom: &str, chunk_idx: u64, data: Array2<T>, array: Option<&OpenArray>) -> Result<()> {
+    pub fn write_chunk(
+        &self,
+        chrom: &str,
+        chunk_idx: u64,
+        data: Array2<T>,
+        array: Option<&OpenArray>,
+    ) -> Result<()> {
         let owned_array;
         let array = match array {
             Some(a) => a,
@@ -256,8 +270,8 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
         Ok(())
     }
     pub fn chunks(&self) -> Vec<ContigChunk> {
-    self.contigs.to_chunks(self.chunk_size)
-}
+        self.contigs.to_chunks(self.chunk_size)
+    }
     pub fn contigs(&self) -> &ContigSet {
         &self.contigs
     }
@@ -307,6 +321,7 @@ impl DepthArrays {
         contigs: ContigSet,
         sample_names: Vec<String>,
         chunk_size: u64,
+        populations: Option<Vec<Population>>,
     ) -> Result<Self> {
         Self::create(
             path,
@@ -316,6 +331,7 @@ impl DepthArrays {
             DataType::UInt32,
             FillValue::from(0u32),
             None, // Not a callable loci file
+            populations,
         )
     }
 }
@@ -326,6 +342,7 @@ impl CallableArrays {
         contigs: ContigSet,
         population_names: Vec<String>,
         chunk_size: u64,
+        populations: Option<Vec<Population>>,
     ) -> Result<Self> {
         Self::create(
             path,
@@ -335,6 +352,7 @@ impl CallableArrays {
             DataType::UInt16,
             FillValue::from(0u16),
             Some(CallableLociType::PopulationCounts),
+            populations,
         )
     }
 }
@@ -347,6 +365,7 @@ impl SampleMaskArrays {
         contigs: ContigSet,
         sample_names: Vec<String>,
         chunk_size: u64,
+        populations: Option<Vec<Population>>,
     ) -> Result<Self> {
         Self::create(
             path,
@@ -356,6 +375,7 @@ impl SampleMaskArrays {
             DataType::Bool,
             FillValue::from(false),
             Some(CallableLociType::SampleMasks),
+            populations,
         )
     }
 }
@@ -383,7 +403,7 @@ mod tests {
         let columns = vec!["sample1".to_string(), "sample2".to_string()];
 
         // Create
-        DepthArrays::create_new(&path, contigs.clone(), columns.clone(), 100).unwrap();
+        DepthArrays::create_new(&path, contigs.clone(), columns.clone(), 100, None).unwrap();
         assert!(path.exists());
 
         // Open
@@ -403,6 +423,7 @@ mod tests {
             test_contigs(),
             vec!["sample1".to_string(), "sample2".to_string()],
             100,
+            None,
         )
         .unwrap();
 
@@ -428,7 +449,7 @@ mod tests {
         let path = dir.path().join("test.zarr");
 
         let arrays =
-            DepthArrays::create_new(&path, test_contigs(), vec!["sample1".to_string()], 100)
+            DepthArrays::create_new(&path, test_contigs(), vec!["sample1".to_string()], 100, None)
                 .unwrap();
 
         assert_eq!(arrays.position_to_chunk(0), 0);
@@ -455,7 +476,7 @@ mod tests {
         ];
 
         // Create
-        SampleMaskArrays::create_new(&path, contigs.clone(), samples.clone(), 100).unwrap();
+        SampleMaskArrays::create_new(&path, contigs.clone(), samples.clone(), 100, None).unwrap();
         assert!(path.exists());
 
         // Open
@@ -475,6 +496,7 @@ mod tests {
             test_contigs(),
             vec!["sample1".to_string(), "sample2".to_string()],
             100,
+            None
         )
         .unwrap();
 
@@ -516,7 +538,7 @@ mod tests {
 
         // Create with 10 samples
         let samples: Vec<String> = (0..10).map(|i| format!("sample{}", i)).collect();
-        let arrays = SampleMaskArrays::create_new(&path, test_contigs(), samples, 1000).unwrap();
+        let arrays = SampleMaskArrays::create_new(&path, test_contigs(), samples, 1000, None).unwrap();
 
         // Write alternating pattern (should compress well)
         let mut data = Array2::<bool>::from_elem((1000, 10), false);
