@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0](https://github.com/cademirch/clam/compare/v1.0.0...v1.1.0) (2026-01-20)
+
+
+### Features
+
+* add population info to zarr metadata ([#33](https://github.com/cademirch/clam/issues/33)) ([fa7b0af](https://github.com/cademirch/clam/commit/fa7b0afcb3afb7609bf5a1cf28962a43e3890e4c))
+* add samples argument ([#35](https://github.com/cademirch/clam/issues/35)) ([d4cd77d](https://github.com/cademirch/clam/commit/d4cd77d2703dd46b8878217d5d6734efbf647336))
+
 ## [1.0.0](https://github.com/cademirch/clam/compare/v0.2.2...v1.0.0) (2026-01-02)
 
 
