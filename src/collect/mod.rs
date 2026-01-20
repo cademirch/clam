@@ -1,5 +1,6 @@
 use crate::core::depth::array::stack_depths;
 use crate::core::depth::DepthProcessor;
+use crate::core::population::SamplesConfig;
 use crate::core::zarr::{DepthArrays, is_zarr_path};
 use color_eyre::Result;
 use color_eyre::Help;
@@ -7,7 +8,13 @@ use color_eyre::eyre::eyre;
 use std::path::PathBuf;
 
 
-pub fn run_collect(depth_files: Vec<PathBuf>, output_path: PathBuf, chunk_size: u64, min_gq: Option<isize>) -> Result<()> {
+/// Collect depth from multiple files into a Zarr store
+pub fn run_collect(
+    config: &SamplesConfig,
+    output_path: PathBuf,
+    chunk_size: u64,
+    min_gq: Option<isize>,
+) -> Result<()> {
     if is_zarr_path(&output_path) {
         return Err(eyre!(
             "Output zarr path: {} already exists",
@@ -15,15 +22,21 @@ pub fn run_collect(depth_files: Vec<PathBuf>, output_path: PathBuf, chunk_size: 
         ))
         .suggestion("Remove the existing directory or choose a different output path");
     }
-    
-    let processor = DepthProcessor::from_paths(depth_files, min_gq)?;
+
+    let processor = DepthProcessor::from_samples_config(config, min_gq)?;
+
+    let populations = if config.has_populations() {
+        Some(config.to_population_map().populations_owned())
+    } else {
+        None
+    };
 
     let output_zarr = DepthArrays::create_new(
         output_path,
         processor.reference_contigs().clone(),
         processor.sample_names().to_vec(),
         chunk_size,
-        None,
+        populations,
     )?;
 
     processor.process_chunks(chunk_size, |chunk, depths, sample_names| {
@@ -54,8 +67,9 @@ mod tests {
         let output_path = dir.path().join("depths.zarr");
 
         let depth_files = vec![PathBuf::from(path)];
+        let config = SamplesConfig::from_paths(depth_files).unwrap();
 
-        run_collect(depth_files, output_path.clone(), 100, None).unwrap();
+        run_collect(&config, output_path.clone(), 100, None).unwrap();
 
         assert!(output_path.exists());
 
@@ -76,19 +90,17 @@ mod tests {
     }
 
     #[rstest]
-    fn test_collect_two_samples(
-        #[values(
-            vec!["tests/data/depth/all20/sample1.d4", "tests/data/depth/all20/sample2.d4"],
-            vec!["tests/data/depth/all20/merged_s1s2.d4"]
-        )]
-        paths: Vec<&str>,
-    ) {
+    fn test_collect_two_samples() {
         let dir = TempDir::new().unwrap();
         let output_path = dir.path().join("depths.zarr");
 
-        let depth_files: Vec<PathBuf> = paths.iter().map(|p| PathBuf::from(p)).collect();
+        let depth_files = vec![
+            PathBuf::from("tests/data/depth/all20/sample1.d4"),
+            PathBuf::from("tests/data/depth/all20/sample2.d4"),
+        ];
+        let config = SamplesConfig::from_paths(depth_files).unwrap();
 
-        run_collect(depth_files, output_path.clone(), 100, None).unwrap();
+        run_collect(&config, output_path.clone(), 100, None).unwrap();
 
         assert!(output_path.exists());
 

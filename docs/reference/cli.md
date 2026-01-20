@@ -31,13 +31,13 @@ Options:
 Calculate callable sites from depth statistics.
 
 ```
-Usage: clam loci [OPTIONS] --output <OUTPUT> <INPUT>...
+Usage: clam loci [OPTIONS] --output <OUTPUT> [INPUT]...
 ```
 
 ### Arguments
 
-`<INPUT>...`
-:   Input depth files. Accepts D4 files (bgzipped and indexed), merged D4 files, GVCF files (bgzipped and tabix indexed), or a Zarr store from `clam collect`.
+`[INPUT]...`
+:   Input depth files. Accepts D4 files (bgzipped and indexed), GVCF files (bgzipped and tabix indexed), or a Zarr store from `clam collect`. Not required if using `--samples`.
 
 ### Required Options
 
@@ -88,10 +88,13 @@ Usage: clam loci [OPTIONS] --output <OUTPUT> <INPUT>...
 `--include-file <INCLUDE_FILE>`
 :   Path to file with chromosomes to include, one per line.
 
-### Population Options
+### Sample Input Options
+
+`-s, --samples <SAMPLES>`
+:   Path to samples TSV file specifying sample names, file paths, and optionally populations. See [Input Formats](input-formats.md#samples-file). When provided, positional input files are not allowed.
 
 `-p, --population-file <POPULATION_FILE>`
-:   Path to file that defines populations. Tab-separated with columns: sample, population_name. See [Input Formats](input-formats.md#population-file).
+:   **(Deprecated)** Path to file that defines populations. Use `--samples` instead. See [Input Formats](input-formats.md#population-file).
 
 ### Performance Options
 
@@ -107,7 +110,10 @@ Usage: clam loci [OPTIONS] --output <OUTPUT> <INPUT>...
 # Basic usage with D4 files
 clam loci -o callable.zarr -m 10 -M 100 sample1.d4.gz sample2.d4.gz
 
-# With population file and 80% callability threshold
+# Using samples file (recommended for explicit sample naming)
+clam loci -o callable.zarr -m 10 --samples samples.tsv
+
+# With population file and 80% callability threshold (deprecated)
 clam loci -o callable.zarr -m 10 -d 0.8 -p populations.tsv *.d4.gz
 
 # Using GVCF input with GQ filter
@@ -216,13 +222,13 @@ clam stat -o results/ -w 10000 -c callable.zarr -x chrM variants.vcf.gz
 Collect depth from multiple files into a Zarr store. Use this when you want to run `clam loci` multiple times with different threshold parameters.
 
 ```
-Usage: clam collect [OPTIONS] --output <OUTPUT> <INPUT>...
+Usage: clam collect [OPTIONS] --output <OUTPUT> [INPUT]...
 ```
 
 ### Arguments
 
-`<INPUT>...`
-:   Input depth files. Accepts D4 files (bgzipped and indexed), merged D4 files, or GVCF files (bgzipped and tabix indexed).
+`[INPUT]...`
+:   Input depth files. Accepts D4 files (bgzipped and indexed) or GVCF files (bgzipped and tabix indexed). Not required if using `--samples`.
 
 ### Required Options
 
@@ -233,6 +239,11 @@ Usage: clam collect [OPTIONS] --output <OUTPUT> <INPUT>...
 
 `--min-gq <MIN_GQ>`
 :   Minimum genotype quality (GQ) to count depth. Only applies to GVCF input.
+
+### Sample Input Options
+
+`-s, --samples <SAMPLES>`
+:   Path to samples TSV file specifying sample names and file paths. See [Input Formats](input-formats.md#samples-file). When provided, positional input files are not allowed.
 
 ### Chromosome Filtering
 
@@ -262,6 +273,9 @@ Usage: clam collect [OPTIONS] --output <OUTPUT> <INPUT>...
 # Collect depth from D4 files
 clam collect -o depths.zarr -t 8 *.d4.gz
 
+# Using samples file (recommended for explicit sample naming)
+clam collect -o depths.zarr --samples samples.tsv
+
 # Collect from GVCFs with GQ filter
 clam collect -o depths.zarr --min-gq 20 *.g.vcf.gz
 
@@ -280,7 +294,8 @@ These options are available across multiple commands:
 | Option | Description | Commands |
 |--------|-------------|----------|
 | `-t, --threads` | Number of threads for parallel processing | all |
-| `-p, --population-file` | Population definitions file | `loci`, `stat` |
+| `-s, --samples` | Samples TSV file with sample names and file paths | `loci`, `collect` |
+| `-p, --population-file` | Population definitions file (deprecated, use `--samples`) | `loci`, `stat` |
 | `-x, --exclude` | Chromosomes to exclude (comma-separated) | all |
 | `--exclude-file` | File with chromosomes to exclude | all |
 | `-i, --include` | Chromosomes to include (comma-separated) | all |

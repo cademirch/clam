@@ -29,14 +29,9 @@ bgzip --index sample.per-base.d4
 
 **Sample name extraction:**
 
-clam extracts sample names from D4 filenames. For a file named `sample1.per-base.d4.gz`, the sample name is `sample1`.
+When using positional arguments, clam extracts sample names from D4 filenames. For a file named `sample1.per-base.d4.gz`, the sample name is `sample1` (the part before the first `.`).
 
-### Merged D4 Files
-
-A merged D4 file contains depth information for multiple samples in a single file. clam automatically detects merged D4 files and extracts all sample names from the file header.
-
-!!! warning "Merged D4 files must not be bgzipped"
-    Unlike single-sample D4 files, merged D4 files should remain uncompressed.
+To use explicit sample names instead, use the `--samples` option with a [samples file](#samples-file).
 
 ### GVCF Files
 
@@ -56,7 +51,9 @@ tabix -p vcf sample.g.vcf.gz
 
 **Sample name extraction:**
 
-Sample names are extracted from the filename. For a file named `sample1.g.vcf.gz`, the sample name is `sample1`.
+When using positional arguments, sample names are extracted from the filename. For a file named `sample1.g.vcf.gz`, the sample name is `sample1` (the part before the first `.`).
+
+To use explicit sample names instead, use the `--samples` option with a [samples file](#samples-file).
 
 ---
 
@@ -71,7 +68,59 @@ For `clam stat`, input VCF files must be bgzipped and tabix indexed.
 
 ---
 
+## Samples File
+
+Specifies sample names, input file paths, and optionally population assignments. This is the recommended way to provide input to `clam loci` and `clam collect` as it allows explicit control over sample naming.
+
+**Format:** Tab-separated with header. The `sample_name` and `file_path` columns are required; `population` is optional.
+
+| Column        | Required | Description                     |
+| ------------- | -------- | ------------------------------- |
+| `sample_name` | Yes      | Unique sample identifier        |
+| `file_path`   | Yes      | Path to depth file (D4 or GVCF) |
+| `population`  | No       | Population assignment           |
+
+**Example with populations:**
+
+```
+sample_name	file_path	population
+sample1	/path/to/sample1.d4.gz	PopA
+sample2	/path/to/sample2.d4.gz	PopA
+sample3	/path/to/sample3.d4.gz	PopB
+sample4	/path/to/sample4.d4.gz	PopB
+```
+
+**Example without populations:**
+
+```
+sample_name	file_path
+sample1	/path/to/abc.sample1.d4.gz
+sample2	/path/to/abc.sample2.d4.gz
+sample3	/path/to/abc.sample3.d4.gz
+```
+
+**Notes:**
+
+- Column order doesn't matter (detected from header)
+- Sample names must be unique
+- If the `population` column is present, all rows must have values
+- If the `population` column is absent, all samples are assigned to a "default" population
+- File paths can be absolute or relative to the current working directory
+- Use this format when filenames don't match desired sample names (e.g., files named `abc.sample1.d4.gz` but you want sample name `sample1`)
+
+**Usage:**
+
+```bash
+clam loci -o callable.zarr -m 10 --samples samples.tsv
+clam collect -o depths.zarr --samples samples.tsv
+```
+
+---
+
 ## Population File
+
+!!! warning "Deprecated"
+    The `--population-file` option is deprecated. Use `--samples` with a `population` column instead.
 
 Defines which samples belong to which population. Used by both `clam loci` and `clam stat`.
 
@@ -96,7 +145,7 @@ sample6	PopC
 **Notes:**
 
 - Sample names must exactly match those in your input files
-- For D4 files, sample names are derived from filenames
+- For D4 files, sample names are derived from filenames (the part before the first `.`)
 - For VCF/GVCF files, sample names come from the file header
 - Each sample should appear exactly once
 - Population names can be any string (no spaces)
@@ -250,10 +299,10 @@ chr2	38814	46588
 | File Type | Extension | Index Required | Used By |
 |-----------|-----------|----------------|---------|
 | D4 depth | `.d4` or `.d4.gz` | `.d4.gz.gzi` (if compressed) | `loci`, `collect` |
-| Merged D4 | `.d4` (uncompressed only) | No | `loci`, `collect` |
 | GVCF | `.g.vcf.gz` | `.g.vcf.gz.tbi` | `loci`, `collect` |
 | VCF | `.vcf.gz` | `.vcf.gz.tbi` | `stat` |
-| Population | `.tsv` | No | `loci`, `stat` |
+| Samples | `.tsv` | No | `loci`, `collect` |
+| Population | `.tsv` | No | `loci`, `stat` (deprecated for `loci`) |
 | Chromosome list | `.txt` | No | `loci`, `stat`, `collect` |
 | Thresholds | `.tsv` | No | `loci` |
 | ROH | `.bed.gz` | `.bed.gz.tbi` | `stat` |

@@ -5,11 +5,11 @@ use color_eyre::{
 use indexmap::IndexMap;
 use log::warn;
 use ndarray::Array2;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::File;
-use std::path::Path;
-use serde::Serialize;
+use std::path::{Path, PathBuf};
 
 /// A single population with its samples
 #[derive(Debug, Clone, Serialize)]
@@ -268,5 +268,234 @@ impl PopulationMap {
             .filter(|(_, s)| self.sample_lookup.contains_key(*s))
             .map(|(idx, _)| idx)
             .collect()
+    }
+}
+
+/// Row from samples TSV file (for serde deserialization)
+#[derive(Debug, Clone, Deserialize)]
+struct SampleRow {
+    sample_name: String,
+    file_path: String,
+    #[serde(default)]
+    population: Option<String>,
+}
+
+/// Entry from samples TSV file
+#[derive(Debug, Clone)]
+pub struct SampleEntry {
+    pub sample_name: String,
+    pub file_path: PathBuf,
+    pub population: Option<String>,
+}
+
+/// Unified samples configuration from --samples TSV
+///
+/// TSV format (with header):
+/// ```text
+/// sample_name    file_path    population
+/// sample1        /path/to/sample1.d4.gz    pop_A
+/// sample2        /path/to/sample2.d4.gz    pop_B
+/// ```
+///
+/// - `sample_name` column is required
+/// - `file_path` column is required
+/// - `population` column is optional; if present, ALL rows must have values; if absent, all samples assigned to "default" population
+#[derive(Debug, Clone)]
+pub struct SamplesConfig {
+    entries: Vec<SampleEntry>,
+    has_populations: bool,
+}
+
+impl SamplesConfig {
+    /// Parse from a TSV file with header row
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        let file = File::open(path)
+            .wrap_err_with(|| format!("Failed to open samples file: {}", path.display()))?;
+
+        let mut reader = csv::ReaderBuilder::new()
+            .delimiter(b'\t')
+            .has_headers(true)
+            .flexible(true)
+            .from_reader(file);
+
+        // Verify required columns exist
+        let headers = reader.headers().wrap_err("Failed to read header row")?;
+        if !headers.iter().any(|h| h == "sample_name") {
+            bail!("Missing required 'sample_name' column in header");
+        }
+        if !headers.iter().any(|h| h == "file_path") {
+            bail!("Missing required 'file_path' column in header");
+        }
+
+        let mut entries = Vec::new();
+        let mut seen_samples: HashSet<String> = HashSet::new();
+        let mut seen_filenames: HashMap<String, String> = HashMap::new();
+
+        for (line_num, result) in reader.deserialize().enumerate() {
+            let row: SampleRow = result
+                .wrap_err_with(|| format!("Failed to parse line {} in samples file", line_num + 2))?;
+
+            if row.sample_name.is_empty() {
+                bail!("Empty sample_name on line {}", line_num + 2);
+            }
+
+            if row.file_path.is_empty() {
+                bail!("Empty file_path on line {}", line_num + 2);
+            }
+
+            // Check for duplicate sample names
+            if seen_samples.contains(&row.sample_name) {
+                bail!(
+                    "Duplicate sample name '{}' on line {}",
+                    row.sample_name,
+                    line_num + 2
+                );
+            }
+            seen_samples.insert(row.sample_name.clone());
+
+            // Convert file_path and check for duplicate filenames
+            let file_path = PathBuf::from(&row.file_path);
+            if let Some(filename) = file_path.file_name().and_then(|f| f.to_str()) {
+                if let Some(existing) = seen_filenames.get(filename) {
+                    bail!(
+                        "Duplicate filename '{}' for samples '{}' and '{}'",
+                        filename,
+                        existing,
+                        row.sample_name
+                    );
+                }
+                seen_filenames.insert(filename.to_string(), row.sample_name.clone());
+            }
+
+            // Handle empty string as None for population
+            let population = row.population.filter(|p| !p.is_empty());
+
+            entries.push(SampleEntry {
+                sample_name: row.sample_name,
+                file_path,
+                population,
+            });
+        }
+
+        if entries.is_empty() {
+            bail!("Samples file is empty (no data rows)");
+        }
+
+        // Validate consistency: if any entry has population, all must have it
+        let has_populations = entries.iter().any(|e| e.population.is_some());
+        if has_populations && entries.iter().any(|e| e.population.is_none()) {
+            bail!("If population column has values, ALL rows must have population values");
+        }
+
+        Ok(Self {
+            entries,
+            has_populations,
+        })
+    }
+
+    /// Create from file paths, deriving sample names from filename prefixes.
+    /// Used for legacy positional args path.
+    pub fn from_paths(paths: Vec<PathBuf>) -> Result<Self> {
+        use color_eyre::Help;
+
+        let mut entries = Vec::new();
+        let mut seen_samples: HashSet<String> = HashSet::new();
+        let mut seen_filenames: HashMap<String, String> = HashMap::new();
+
+        for path in paths {
+            let sample_name = path
+                .file_prefix()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| {
+                    color_eyre::eyre::eyre!("Could not extract sample name from path: {}", path.display())
+                })
+                .suggestion(
+                    "Sample names are derived from file prefixes (e.g., 'sample' from 'sample.d4.gz')",
+                )?;
+
+            if !seen_samples.insert(sample_name.clone()) {
+                bail!(
+                    "Duplicate sample name '{}' derived from paths",
+                    sample_name
+                );
+            }
+
+            // Check for duplicate filenames
+            if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+                if let Some(existing) = seen_filenames.get(filename) {
+                    bail!(
+                        "Duplicate filename '{}' for samples '{}' and '{}'",
+                        filename,
+                        existing,
+                        sample_name
+                    );
+                }
+                seen_filenames.insert(filename.to_string(), sample_name.clone());
+            }
+
+            entries.push(SampleEntry {
+                sample_name,
+                file_path: path,
+                population: None,
+            });
+        }
+
+        if entries.is_empty() {
+            bail!("No input files provided");
+        }
+
+        Ok(Self {
+            entries,
+            has_populations: false,
+        })
+    }
+
+    /// Get ordered sample names
+    pub fn sample_names(&self) -> Vec<String> {
+        self.entries.iter().map(|e| e.sample_name.clone()).collect()
+    }
+
+    /// Get file paths
+    pub fn file_paths(&self) -> Vec<PathBuf> {
+        self.entries.iter().map(|e| e.file_path.clone()).collect()
+    }
+
+    /// Check if population column is present and populated
+    pub fn has_populations(&self) -> bool {
+        self.has_populations
+    }
+
+    /// Convert to PopulationMap
+    /// If no population column, all samples are assigned to "default" population
+    pub fn to_population_map(&self) -> PopulationMap {
+        let mut pop_data: IndexMap<String, Vec<String>> = IndexMap::new();
+
+        if self.has_populations {
+            for entry in &self.entries {
+                let pop_name = entry.population.as_ref().unwrap();
+                pop_data
+                    .entry(pop_name.clone())
+                    .or_default()
+                    .push(entry.sample_name.clone());
+            }
+        } else {
+            // All samples in "default" population
+            let all_samples: Vec<String> = self.entries.iter().map(|e| e.sample_name.clone()).collect();
+            pop_data.insert("default".to_string(), all_samples);
+        }
+
+        PopulationMap::from_populations(pop_data).expect("Population map should be valid")
+    }
+
+    /// Get number of samples
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 }
