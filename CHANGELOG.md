@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/cademirch/clam/compare/v1.1.0...v1.1.1) (2026-02-06)
+
+
+### Bug Fixes
+
+* use --samples in stat ([#38](https://github.com/cademirch/clam/issues/38)) ([bf0c804](https://github.com/cademirch/clam/commit/bf0c804acd8737af3807e0f58a70d807f086be34))
+
 ## [1.1.0](https://github.com/cademirch/clam/compare/v1.0.0...v1.1.0) (2026-01-20)
 
 
