@@ -47,7 +47,7 @@ pub struct StatConfig {
 impl StatConfig {
     pub fn new(
         vcf_path: PathBuf,
-        pop_file: Option<PathBuf>,
+        pop_map: Option<PopulationMap>,
         callable_zarr: Option<PathBuf>,
         roh_bed: Option<PathBuf>,
         window_strategy: WindowStrategy,
@@ -68,26 +68,28 @@ impl StatConfig {
             .map(|s| s.to_string())
             .collect();
 
-        // Warn if force_samples is used without population file
-        if force_samples && pop_file.is_none() {
-            warn!("--force-samples has no effect without --population-file");
+        let has_populations = pop_map.is_some();
+
+        // Warn if force_samples is used without populations
+        if force_samples && !has_populations {
+            warn!("--force-samples has no effect without populations specified.");
         }
 
-        spinner.set_message("Loading population file...");
-        let has_pop_file = pop_file.is_some();
-        let pop_map = if let Some(pop_file_path) = pop_file {
-            let pop_map = PopulationMap::from_file(pop_file_path)?;
-            pop_map.validate_exact_match(&vcf_samples, force_samples)?;
-            pop_map
+        spinner.set_message("Loading populations...");
+        let pop_map = if let Some(pm) = pop_map {
+            pm.validate_exact_match(&vcf_samples, force_samples)?;
+            pm
         } else {
             PopulationMap::default_from_samples(vcf_samples.clone())
         };
 
         // Filter samples when force_samples is enabled with a population file
-        let (analysis_samples, sample_filter_indices) = if force_samples && has_pop_file {
+        let (analysis_samples, sample_filter_indices) = if force_samples && has_populations {
             let filtered = pop_map.filter_samples(&vcf_samples);
             if filtered.is_empty() {
-                bail!("No samples from VCF found in population file. Cannot proceed with analysis.");
+                bail!(
+                    "No samples from VCF found in population file. Cannot proceed with analysis."
+                );
             }
             let indices = pop_map.filter_sample_indices(&vcf_samples);
             (filtered, Some(indices))
@@ -183,7 +185,8 @@ impl StatConfig {
 
     /// Create a VcfQuery for processing a specific genomic chunk
     pub fn create_query(&self, chunk: &ContigChunk) -> Result<VcfQuery> {
-        let start = Position::try_from((chunk.start+1) as usize).wrap_err("Invalid start position")?;
+        let start =
+            Position::try_from((chunk.start + 1) as usize).wrap_err("Invalid start position")?;
         let end = Position::try_from(chunk.end as usize).wrap_err("Invalid end position")?;
 
         let query_region = Region::new(chunk.contig_name.clone(), start..=end);
@@ -191,11 +194,9 @@ impl StatConfig {
         let window_index = self.window_strategy.create_index(&query_region);
 
         let callable_loci = match (&self.callable_zarr_path, self.callable_loci_type) {
-            (Some(zarr_path), Some(CallableLociType::SampleMasks)) => {
-                Some(super::vcf::query::CallableData::SampleMasks(
-                    SampleMaskArrays::open(zarr_path)?,
-                ))
-            }
+            (Some(zarr_path), Some(CallableLociType::SampleMasks)) => Some(
+                super::vcf::query::CallableData::SampleMasks(SampleMaskArrays::open(zarr_path)?),
+            ),
             (Some(zarr_path), _) => {
                 // Default to PopulationCounts for backward compatibility
                 Some(super::vcf::query::CallableData::PopulationCounts(
@@ -217,7 +218,9 @@ impl StatConfig {
                     // "missing reference sequence name" occurs when contig isn't in tabix index
                     if let Some(io_err) = e.root_cause().downcast_ref::<io::Error>() {
                         if io_err.kind() == io::ErrorKind::InvalidInput
-                            && io_err.to_string().contains("missing reference sequence name")
+                            && io_err
+                                .to_string()
+                                .contains("missing reference sequence name")
                         {
                             None
                         } else {

@@ -58,11 +58,7 @@ fn read_populations_from_zarr(zarr_path: &Path) -> Result<Vec<(String, Vec<Strin
 }
 
 /// Helper to compare zarr output against D4 truth file
-fn compare_zarr_to_d4_truth(
-    zarr: &CallableArrays,
-    truth_d4_path: &str,
-    chrom: &str,
-) -> Result<()> {
+fn compare_zarr_to_d4_truth(zarr: &CallableArrays, truth_d4_path: &str, chrom: &str) -> Result<()> {
     // Get track names from D4 (should be Pop1, Pop2)
     let mut d4_tracks: Vec<PathBuf> = vec![];
     find_tracks_in_file(truth_d4_path, |_| true, &mut d4_tracks)?;
@@ -107,10 +103,8 @@ fn compare_zarr_to_d4_truth(
             let chunk_data = zarr.read_chunk(chrom, chunk_idx, None)?;
             // Extract column for this population, but only up to chrom_length
             let chunk_start = (chunk_idx * chunk_size) as usize;
-            let rows_to_read = std::cmp::min(
-                chunk_data.nrows(),
-                chrom_length.saturating_sub(chunk_start),
-            );
+            let rows_to_read =
+                std::cmp::min(chunk_data.nrows(), chrom_length.saturating_sub(chunk_start));
             for row in 0..rows_to_read {
                 zarr_values.push(chunk_data[[row, pop_idx]]);
             }
@@ -127,8 +121,7 @@ fn compare_zarr_to_d4_truth(
         );
 
         // Compare values position by position
-        for (pos, (zarr_val, truth_val)) in
-            zarr_values.iter().zip(truth_values.iter()).enumerate()
+        for (pos, (zarr_val, truth_val)) in zarr_values.iter().zip(truth_values.iter()).enumerate()
         {
             assert_eq!(
                 *zarr_val as u32, *truth_val,
@@ -212,7 +205,8 @@ fn compare_sample_masks_to_d4_truth(
     for chunk_idx in 0..num_chunks {
         let chunk_data = zarr.read_chunk(chrom, chunk_idx, None)?;
         let chunk_start = (chunk_idx * chunk_size) as usize;
-        let rows_to_read = std::cmp::min(chunk_data.nrows(), chrom_length.saturating_sub(chunk_start));
+        let rows_to_read =
+            std::cmp::min(chunk_data.nrows(), chrom_length.saturating_sub(chunk_start));
 
         for row in 0..rows_to_read {
             let pos = chunk_start + row;
@@ -317,6 +311,109 @@ fn test_stat_with_gatk_vcf() -> Result<()> {
     Ok(())
 }
 
+/// Regression test: `clam stat --samples` should use population assignments from
+/// the samples TSV. Previously, only `--population-file` was wired up for stat,
+/// so `--samples` silently treated all samples as a single "default" population,
+/// producing no dxy.tsv or fst.tsv output.
+#[test]
+fn test_stat_samples_flag_uses_populations() -> Result<()> {
+    color_eyre::install().ok();
+
+    let temp_dir = TempDir::new()?;
+    let output_dir = temp_dir.path().join("stat_output");
+    let callable_zarr = temp_dir.path().join("callable.zarr");
+
+    // Create callable sites zarr from gVCF files (using legacy -p flag, since
+    // loci needs file_path which we provide via positional args)
+    let gvcf_files: Vec<String> = glob("tests/data/integration/gvcf/*.g.vcf.gz")?
+        .filter_map(|p| p.ok())
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+
+    let mut cmd = Command::cargo_bin("clam")?;
+    cmd.arg("loci")
+        .args(&gvcf_files)
+        .arg("-o")
+        .arg(&callable_zarr)
+        .arg("-p")
+        .arg("tests/data/integration/popmap.txt")
+        .arg("--min-depth")
+        .arg("2")
+        .arg("--min-gq")
+        .arg("10");
+
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "clam loci failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Write a --samples TSV with population info but NO file_path column
+    // (stat doesn't need file paths, only sample->population mapping)
+    let samples_tsv = temp_dir.path().join("samples.tsv");
+    {
+        use std::io::Write;
+        let mut f = File::create(&samples_tsv)?;
+        writeln!(f, "sample_name\tpopulation")?;
+        for i in 0..10 {
+            writeln!(f, "Pop1_sample_{}\tPop1", i)?;
+        }
+        for i in 0..10 {
+            writeln!(f, "Pop2_sample_{}\tPop2", i)?;
+        }
+    }
+
+    // Run clam stat using --samples instead of -p
+    let mut cmd = Command::cargo_bin("clam")?;
+    cmd.arg("stat")
+        .arg("tests/data/integration/gatk.varsonly.vcf.gz")
+        .arg("-o")
+        .arg(&output_dir)
+        .arg("-c")
+        .arg(&callable_zarr)
+        .arg("-s")
+        .arg(&samples_tsv)
+        .arg("-w")
+        .arg("10000");
+
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "clam stat failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The key regression check: dxy.tsv and fst.tsv must exist.
+    // Before the fix, --samples was ignored and all samples were treated as
+    // a single population, so these files were never produced.
+    assert!(
+        output_dir.join("dxy.tsv").exists(),
+        "dxy.tsv missing -- populations from --samples were not used"
+    );
+    assert!(
+        output_dir.join("fst.tsv").exists(),
+        "fst.tsv missing -- populations from --samples were not used"
+    );
+
+    // Verify values match the same truth data as the -p test
+    let float_tolerance = 0.001;
+
+    let output_pi = parse_pi_tsv(&output_dir.join("pi.tsv").to_string_lossy())?;
+    let truth_pi = parse_pi_tsv("tests/data/integration/truth/gatk/clam_pi.tsv")?;
+    compare_stat_values(&output_pi, &truth_pi, "pi", float_tolerance)?;
+
+    let output_dxy = parse_pairwise_tsv(&output_dir.join("dxy.tsv").to_string_lossy(), 5)?;
+    let truth_dxy = parse_pairwise_tsv("tests/data/integration/truth/gatk/clam_dxy.tsv", 5)?;
+    compare_stat_values(&output_dxy, &truth_dxy, "dxy", float_tolerance)?;
+
+    let output_fst = parse_pairwise_tsv(&output_dir.join("fst.tsv").to_string_lossy(), 5)?;
+    let truth_fst = parse_pairwise_tsv("tests/data/integration/truth/gatk/clam_fst.tsv", 5)?;
+    compare_stat_values(&output_fst, &truth_fst, "fst", float_tolerance)?;
+
+    Ok(())
+}
+
 #[test]
 fn test_stat_with_bcftools_vcf() -> Result<()> {
     color_eyre::install().ok();
@@ -389,7 +486,6 @@ fn test_stat_with_bcftools_vcf() -> Result<()> {
     Ok(())
 }
 
-
 /// Parse pi TSV and extract window -> pi value mapping
 fn parse_pi_tsv(path: &str) -> Result<std::collections::HashMap<WindowKey, f64>> {
     let file = File::open(path)?;
@@ -440,7 +536,10 @@ fn parse_pi_tsv(path: &str) -> Result<std::collections::HashMap<WindowKey, f64>>
 }
 
 /// Parse dxy/fst TSV and extract window -> value mapping
-fn parse_pairwise_tsv(path: &str, value_col: usize) -> Result<std::collections::HashMap<WindowKey, f64>> {
+fn parse_pairwise_tsv(
+    path: &str,
+    value_col: usize,
+) -> Result<std::collections::HashMap<WindowKey, f64>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let mut map = std::collections::HashMap::new();
@@ -565,12 +664,11 @@ fn parse_heterozygosity_tsv(path: &str) -> Result<std::collections::HashMap<HetK
         let population = fields[*header_indices.get("population").unwrap()].to_string();
 
         // Sample is optional (only in per-sample mode)
-        let sample = header_indices
-            .get("sample")
-            .map(|&i| fields[i].to_string());
+        let sample = header_indices.get("sample").map(|&i| fields[i].to_string());
 
         let het_total = fields[*header_indices.get("het_total").unwrap()].parse::<usize>()?;
-        let callable_total = fields[*header_indices.get("callable_total").unwrap()].parse::<usize>()?;
+        let callable_total =
+            fields[*header_indices.get("callable_total").unwrap()].parse::<usize>()?;
         let heterozygosity = fields[*header_indices.get("heterozygosity").unwrap()]
             .parse::<f64>()
             .unwrap_or(f64::NAN);
@@ -639,7 +737,10 @@ fn compare_heterozygosity_values(
                 assert!(
                     diff <= tolerance,
                     "heterozygosity mismatch for {:?}: output={}, truth={}, diff={}",
-                    truth_key, output_val.heterozygosity, truth_val.heterozygosity, diff
+                    truth_key,
+                    output_val.heterozygosity,
+                    truth_val.heterozygosity,
+                    diff
                 );
             }
 
@@ -655,9 +756,10 @@ fn compare_heterozygosity_values(
             }
 
             // Compare callable_not_in_roh exactly
-            if let (Some(out_call), Some(truth_call)) =
-                (output_val.callable_not_in_roh, truth_val.callable_not_in_roh)
-            {
+            if let (Some(out_call), Some(truth_call)) = (
+                output_val.callable_not_in_roh,
+                truth_val.callable_not_in_roh,
+            ) {
                 assert_eq!(
                     out_call, truth_call,
                     "callable_not_in_roh mismatch for {:?}: output={}, truth={}",
@@ -674,7 +776,10 @@ fn compare_heterozygosity_values(
                     assert!(
                         diff <= tolerance,
                         "heterozygosity_not_in_roh mismatch for {:?}: output={}, truth={}, diff={}",
-                        truth_key, out_het_rate, truth_het_rate, diff
+                        truth_key,
+                        out_het_rate,
+                        truth_het_rate,
+                        diff
                     );
                 }
             }
@@ -721,7 +826,11 @@ fn test_loci_gvcf_with_populations() -> Result<()> {
 
     // Compare output to truth
     let zarr = CallableArrays::open(&output_zarr)?;
-    compare_zarr_to_d4_truth(&zarr, "tests/data/integration/gvcf/callable_sites.d4", "chr2l")?;
+    compare_zarr_to_d4_truth(
+        &zarr,
+        "tests/data/integration/gvcf/callable_sites.d4",
+        "chr2l",
+    )?;
 
     // Verify population metadata is stored correctly
     let populations = read_populations_from_zarr(&output_zarr)?;
@@ -771,7 +880,11 @@ fn test_loci_d4_with_populations() -> Result<()> {
 
     // Compare output to truth
     let zarr = CallableArrays::open(&output_zarr)?;
-    compare_zarr_to_d4_truth(&zarr, "tests/data/integration/d4/callable_sites.d4", "chr2l")?;
+    compare_zarr_to_d4_truth(
+        &zarr,
+        "tests/data/integration/d4/callable_sites.d4",
+        "chr2l",
+    )?;
 
     // Verify population metadata is stored correctly
     let populations = read_populations_from_zarr(&output_zarr)?;
@@ -977,8 +1090,11 @@ fn test_stat_heterozygosity_with_sample_masks() -> Result<()> {
 
     // Compare heterozygosity output to truth
     let float_tolerance = 1e-10; // Floating point tolerance
-    let output_het = parse_heterozygosity_tsv(&output_dir.join("heterozygosity.tsv").to_string_lossy())?;
-    let truth_het = parse_heterozygosity_tsv("tests/data/integration/truth/gatk/clam_heterozygosity_sample_masks.tsv")?;
+    let output_het =
+        parse_heterozygosity_tsv(&output_dir.join("heterozygosity.tsv").to_string_lossy())?;
+    let truth_het = parse_heterozygosity_tsv(
+        "tests/data/integration/truth/gatk/clam_heterozygosity_sample_masks.tsv",
+    )?;
     compare_heterozygosity_values(&output_het, &truth_het, float_tolerance)?;
 
     Ok(())
@@ -1041,8 +1157,11 @@ fn test_stat_heterozygosity_with_pop_counts() -> Result<()> {
 
     // Compare heterozygosity output to truth
     let float_tolerance = 1e-10; // Floating point tolerance
-    let output_het = parse_heterozygosity_tsv(&output_dir.join("heterozygosity.tsv").to_string_lossy())?;
-    let truth_het = parse_heterozygosity_tsv("tests/data/integration/truth/gatk/clam_heterozygosity_pop_counts.tsv")?;
+    let output_het =
+        parse_heterozygosity_tsv(&output_dir.join("heterozygosity.tsv").to_string_lossy())?;
+    let truth_het = parse_heterozygosity_tsv(
+        "tests/data/integration/truth/gatk/clam_heterozygosity_pop_counts.tsv",
+    )?;
     compare_heterozygosity_values(&output_het, &truth_het, float_tolerance)?;
 
     Ok(())

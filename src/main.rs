@@ -29,7 +29,7 @@ pub struct SharedOptions {
     #[arg(short = 't', long = "threads", default_value_t = 1)]
     pub threads: usize,
 
-    /// Path to samples TSV file (with header). Columns: sample_name, file_path (both required), population (optional).
+    /// Path to samples TSV file (with header). Columns: sample_name (required), file_path (required for loci/collect), population (optional).
     /// When provided, input files are read from the TSV instead of positional arguments.
     #[arg(short = 's', long = "samples", conflicts_with = "population_file")]
     pub samples: Option<PathBuf>,
@@ -236,7 +236,7 @@ impl CollectArgs {
             if !self.input.is_empty() {
                 bail!("Cannot provide input files when using --samples");
             }
-            SamplesConfig::from_file(samples_path)?
+            SamplesConfig::from_file(samples_path, true)?
         } else {
             if self.input.is_empty() {
                 bail!("Must provide input files or use --samples");
@@ -285,7 +285,7 @@ impl LociArgs {
             if !self.input.is_empty() {
                 bail!("Cannot provide input files when using --samples");
             }
-            SamplesConfig::from_file(samples_path)?
+            SamplesConfig::from_file(samples_path, true)?
         } else {
             if self.input.is_empty() {
                 bail!("Must provide input files or use --samples");
@@ -304,7 +304,13 @@ impl LociArgs {
         // Check for Zarr input (single zarr path)
         if config.file_paths().len() == 1 && is_zarr_path(&config.file_paths()[0]) {
             let zarr = &config.file_paths()[0];
-            run_loci_zarr(zarr.to_path_buf(), self.output, pop_map, thresholds, self.per_sample)
+            run_loci_zarr(
+                zarr.to_path_buf(),
+                self.output,
+                pop_map,
+                thresholds,
+                self.per_sample,
+            )
         } else {
             run_loci(
                 &config,
@@ -321,11 +327,13 @@ impl LociArgs {
 
 impl StatArgs {
     pub fn run(self) -> Result<()> {
+        use clam::core::population::{PopulationMap, SamplesConfig};
         use clam::core::zarr::is_zarr_path;
         use clam::stat::config::StatConfig;
         use clam::stat::run_stat;
         use clam::stat::utils::read_bed_regions;
         use clam::stat::windows::WindowStrategy;
+        use log::warn;
 
         self.shared.initialize_threading()?;
 
@@ -355,9 +363,20 @@ impl StatArgs {
             }
         }
 
+        // Build Option<PopulationMap> from --samples or --population-file
+        let pop_map = if let Some(ref samples_path) = self.shared.samples {
+            let config = SamplesConfig::from_file(samples_path, false)?;
+            Some(config.to_population_map())
+        } else if let Some(ref pop_file) = self.shared.population_file {
+            warn!("--population-file is deprecated; use --samples instead");
+            Some(PopulationMap::from_file(pop_file)?)
+        } else {
+            None
+        };
+
         let config = StatConfig::new(
             self.vcf,
-            self.shared.population_file,
+            pop_map,
             self.callable,
             self.roh,
             window_strategy,
