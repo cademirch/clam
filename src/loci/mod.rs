@@ -65,7 +65,7 @@ fn process_sample_masks(
         processor.reference_contigs().clone(),
         processor.sample_names().to_vec(),
         chunk_size,
-        Some(pop_map.populations_owned())
+        Some(pop_map.populations_owned()),
     )?;
 
     processor.process_chunks(chunk_size, |chunk, depths, sample_names| {
@@ -93,7 +93,7 @@ fn process_population_counts(
         processor.reference_contigs().clone(),
         population_names,
         chunk_size,
-        Some(pop_map.populations_owned())
+        Some(pop_map.populations_owned()),
     )?;
 
     let pop_membership = build_pop_membership(processor.sample_names(), &pop_map);
@@ -150,14 +150,14 @@ fn process_sample_masks_zarr(
     output_path: PathBuf,
     thresholds: ThresholdConfig,
     chunk_size: u64,
-    pop_map: PopulationMap
+    pop_map: PopulationMap,
 ) -> Result<SampleMaskArrays> {
     let output_zarr = SampleMaskArrays::create_new(
         output_path,
         input_zarr.contigs().clone(),
         input_zarr.column_names().to_vec(),
         chunk_size,
-        Some(pop_map.populations_owned())
+        Some(pop_map.populations_owned()),
     )?;
 
     let sample_names = input_zarr.column_names().to_vec();
@@ -211,7 +211,7 @@ fn process_population_counts_zarr(
         input_zarr.contigs().clone(),
         population_names,
         chunk_size,
-        Some(pop_map.populations_owned())
+        Some(pop_map.populations_owned()),
     )?;
 
     let pop_membership = build_pop_membership(input_zarr.column_names(), &pop_map);
@@ -316,9 +316,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_two_samples(
-        #[values((0.0, 2), (21.0, 0))] threshold_expected: (f64, u8),
-    ) {
+    fn test_two_samples(#[values((0.0, 2), (21.0, 0))] threshold_expected: (f64, u8)) {
         let (min_depth, _expected) = threshold_expected;
         let dir = TempDir::new().unwrap();
         let output_path = dir.path().join("callable.zarr");
@@ -531,7 +529,7 @@ mod tests {
         .unwrap();
 
         // Method 2: from_file (includes population in TSV)
-        let config_from_file = SamplesConfig::from_file(&samples_tsv).unwrap();
+        let config_from_file = SamplesConfig::from_file(&samples_tsv, true).unwrap();
 
         let thresholds2 = ThresholdConfig {
             min_depth: 0.0,

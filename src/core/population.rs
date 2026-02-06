@@ -126,7 +126,11 @@ impl PopulationMap {
     ///
     /// If `force_samples` is true, samples in data but not in population file
     /// will be excluded from analysis (different warning message).
-    pub fn validate_exact_match(&self, available_samples: &[String], force_samples: bool) -> Result<()> {
+    pub fn validate_exact_match(
+        &self,
+        available_samples: &[String],
+        force_samples: bool,
+    ) -> Result<()> {
         let available: HashSet<_> = available_samples.iter().collect();
         let required: HashSet<_> = self.sample_lookup.keys().collect();
 
@@ -275,7 +279,8 @@ impl PopulationMap {
 #[derive(Debug, Clone, Deserialize)]
 struct SampleRow {
     sample_name: String,
-    file_path: String,
+    #[serde(default)]
+    file_path: Option<String>,
     #[serde(default)]
     population: Option<String>,
 }
@@ -284,7 +289,7 @@ struct SampleRow {
 #[derive(Debug, Clone)]
 pub struct SampleEntry {
     pub sample_name: String,
-    pub file_path: PathBuf,
+    pub file_path: Option<PathBuf>,
     pub population: Option<String>,
 }
 
@@ -298,7 +303,7 @@ pub struct SampleEntry {
 /// ```
 ///
 /// - `sample_name` column is required
-/// - `file_path` column is required
+/// - `file_path` column is required when `require_file_path` is true (e.g. for loci/collect), optional otherwise (e.g. for stat)
 /// - `population` column is optional; if present, ALL rows must have values; if absent, all samples assigned to "default" population
 #[derive(Debug, Clone)]
 pub struct SamplesConfig {
@@ -307,8 +312,12 @@ pub struct SamplesConfig {
 }
 
 impl SamplesConfig {
-    /// Parse from a TSV file with header row
-    pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
+    /// Parse from a TSV file with header row.
+    ///
+    /// When `require_file_path` is true, the `file_path` column must be present
+    /// and non-empty for every row. When false, it is optional (useful for
+    /// subcommands like `stat` that only need sample/population info).
+    pub fn from_file(path: impl AsRef<Path>, require_file_path: bool) -> Result<Self> {
         let path = path.as_ref();
         let file = File::open(path)
             .wrap_err_with(|| format!("Failed to open samples file: {}", path.display()))?;
@@ -324,7 +333,8 @@ impl SamplesConfig {
         if !headers.iter().any(|h| h == "sample_name") {
             bail!("Missing required 'sample_name' column in header");
         }
-        if !headers.iter().any(|h| h == "file_path") {
+        let has_file_path_column = headers.iter().any(|h| h == "file_path");
+        if require_file_path && !has_file_path_column {
             bail!("Missing required 'file_path' column in header");
         }
 
@@ -333,14 +343,18 @@ impl SamplesConfig {
         let mut seen_filenames: HashMap<String, String> = HashMap::new();
 
         for (line_num, result) in reader.deserialize().enumerate() {
-            let row: SampleRow = result
-                .wrap_err_with(|| format!("Failed to parse line {} in samples file", line_num + 2))?;
+            let row: SampleRow = result.wrap_err_with(|| {
+                format!("Failed to parse line {} in samples file", line_num + 2)
+            })?;
 
             if row.sample_name.is_empty() {
                 bail!("Empty sample_name on line {}", line_num + 2);
             }
 
-            if row.file_path.is_empty() {
+            // Normalize empty file_path to None
+            let file_path_str = row.file_path.filter(|p| !p.is_empty());
+
+            if require_file_path && file_path_str.is_none() {
                 bail!("Empty file_path on line {}", line_num + 2);
             }
 
@@ -354,18 +368,20 @@ impl SamplesConfig {
             }
             seen_samples.insert(row.sample_name.clone());
 
-            // Convert file_path and check for duplicate filenames
-            let file_path = PathBuf::from(&row.file_path);
-            if let Some(filename) = file_path.file_name().and_then(|f| f.to_str()) {
-                if let Some(existing) = seen_filenames.get(filename) {
-                    bail!(
-                        "Duplicate filename '{}' for samples '{}' and '{}'",
-                        filename,
-                        existing,
-                        row.sample_name
-                    );
+            // Convert file_path and check for duplicate filenames (only when paths are present)
+            let file_path = file_path_str.map(|p| PathBuf::from(&p));
+            if let Some(ref fp) = file_path {
+                if let Some(filename) = fp.file_name().and_then(|f| f.to_str()) {
+                    if let Some(existing) = seen_filenames.get(filename) {
+                        bail!(
+                            "Duplicate filename '{}' for samples '{}' and '{}'",
+                            filename,
+                            existing,
+                            row.sample_name
+                        );
+                    }
+                    seen_filenames.insert(filename.to_string(), row.sample_name.clone());
                 }
-                seen_filenames.insert(filename.to_string(), row.sample_name.clone());
             }
 
             // Handle empty string as None for population
@@ -416,10 +432,7 @@ impl SamplesConfig {
                 )?;
 
             if !seen_samples.insert(sample_name.clone()) {
-                bail!(
-                    "Duplicate sample name '{}' derived from paths",
-                    sample_name
-                );
+                bail!("Duplicate sample name '{}' derived from paths", sample_name);
             }
 
             // Check for duplicate filenames
@@ -437,7 +450,7 @@ impl SamplesConfig {
 
             entries.push(SampleEntry {
                 sample_name,
-                file_path: path,
+                file_path: Some(path),
                 population: None,
             });
         }
@@ -457,9 +470,18 @@ impl SamplesConfig {
         self.entries.iter().map(|e| e.sample_name.clone()).collect()
     }
 
-    /// Get file paths
+    /// Get file paths. Panics if any entry is missing a file_path.
+    /// Only call this when the config was created with `require_file_path = true`
+    /// or via `from_paths()`.
     pub fn file_paths(&self) -> Vec<PathBuf> {
-        self.entries.iter().map(|e| e.file_path.clone()).collect()
+        self.entries
+            .iter()
+            .map(|e| {
+                e.file_path.clone().expect(
+                    "file_path is None; was SamplesConfig created with require_file_path=true?",
+                )
+            })
+            .collect()
     }
 
     /// Check if population column is present and populated
@@ -482,7 +504,8 @@ impl SamplesConfig {
             }
         } else {
             // All samples in "default" population
-            let all_samples: Vec<String> = self.entries.iter().map(|e| e.sample_name.clone()).collect();
+            let all_samples: Vec<String> =
+                self.entries.iter().map(|e| e.sample_name.clone()).collect();
             pop_data.insert("default".to_string(), all_samples);
         }
 
