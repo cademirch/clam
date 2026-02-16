@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/cademirch/clam/compare/v1.1.1...v1.1.2) (2026-02-16)
+
+
+### Bug Fixes
+
+* reuse gvcf fds across threads ([#43](https://github.com/cademirch/clam/issues/43)) ([7bdd241](https://github.com/cademirch/clam/commit/7bdd24176adbbc9b98705eb9097d329ee5c04e54))
+
 ## [1.1.1](https://github.com/cademirch/clam/compare/v1.1.0...v1.1.1) (2026-02-06)
 
 
