@@ -1,8 +1,9 @@
 use color_eyre::{eyre::WrapErr, Result};
 use log::{debug, trace, warn};
-use noodles::bgzf::Reader;
+use noodles::bgzf;
 use noodles::core::Region;
-use noodles::vcf::io::IndexedReader;
+use noodles::tabix;
+use noodles::vcf;
 use noodles::vcf::variant::record::info::field::Value::Integer as info_int;
 use noodles::vcf::variant::record::samples::series::Value::Integer as samples_int;
 use noodles::vcf::variant::record::samples::Series;
@@ -14,7 +15,8 @@ use super::DepthSource;
 use crate::core::contig::{Contig, ContigSet};
 
 pub struct GvcfReader {
-    inner: IndexedReader<Reader<File>>,
+    inner: vcf::io::Reader<bgzf::Reader<File>>,
+    index: tabix::Index,
     header: Header,
     src: PathBuf,
     sample_name: String,
@@ -25,16 +27,21 @@ impl GvcfReader {
     pub fn new<P: AsRef<Path>>(src: P, sample_name: &str, min_gq: Option<isize>) -> Result<Self> {
         let src_path = src.as_ref().to_path_buf();
 
-        let mut reader = noodles::vcf::io::indexed_reader::Builder::default()
-            .build_from_path(&src_path)
+        let index = tabix::fs::read(format!("{}.tbi", src_path.display()))
+            .wrap_err_with(|| format!("Failed to read tabix index for: {}", src_path.display()))?;
+
+        let file = File::open(&src_path)
             .wrap_err_with(|| format!("Failed to open GVCF file: {}", src_path.display()))?;
+
+        let mut reader = vcf::io::Reader::new(bgzf::Reader::new(file));
 
         let header = reader
             .read_header()
-            .wrap_err_with(|| format!("Failed to read GVCF file header: {}", src_path.display()))?;
+            .wrap_err_with(|| format!("Failed to read GVCF header: {}", src_path.display()))?;
 
         Ok(Self {
             inner: reader,
+            index,
             header,
             src: src_path,
             sample_name: sample_name.to_string(),
@@ -48,18 +55,17 @@ impl DepthSource for GvcfReader {
         let len = (end - start) as usize;
         let mut depths = vec![0u32; len];
 
-        // Create region query (noodles uses 1-based coordinates)
         let region: Region = format!("{}:{}-{}", chrom, start + 1, end)
             .parse()
             .wrap_err_with(|| format!("Invalid region: {}:{}-{}", chrom, start, end))?;
 
         let query = self
             .inner
-            .query(&self.header, &region)
+            .query(&self.header, &self.index, &region)
             .wrap_err_with(|| format!("Failed to query region: {}:{}-{}", chrom, start, end))?;
 
         trace!(
-            "Querying GVCF{} region {}:{}-{}",
+            "Querying GVCF {} region {}:{}-{}",
             self.src.display(),
             chrom,
             start,
@@ -69,7 +75,6 @@ impl DepthSource for GvcfReader {
         for result in query {
             let record = result.wrap_err("Failed to read GVCF record")?;
 
-            // Get start position
             let Some(Ok(startpos)) = record.variant_start() else {
                 warn!(
                     "Invalid start position in file {}\nOffending record: {:?}",
@@ -79,14 +84,12 @@ impl DepthSource for GvcfReader {
                 continue;
             };
 
-            // Get END position from INFO field (or default to start + 1)
             let info = record.info();
             let endpos = match info.get(&self.header, "END") {
                 Some(Ok(Some(info_int(end)))) => end,
                 _ => (startpos.get() + 1) as i32,
             };
 
-            // Get DP (depth) value
             let samples = record.samples();
             let Some(format_dp) = samples.select("DP") else {
                 debug!(
@@ -106,7 +109,6 @@ impl DepthSource for GvcfReader {
                 continue;
             };
 
-            // Get GQ (genotype quality) value
             let Some(format_gq) = samples.select("GQ") else {
                 debug!(
                     "Missing GQ format field in file {}\nOffending record: {:?}",
@@ -125,7 +127,6 @@ impl DepthSource for GvcfReader {
                 continue;
             };
 
-            // Convert to 0-based array indices
             let array_start = startpos.get() - 1;
             let array_end = endpos as usize;
 
@@ -138,8 +139,6 @@ impl DepthSource for GvcfReader {
                 gq
             );
 
-            // Fill in depths for this interval only if gq is greater than threshold
-            
             if gq >= self.min_gq as i32 {
                 for pos in array_start..array_end {
                     let idx = pos.saturating_sub(start as usize);
@@ -152,6 +151,7 @@ impl DepthSource for GvcfReader {
 
         Ok(depths)
     }
+
     fn contigs(&self) -> ContigSet {
         let contigs: Vec<Contig> = self
             .header

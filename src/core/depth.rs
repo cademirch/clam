@@ -8,6 +8,8 @@ use color_eyre::Help;
 use color_eyre::Result;
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
 pub mod array;
 pub mod d4;
 pub mod gvcf;
@@ -46,7 +48,7 @@ impl DepthFileType {
     
 }
 
-pub fn open_depth_source(path: impl AsRef<Path>, min_gq: Option<isize>) -> Result<Box<dyn DepthSource>> {
+pub fn open_depth_source(path: impl AsRef<Path>, min_gq: Option<isize>) -> Result<Box<dyn DepthSource + Send>> {
     let path = path.as_ref();
     let path_str = path.to_string_lossy();
 
@@ -66,7 +68,7 @@ pub fn open_depth_source_with_name(
     path: impl AsRef<Path>,
     sample_name: &str,
     min_gq: Option<isize>,
-) -> Result<Box<dyn DepthSource>> {
+) -> Result<Box<dyn DepthSource + Send>> {
     let path = path.as_ref();
     let path_str = path.to_string_lossy();
 
@@ -122,7 +124,10 @@ pub enum DepthInput {
 }
 
 enum DepthSources {
-    IndividualFiles(Vec<PathBuf>),
+    IndividualFiles{
+    paths: Vec<PathBuf>,
+    readers: Vec<Mutex<Box<dyn DepthSource + Send>>>,
+},
     MultisampleD4 {
         file: PathBuf,
         tracks: Vec<(String, String)>, // (track_name, sample_name)
@@ -179,11 +184,12 @@ impl DepthProcessor {
             .collect();
 
         let reference_contigs = validate_contig_consistency(contig_sets)?;
-
-        spinner.finish_with_message(format!("✓ Loaded {} samples", sample_names.len()));
+        // put readers in mutex so we can share them across threads later
+        let readers = readers.into_iter().map(|reader| Mutex::new(reader)).collect();
+        spinner.finish_with_message(format!("Loaded {} samples", sample_names.len()));
 
         Ok(Self {
-            sources: DepthSources::IndividualFiles(file_paths),
+            sources: DepthSources::IndividualFiles{paths: file_paths, readers: readers},
             sample_names,
             reference_contigs,
             min_gq,
@@ -225,11 +231,11 @@ where
 
     fn read_chunk_depths(&self, chunk: &ContigChunk) -> Result<Vec<Vec<u32>>> {
         match &self.sources {
-            DepthSources::IndividualFiles(paths) => paths
+            DepthSources::IndividualFiles{ paths, readers } => readers
                 .iter()
-                .map(|path| {
-                    let mut reader = open_depth_source(path, self.min_gq)?;
-                    reader.read_depths(&chunk.contig_name, chunk.start, chunk.end)
+                .map(|reader| {
+                    let mut r = reader.lock().unwrap();
+                    r.read_depths(&chunk.contig_name, chunk.start, chunk.end)
                 })
                 .collect(),
             DepthSources::MultisampleD4 { file, tracks } => tracks
@@ -295,10 +301,11 @@ fn setup_individual_files(paths: Vec<PathBuf>, min_gq: Option<isize>) -> Result<
         .collect();
 
     let reference_contigs = validate_contig_consistency(contig_sets)?;
-    
+    // put readers in mutex so we can share them across threads later
+    let readers = readers.into_iter().map(|reader| Mutex::new(reader)).collect();
     spinner.finish_and_clear(); 
 
-    Ok((DepthSources::IndividualFiles(paths), sample_names, reference_contigs))
+    Ok((DepthSources::IndividualFiles{ paths, readers }, sample_names, reference_contigs))
 }
 
 
