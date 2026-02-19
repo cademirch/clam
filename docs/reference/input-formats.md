@@ -77,7 +77,7 @@ Specifies sample names, input file paths, and optionally population assignments.
 | Column        | Required | Description                     |
 | ------------- | -------- | ------------------------------- |
 | `sample_name` | Yes      | Unique sample identifier        |
-| `file_path`   | Yes      | Path to depth file (D4 or GVCF) |
+| `file_path`   | Conditional | Path to depth file (D4 or GVCF). Required for `collect` and `loci` with raw depth input. Not required when used with `loci` + zarr input (population override) or with `stat`. |
 | `population`  | No       | Population assignment           |
 
 **Example with populations:**
@@ -99,6 +99,21 @@ sample2	/path/to/abc.sample2.d4.gz
 sample3	/path/to/abc.sample3.d4.gz
 ```
 
+**Example for population override (no file_path):**
+
+```
+sample_name	population
+sample1	PopA
+sample2	PopA
+sample3	PopB
+sample4	PopB
+```
+
+This format is used when providing `--samples` to:
+
+- `clam loci` with a Zarr positional argument (population override only)
+- `clam stat` (population assignment only)
+
 **Notes:**
 
 - Column order doesn't matter (detected from header)
@@ -106,13 +121,16 @@ sample3	/path/to/abc.sample3.d4.gz
 - If the `population` column is present, all rows must have values
 - If the `population` column is absent, all samples are assigned to a "default" population
 - File paths can be absolute or relative to the current working directory
+- When `file_path` is not required (e.g., `stat` or `loci` with zarr input), the column can be omitted entirely
 - Use this format when filenames don't match desired sample names (e.g., files named `abc.sample1.d4.gz` but you want sample name `sample1`)
 
 **Usage:**
 
 ```bash
 clam loci -o callable.zarr -m 10 --samples samples.tsv
+clam loci -o callable.zarr -m 10 depths.zarr --samples samples.tsv  # population override
 clam collect -o depths.zarr --samples samples.tsv
+clam stat -o results/ -w 10000 -c callable.zarr --samples samples.tsv
 ```
 
 ---
@@ -301,7 +319,7 @@ chr2	38814	46588
 | D4 depth | `.d4` or `.d4.gz` | `.d4.gz.gzi` (if compressed) | `loci`, `collect` |
 | GVCF | `.g.vcf.gz` | `.g.vcf.gz.tbi` | `loci`, `collect` |
 | VCF | `.vcf.gz` | `.vcf.gz.tbi` | `stat` |
-| Samples | `.tsv` | No | `loci`, `collect` |
+| Samples | `.tsv` | No | `loci`, `collect`, `stat` |
 | Population | `.tsv` | No | `loci`, `stat` (deprecated for `loci`) |
 | Chromosome list | `.txt` | No | `loci`, `stat`, `collect` |
 | Thresholds | `.tsv` | No | `loci` |

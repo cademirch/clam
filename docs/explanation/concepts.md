@@ -81,14 +81,17 @@ Many population genetic statistics compare diversity within and between groups:
 - **d~xy~**: Absolute divergence *between* two populations  
 - **F~ST~**: Relative differentiation between populations
 
-To calculate these statistics, clam needs to know which samples belong to which population. This is specified using a population file (see [Input Formats](../reference/input-formats.md)).
+To calculate these statistics, clam needs to know which samples belong to which population. You can specify populations using `--samples` (recommended) or `--population-file` (deprecated), or let clam read them automatically from zarr metadata.
 
 When populations are defined:
 
-- `clam loci` tracks callable sites per population (how many samples in each population are callable at each site)
-- `clam stat` calculates within-population (π) and between-population (d~xy~, F~ST~) statistics
+- `clam collect` stores population metadata in the output zarr
+- `clam loci` tracks callable sites per population (how many samples in each population are callable at each site) and stores population metadata in the output zarr
+- `clam stat` reads population metadata from the callable zarr automatically, or you can override with `--samples` or `-p`
 
-Without a population file, clam treats all samples as a single population and only calculates π.
+This means populations only need to be specified once -- typically during `clam collect` or `clam loci` -- and flow through the pipeline via zarr metadata.
+
+Without population assignments at any stage, clam treats all samples as a single population and only calculates π.
 
 ## The clam Workflow
 
@@ -100,7 +103,7 @@ A typical clam analysis has two main steps:
 Depth files (D4/GVCF) → clam loci → Callable loci (Zarr)
 ```
 
-This step processes depth information and applies your thresholds to determine which sites are callable. The output is a compact Zarr array storing callable counts per population at each genomic position.
+This step processes depth information and applies your thresholds to determine which sites are callable. The output is a compact Zarr array storing callable counts per population at each genomic position, along with population metadata that downstream commands can read automatically.
 
 ### Step 2: Calculate Statistics (`clam stat`)
 
@@ -119,6 +122,8 @@ Depth files (D4/GVCF) → clam collect → Depth (Zarr) → clam loci → Callab
 ```
 
 The `collect` step stores raw depth values in an efficient Zarr format. This is faster than re-reading the original depth files when testing multiple threshold configurations.
+
+Population assignments are preserved through this pipeline -- if you specify populations during `collect` or `loci`, they are stored in the Zarr metadata and automatically used by downstream commands.
 
 ## Statistics Calculated
 

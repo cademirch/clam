@@ -13,7 +13,7 @@ This guide covers how to use `clam loci` to identify genomic regions with suffic
     - Merged D4 files (uncompressed only)
     - GVCF files (bgzipped and tabix indexed)
     - A Zarr store from `clam collect`
-- Optional: population file if analyzing multiple populations
+- Optional: population file or `--samples` TSV if analyzing multiple populations (not needed if the Zarr input already contains population metadata)
 
 ## Input Formats
 
@@ -122,6 +122,35 @@ sample4	PopB
     Sample names must exactly match the identifiers in your input files. For D4 files, this is typically the filename prefix (e.g., `sample1` for `sample1.d4.gz`).
 
 See [Input Formats](../reference/input-formats.md#population-file) for details.
+
+### Using Populations from a Zarr Store
+
+When your input is a Zarr store from `clam collect` (or a previous `clam loci` run) that already has population metadata, those populations are used automatically -- no `-p` or `--samples` flag needed:
+
+```bash
+# Populations stored in depths.zarr are used automatically
+clam loci -o callable.zarr -m 10 depths.zarr
+```
+
+To override the stored populations with different assignments, use `--samples`:
+
+```bash
+# Override populations from zarr with a new samples file
+clam loci -o callable.zarr -m 10 depths.zarr --samples samples.tsv
+```
+
+When using `--samples` with a Zarr input, the `file_path` column is not required -- only `sample_name` and `population` are needed:
+
+```
+sample_name	population
+sample1	NewPopA
+sample2	NewPopA
+sample3	NewPopB
+sample4	NewPopB
+```
+
+!!! note
+    If no populations are stored in the Zarr metadata and no `--samples` or `-p` flag is given, all samples are grouped into a single "default" population.
 
 ## Filtering Chromosomes
 
