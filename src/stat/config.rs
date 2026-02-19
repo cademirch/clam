@@ -133,6 +133,23 @@ impl StatConfig {
                 }
             }
 
+            // If it's PopulationCounts, validate column count matches stat-time populations
+            if loci_type == CallableLociType::PopulationCounts {
+                let zarr_num_pops = arrays.column_names().len();
+                let stat_num_pops = pop_map.num_populations();
+                if zarr_num_pops != stat_num_pops {
+                    bail!(
+                        "Population count mismatch: callable zarr has {} population column(s) ({}) \
+                         but stat is configured with {} population(s). \
+                         Re-run 'clam loci' with matching populations, or omit -p/--samples \
+                         to auto-read populations from the callable zarr.",
+                        zarr_num_pops,
+                        arrays.column_names().join(", "),
+                        stat_num_pops,
+                    );
+                }
+            }
+
             // Warn if using population counts with ROH data
             if loci_type == CallableLociType::PopulationCounts && roh_bed.is_some() {
                 warn!(

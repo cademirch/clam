@@ -1,5 +1,5 @@
 use crate::core::contig::{ContigChunk, ContigSet};
-use crate::core::population::Population;
+use crate::core::population::{Population, PopulationMap};
 use color_eyre::eyre::OptionExt;
 use color_eyre::{eyre::eyre, Result};
 use ndarray::Array2;
@@ -37,6 +37,7 @@ pub struct ChromosomeArrays<T: ElementOwned> {
     column_names: Vec<String>,
     chunk_size: u64,
     callable_loci_type: Option<CallableLociType>,
+    populations: Option<Vec<Population>>,
     _marker: PhantomData<T>,
 }
 
@@ -87,7 +88,7 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
             metadata["callable_loci_type"] = serde_json::to_value(loci_type)?;
         }
         // Add population info to metadata if provided
-        if let Some(populations) = populations {
+        if let Some(ref populations) = populations {
             metadata["populations"] = serde_json::to_value(populations)?;
         }
 
@@ -143,6 +144,7 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
             column_names,
             chunk_size,
             callable_loci_type,
+            populations,
             _marker: PhantomData,
         })
     }
@@ -186,6 +188,11 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
             .get("callable_loci_type")
             .and_then(|v| serde_json::from_value(v.clone()).ok());
 
+        // Read populations if present (backward compatibility: None if missing)
+        let populations: Option<Vec<Population>> = metadata
+            .get("populations")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+
         Ok(Self {
             path,
             store,
@@ -193,6 +200,7 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
             column_names,
             chunk_size,
             callable_loci_type,
+            populations,
             _marker: PhantomData,
         })
     }
@@ -290,6 +298,23 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
 
     pub fn callable_loci_type(&self) -> Option<CallableLociType> {
         self.callable_loci_type
+    }
+
+    /// Get the populations stored in zarr metadata, if any
+    pub fn populations(&self) -> Option<&[Population]> {
+        self.populations.as_deref()
+    }
+
+    /// Build a PopulationMap from the stored population metadata
+    ///
+    /// Returns None if no populations are stored in the zarr metadata.
+    pub fn to_population_map(&self) -> Option<PopulationMap> {
+        let populations = self.populations.as_ref()?;
+        let mut pop_data = indexmap::IndexMap::new();
+        for pop in populations {
+            pop_data.insert(pop.name.clone(), pop.samples().to_vec());
+        }
+        PopulationMap::from_populations(pop_data).ok()
     }
 
     /// Convert position to chunk index
@@ -448,9 +473,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.zarr");
 
-        let arrays =
-            DepthArrays::create_new(&path, test_contigs(), vec!["sample1".to_string()], 100, None)
-                .unwrap();
+        let arrays = DepthArrays::create_new(
+            &path,
+            test_contigs(),
+            vec!["sample1".to_string()],
+            100,
+            None,
+        )
+        .unwrap();
 
         assert_eq!(arrays.position_to_chunk(0), 0);
         assert_eq!(arrays.position_to_chunk(99), 0);
@@ -496,7 +526,7 @@ mod tests {
             test_contigs(),
             vec!["sample1".to_string(), "sample2".to_string()],
             100,
-            None
+            None,
         )
         .unwrap();
 
@@ -538,7 +568,8 @@ mod tests {
 
         // Create with 10 samples
         let samples: Vec<String> = (0..10).map(|i| format!("sample{}", i)).collect();
-        let arrays = SampleMaskArrays::create_new(&path, test_contigs(), samples, 1000, None).unwrap();
+        let arrays =
+            SampleMaskArrays::create_new(&path, test_contigs(), samples, 1000, None).unwrap();
 
         // Write alternating pattern (should compress well)
         let mut data = Array2::<bool>::from_elem((1000, 10), false);
@@ -564,5 +595,64 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_populations_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test_pops.zarr");
+
+        let contigs = test_contigs();
+        let pop_names = vec!["pop1".to_string(), "pop2".to_string()];
+        let populations = vec![
+            Population::new("pop1".to_string(), vec!["s1".to_string(), "s2".to_string()]),
+            Population::new("pop2".to_string(), vec!["s3".to_string(), "s4".to_string()]),
+        ];
+
+        // Create with populations
+        CallableArrays::create_new(
+            &path,
+            contigs.clone(),
+            pop_names.clone(),
+            100,
+            Some(populations),
+        )
+        .unwrap();
+
+        // Open and verify populations are readable
+        let arrays = CallableArrays::open(&path).unwrap();
+        let pops = arrays.populations().expect("populations should be stored");
+        assert_eq!(pops.len(), 2);
+        assert_eq!(pops[0].name, "pop1");
+        assert_eq!(pops[0].samples(), &["s1", "s2"]);
+        assert_eq!(pops[1].name, "pop2");
+        assert_eq!(pops[1].samples(), &["s3", "s4"]);
+
+        // Verify to_population_map works
+        let pop_map = arrays
+            .to_population_map()
+            .expect("should build PopulationMap");
+        assert_eq!(pop_map.num_populations(), 2);
+        assert_eq!(pop_map.lookup("s1"), Some((0, 0)));
+        assert_eq!(pop_map.lookup("s3"), Some((1, 0)));
+    }
+
+    #[test]
+    fn test_populations_none_when_not_stored() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test_no_pops.zarr");
+
+        DepthArrays::create_new(
+            &path,
+            test_contigs(),
+            vec!["sample1".to_string()],
+            100,
+            None,
+        )
+        .unwrap();
+
+        let arrays = DepthArrays::open(&path).unwrap();
+        assert!(arrays.populations().is_none());
+        assert!(arrays.to_population_map().is_none());
     }
 }

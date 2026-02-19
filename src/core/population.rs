@@ -12,7 +12,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 /// A single population with its samples
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Population {
     pub name: String,
     samples: Vec<String>,

@@ -29,8 +29,9 @@ pub struct SharedOptions {
     #[arg(short = 't', long = "threads", default_value_t = 1)]
     pub threads: usize,
 
-    /// Path to samples TSV file (with header). Columns: sample_name (required), file_path (required for loci/collect), population (optional).
-    /// When provided, input files are read from the TSV instead of positional arguments.
+    /// Path to samples TSV file (with header). Columns: sample_name (required), file_path (required for collect; optional for loci with zarr input), population (optional).
+    /// For loci/collect: input files are read from the TSV instead of positional arguments (unless input is a zarr store, in which case --samples provides population assignments only).
+    /// For stat: provides population assignments (file_path column is not used).
     #[arg(short = 's', long = "samples", conflicts_with = "population_file")]
     pub samples: Option<PathBuf>,
 
@@ -111,7 +112,7 @@ impl SharedOptions {
 /// Calculate callable sites from depth statistics
 #[derive(Args, Debug)]
 pub struct LociArgs {
-    /// Input depth files (not needed when using --samples)
+    /// Input depth files. Not needed when using --samples, except a single zarr store can be combined with --samples for population override.
     pub input: Vec<PathBuf>,
 
     /// Output path for callable sites zarr array
@@ -280,47 +281,82 @@ impl LociArgs {
             per_contig,
         };
 
-        // Build SamplesConfig from either --samples or positional args
-        let config = if let Some(ref samples_path) = self.shared.samples {
-            if !self.input.is_empty() {
-                bail!("Cannot provide input files when using --samples");
-            }
-            SamplesConfig::from_file(samples_path, true)?
-        } else {
-            if self.input.is_empty() {
-                bail!("Must provide input files or use --samples");
-            }
-            SamplesConfig::from_paths(self.input)?
-        };
+        // Build SamplesConfig and pop_map from --samples, positional args, and --population-file
+        //
+        // Supported combinations:
+        //   1. --samples only (TSV with file_path column) → config from file, pop from TSV
+        //   2. positional args only → config from paths, no pop (or from -p)
+        //   3. positional zarr arg + --samples (no file_path column needed) → zarr input, pop from TSV
+        //   4. positional args + -p → config from paths, pop from legacy popmap
 
         // Handle deprecated --population-file override
         let pop_map = if let Some(ref pop_file) = self.shared.population_file {
             warn!("--population-file is deprecated; use --samples instead");
             Some(PopulationMap::from_file(pop_file)?)
         } else {
-            None // run_loci will use config.to_population_map()
+            None
         };
 
-        // Check for Zarr input (single zarr path)
-        if config.file_paths().len() == 1 && is_zarr_path(&config.file_paths()[0]) {
-            let zarr = &config.file_paths()[0];
-            run_loci_zarr(
-                zarr.to_path_buf(),
-                self.output,
-                pop_map,
-                thresholds,
-                self.per_sample,
-            )
+        if let Some(ref samples_path) = self.shared.samples {
+            if self.input.len() == 1 && is_zarr_path(&self.input[0]) {
+                // Case 3: zarr positional arg + --samples for population override
+                let zarr_path = self.input[0].clone();
+                let samples_config = SamplesConfig::from_file(samples_path, false)?;
+                let pop_map = Some(samples_config.to_population_map());
+                run_loci_zarr(zarr_path, self.output, pop_map, thresholds, self.per_sample)
+            } else if !self.input.is_empty() {
+                bail!("Cannot provide input files when using --samples (unless input is a single zarr directory)");
+            } else {
+                // Case 1: --samples only (TSV with file_path column)
+                let config = SamplesConfig::from_file(samples_path, true)?;
+                // Check for Zarr input (single zarr path from TSV)
+                if config.file_paths().len() == 1 && is_zarr_path(&config.file_paths()[0]) {
+                    let zarr = &config.file_paths()[0];
+                    run_loci_zarr(
+                        zarr.to_path_buf(),
+                        self.output,
+                        pop_map.or_else(|| Some(config.to_population_map())),
+                        thresholds,
+                        self.per_sample,
+                    )
+                } else {
+                    run_loci(
+                        &config,
+                        self.output,
+                        pop_map, // run_loci will use config.to_population_map() if None
+                        thresholds,
+                        self.chunk_size,
+                        self.per_sample,
+                        self.min_gq,
+                    )
+                }
+            }
         } else {
-            run_loci(
-                &config,
-                self.output,
-                pop_map,
-                thresholds,
-                self.chunk_size,
-                self.per_sample,
-                self.min_gq,
-            )
+            if self.input.is_empty() {
+                bail!("Must provide input files or use --samples");
+            }
+            let config = SamplesConfig::from_paths(self.input)?;
+            // Check for Zarr input (single zarr path)
+            if config.file_paths().len() == 1 && is_zarr_path(&config.file_paths()[0]) {
+                let zarr = &config.file_paths()[0];
+                run_loci_zarr(
+                    zarr.to_path_buf(),
+                    self.output,
+                    pop_map,
+                    thresholds,
+                    self.per_sample,
+                )
+            } else {
+                run_loci(
+                    &config,
+                    self.output,
+                    pop_map,
+                    thresholds,
+                    self.chunk_size,
+                    self.per_sample,
+                    self.min_gq,
+                )
+            }
         }
     }
 }
@@ -363,13 +399,22 @@ impl StatArgs {
             }
         }
 
-        // Build Option<PopulationMap> from --samples or --population-file
+        // Build Option<PopulationMap> from --samples, --population-file,
+        // or auto-read from callable zarr metadata
         let pop_map = if let Some(ref samples_path) = self.shared.samples {
             let config = SamplesConfig::from_file(samples_path, false)?;
             Some(config.to_population_map())
         } else if let Some(ref pop_file) = self.shared.population_file {
             warn!("--population-file is deprecated; use --samples instead");
             Some(PopulationMap::from_file(pop_file)?)
+        } else if let Some(callable_path) = self.callable.as_ref() {
+            // Auto-read populations from callable zarr metadata when no -s/-p given
+            if is_zarr_path(callable_path) {
+                let callable_zarr = CallableArrays::open(callable_path)?;
+                callable_zarr.to_population_map()
+            } else {
+                None
+            }
         } else {
             None
         };
