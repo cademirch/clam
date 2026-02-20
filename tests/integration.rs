@@ -486,6 +486,313 @@ fn test_stat_with_bcftools_vcf() -> Result<()> {
     Ok(())
 }
 
+
+#[test]
+fn test_loci_zarr_input_with_samples_override() -> Result<()> {
+    color_eyre::install().ok();
+
+    let temp_dir = TempDir::new()?;
+    let collect_zarr = temp_dir.path().join("collect.zarr");
+    let callable_zarr = temp_dir.path().join("callable.zarr");
+
+    let d4_files: Vec<String> = vec![
+        "tests/data/depth/all20/sample1.d4".to_string(),
+        "tests/data/depth/all20/sample2.d4".to_string(),
+    ];
+
+    let mut cmd = Command::cargo_bin("clam")?;
+    cmd.arg("collect")
+        .args(&d4_files)
+        .arg("-o")
+        .arg(&collect_zarr);
+
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "clam collect failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let samples_tsv = temp_dir.path().join("samples.tsv");
+    {
+        use std::io::Write;
+        let mut f = File::create(&samples_tsv)?;
+        writeln!(f, "sample_name\tpopulation")?;
+        writeln!(f, "sample1\tpop1")?;
+        writeln!(f, "sample2\tpop2")?;
+    }
+
+    // This should succeed, allowing zarr positional arg + --samples for pop override.
+    // Currently FAILS with "Cannot provide input files when using --samples".
+    let mut cmd = Command::cargo_bin("clam")?;
+    cmd.arg("loci")
+        .arg(&collect_zarr)
+        .arg("-o")
+        .arg(&callable_zarr)
+        .arg("-s")
+        .arg(&samples_tsv);
+
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "clam loci with zarr + --samples failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Verify callable zarr has the correct population columns
+    let arrays = CallableArrays::open(&callable_zarr)?;
+    assert_eq!(
+        arrays.column_names(),
+        &["pop1", "pop2"],
+        "Callable zarr should use populations from --samples TSV"
+    );
+
+    Ok(())
+}
+
+
+#[test]
+fn test_stat_auto_reads_populations_from_callable_zarr() -> Result<()> {
+    color_eyre::install().ok();
+
+    let temp_dir = TempDir::new()?;
+    let callable_zarr = temp_dir.path().join("callable.zarr");
+    let output_dir = temp_dir.path().join("stat_output");
+
+    let gvcf_files: Vec<String> = glob("tests/data/integration/gvcf/*.g.vcf.gz")?
+        .filter_map(|p| p.ok())
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+
+    let mut cmd = Command::cargo_bin("clam")?;
+    cmd.arg("loci")
+        .args(&gvcf_files)
+        .arg("-o")
+        .arg(&callable_zarr)
+        .arg("-p")
+        .arg("tests/data/integration/popmap.txt")
+        .arg("--min-depth")
+        .arg("2")
+        .arg("--min-gq")
+        .arg("10");
+
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "clam loci failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Verify populations are stored in the callable zarr
+    let pops = read_populations_from_zarr(&callable_zarr)?;
+    assert_eq!(pops.len(), 2, "callable zarr should have 2 populations");
+
+    let mut cmd = Command::cargo_bin("clam")?;
+    cmd.arg("stat")
+        .arg("tests/data/integration/gatk.varsonly.vcf.gz")
+        .arg("-o")
+        .arg(&output_dir)
+        .arg("-c")
+        .arg(&callable_zarr)
+        // NOTE: no -p or -s flag!
+        .arg("-w")
+        .arg("10000");
+
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "clam stat (auto-pop) failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Key assertion: dxy.tsv and fst.tsv must exist (requires >=2 populations)
+    assert!(
+        output_dir.join("dxy.tsv").exists(),
+        "dxy.tsv missing — stat did not auto-read populations from callable zarr"
+    );
+    assert!(
+        output_dir.join("fst.tsv").exists(),
+        "fst.tsv missing — stat did not auto-read populations from callable zarr"
+    );
+
+    // Verify the values match truth data (same as when -p is explicitly given)
+    let float_tolerance = 0.001;
+
+    let output_pi = parse_pi_tsv(&output_dir.join("pi.tsv").to_string_lossy())?;
+    let truth_pi = parse_pi_tsv("tests/data/integration/truth/gatk/clam_pi.tsv")?;
+    compare_stat_values(&output_pi, &truth_pi, "pi", float_tolerance)?;
+
+    let output_dxy = parse_pairwise_tsv(&output_dir.join("dxy.tsv").to_string_lossy(), 5)?;
+    let truth_dxy = parse_pairwise_tsv("tests/data/integration/truth/gatk/clam_dxy.tsv", 5)?;
+    compare_stat_values(&output_dxy, &truth_dxy, "dxy", float_tolerance)?;
+
+    let output_fst = parse_pairwise_tsv(&output_dir.join("fst.tsv").to_string_lossy(), 5)?;
+    let truth_fst = parse_pairwise_tsv("tests/data/integration/truth/gatk/clam_fst.tsv", 5)?;
+    compare_stat_values(&output_fst, &truth_fst, "fst", float_tolerance)?;
+
+    Ok(())
+}
+
+
+#[test]
+fn test_stat_population_count_mismatch_errors() -> Result<()> {
+    color_eyre::install().ok();
+
+    let temp_dir = TempDir::new()?;
+    let callable_zarr = temp_dir.path().join("callable.zarr");
+    let output_dir = temp_dir.path().join("stat_output");
+
+    let gvcf_files: Vec<String> = glob("tests/data/integration/gvcf/*.g.vcf.gz")?
+        .filter_map(|p| p.ok())
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+
+    let mut cmd = Command::cargo_bin("clam")?;
+    cmd.arg("loci")
+        .args(&gvcf_files)
+        .arg("-o")
+        .arg(&callable_zarr)
+        .arg("-p")
+        .arg("tests/data/integration/popmap.txt")
+        .arg("--min-depth")
+        .arg("2")
+        .arg("--min-gq")
+        .arg("10");
+
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "clam loci failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Verify callable zarr has 2 populations
+    let arrays = CallableArrays::open(&callable_zarr)?;
+    assert_eq!(arrays.column_names().len(), 2);
+
+    let bad_popmap = temp_dir.path().join("bad_popmap.txt");
+    {
+        use std::io::Write;
+        let mut f = File::create(&bad_popmap)?;
+        // Split Pop1 samples into Pop1a and Pop1b, keep Pop2
+        for i in 0..5 {
+            writeln!(f, "Pop1_sample_{}\tPop1a", i)?;
+        }
+        for i in 5..10 {
+            writeln!(f, "Pop1_sample_{}\tPop1b", i)?;
+        }
+        for i in 0..10 {
+            writeln!(f, "Pop2_sample_{}\tPop2", i)?;
+        }
+    }
+
+    // Should produce a clean error, NOT panic
+    let mut cmd = Command::cargo_bin("clam")?;
+    cmd.arg("stat")
+        .arg("tests/data/integration/gatk.varsonly.vcf.gz")
+        .arg("-o")
+        .arg(&output_dir)
+        .arg("-c")
+        .arg(&callable_zarr)
+        .arg("-p")
+        .arg(&bad_popmap)
+        .arg("-w")
+        .arg("10000");
+
+    let output = cmd.output()?;
+
+    
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "clam stat panicked with mismatched populations: {}",
+        stderr
+    );
+
+    
+    if !output.status.success() {
+        assert!(
+            stderr.contains("population")
+                || stderr.contains("mismatch")
+                || stderr.contains("column"),
+            "Error message should mention population mismatch, got: {}",
+            stderr
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_loci_zarr_input_no_pop_flag_uses_stored_pops() -> Result<()> {
+    color_eyre::install().ok();
+
+    let temp_dir = TempDir::new()?;
+    let collect_zarr = temp_dir.path().join("collect.zarr");
+    let callable_zarr = temp_dir.path().join("callable.zarr");
+
+    let samples_tsv = temp_dir.path().join("samples.tsv");
+    {
+        use std::io::Write;
+        let mut f = File::create(&samples_tsv)?;
+        writeln!(f, "sample_name\tfile_path\tpopulation")?;
+        writeln!(f, "sample1\ttests/data/depth/all20/sample1.d4\tpop1")?;
+        writeln!(f, "sample2\ttests/data/depth/all20/sample2.d4\tpop2")?;
+    }
+
+    let mut cmd = Command::cargo_bin("clam")?;
+    cmd.arg("collect")
+        .arg("-s")
+        .arg(&samples_tsv)
+        .arg("-o")
+        .arg(&collect_zarr);
+
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "clam collect failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Verify collect.zarr has populations in metadata
+    let pops = read_populations_from_zarr(&collect_zarr)?;
+    assert_eq!(pops.len(), 2);
+    assert_eq!(pops[0].0, "pop1");
+    assert_eq!(pops[1].0, "pop2");
+
+    // Should auto-read populations from collect.zarr metadata.
+    let mut cmd = Command::cargo_bin("clam")?;
+    cmd.arg("loci")
+        .arg(&collect_zarr)
+        .arg("-o")
+        .arg(&callable_zarr);
+
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "clam loci (auto-pop from zarr) failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Verify callable zarr has population columns, not "default"
+    let arrays = CallableArrays::open(&callable_zarr)?;
+    assert_eq!(
+        arrays.column_names(),
+        &["pop1", "pop2"],
+        "callable zarr should use populations from input collect.zarr metadata"
+    );
+
+    // Verify populations metadata
+    let stored_pops = read_populations_from_zarr(&callable_zarr)?;
+    assert_eq!(stored_pops.len(), 2);
+    assert_eq!(stored_pops[0].0, "pop1");
+    assert_eq!(stored_pops[0].1, vec!["sample1"]);
+    assert_eq!(stored_pops[1].0, "pop2");
+    assert_eq!(stored_pops[1].1, vec!["sample2"]);
+
+    Ok(())
+}
+
 /// Parse pi TSV and extract window -> pi value mapping
 fn parse_pi_tsv(path: &str) -> Result<std::collections::HashMap<WindowKey, f64>> {
     let file = File::open(path)?;

@@ -10,7 +10,7 @@ This guide covers how to use `clam stat` to calculate population genetic statist
 
 - A VCF file (bgzipped and tabix indexed)
 - Callable loci Zarr from `clam loci` (recommended)
-- Optional: population file for d~xy~ and F~ST~
+- Optional: population file or `--samples` TSV for d~xy~ and F~ST~ (not needed if callable zarr already contains population metadata)
 - Optional: ROH file for calculating non-ROH heterozygosity
 
 ## Input Requirements
@@ -56,7 +56,29 @@ clam stat -o results/ --regions-file genes.bed -c callable.zarr variants.vcf.gz
 
 ## Specifying Populations
 
-To calculate between-population statistics (d~xy~ and F~ST~), provide a population file:
+To calculate between-population statistics (d~xy~ and F~ST~), clam needs population assignments. There are three ways to provide them:
+
+### Automatic from Callable Zarr (Recommended)
+
+If populations were defined during the `clam loci` step, they are stored in the callable Zarr metadata. `clam stat` reads them automatically -- no extra flags needed:
+
+```bash
+clam stat -o results/ -w 10000 -c callable.zarr variants.vcf.gz
+```
+
+This produces `dxy.tsv` and `fst.tsv` automatically when the callable zarr contains multiple populations.
+
+### Using --samples
+
+Provide a samples TSV to define (or override) population assignments:
+
+```bash
+clam stat -o results/ -w 10000 -c callable.zarr -s samples.tsv variants.vcf.gz
+```
+
+Only the `sample_name` and `population` columns are used; `file_path` is ignored for `clam stat`.
+
+### Using --population-file (Deprecated)
 
 ```bash
 clam stat -o results/ -w 10000 -c callable.zarr -p populations.tsv variants.vcf.gz
@@ -70,6 +92,9 @@ sample2	PopA
 sample3	PopB
 sample4	PopB
 ```
+
+!!! warning "Population Consistency"
+    When using `--samples` or `--population-file` with a callable Zarr that has `PopulationCounts` type, the number of populations must match the number of population columns in the Zarr. If they don't match, clam will produce a clear error. Use callable sites generated with `--per-sample` mode for maximum flexibility with different population definitions at stat time.
 
 !!! note "Sample Names"
     Sample names must exactly match those in your VCF header.

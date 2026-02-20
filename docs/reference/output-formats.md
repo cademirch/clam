@@ -38,7 +38,11 @@ depths.zarr/
     {"name": "chr2", "length": 242193529}
   ],
   "column_names": ["sample1", "sample2", "sample3"],
-  "chunk_size": 1000000
+  "chunk_size": 1000000,
+  "populations": [
+    {"name": "PopA", "samples": ["sample1", "sample2"]},
+    {"name": "PopB", "samples": ["sample3"]}
+  ]
 }
 ```
 
@@ -47,6 +51,10 @@ depths.zarr/
 | `contigs`      | array   | List of chromosomes with names and lengths |
 | `column_names` | array   | Sample names in column order               |
 | `chunk_size`   | integer | Chunk size in base pairs                   |
+| `populations`  | array   | Population definitions with sample membership (present when populations were specified during `collect`) |
+
+!!! note
+    The `populations` field is present when populations were defined via `--samples` or `--population-file` during the `collect` step. This metadata is automatically read by `clam loci` when the zarr store is used as input.
 
 **Array Properties:**
 

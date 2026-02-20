@@ -37,7 +37,7 @@ Usage: clam loci [OPTIONS] --output <OUTPUT> [INPUT]...
 ### Arguments
 
 `[INPUT]...`
-:   Input depth files. Accepts D4 files (bgzipped and indexed), GVCF files (bgzipped and tabix indexed), or a Zarr store from `clam collect`. Not required if using `--samples`.
+:   Input depth files. Accepts D4 files (bgzipped and indexed), GVCF files (bgzipped and tabix indexed), or a Zarr store from `clam collect`. Not required if using `--samples`. A single Zarr store can also be provided alongside `--samples` to use stored depth data with custom population assignments.
 
 ### Required Options
 
@@ -91,7 +91,7 @@ Usage: clam loci [OPTIONS] --output <OUTPUT> [INPUT]...
 ### Sample Input Options
 
 `-s, --samples <SAMPLES>`
-:   Path to samples TSV file specifying sample names, file paths, and optionally populations. See [Input Formats](input-formats.md#samples-file). When provided, positional input files are not allowed.
+:   Path to samples TSV file specifying sample names, file paths, and optionally populations. See [Input Formats](input-formats.md#samples-file). When provided, positional input files are not allowed -- except when the sole positional argument is a Zarr store, in which case `--samples` provides population assignments only (the `file_path` column is not required).
 
 `-p, --population-file <POPULATION_FILE>`
 :   **(Deprecated)** Path to file that defines populations. Use `--samples` instead. See [Input Formats](input-formats.md#population-file).
@@ -124,6 +124,12 @@ clam loci -o callable.zarr -m 10 -x chrX,chrY *.d4.gz
 
 # Using Zarr input from clam collect
 clam loci -o callable.zarr -m 10 -M 100 depths.zarr
+
+# Using Zarr input — populations are auto-read from zarr metadata
+clam loci -o callable.zarr -m 10 depths.zarr
+
+# Using Zarr input with population override via --samples
+clam loci -o callable.zarr -m 10 depths.zarr --samples samples.tsv
 ```
 
 ---
@@ -182,11 +188,17 @@ One of these options is required:
 
 ### Population Options
 
+`-s, --samples <SAMPLES>`
+:   Path to samples TSV file specifying population assignments. Only `sample_name` and `population` columns are used; `file_path` is ignored. See [Input Formats](input-formats.md#samples-file).
+
 `-p, --population-file <POPULATION_FILE>`
-:   Path to file that defines populations. Required for calculating d~xy~ and F~ST~. See [Input Formats](input-formats.md#population-file).
+:   **(Deprecated)** Path to file that defines populations. Use `--samples` instead. See [Input Formats](input-formats.md#population-file).
 
 `--force-samples`
 :   Only warn about samples in VCF that are not in population file, and exclude them from analysis. Without this flag, missing samples cause an error.
+
+!!! tip "Automatic population detection"
+    When no `--samples` or `--population-file` is provided, `clam stat` automatically reads population definitions from the callable Zarr metadata (if populations were stored by `clam loci`). This means you don't need to re-specify populations if they were already defined during the `loci` step.
 
 ### Performance Options
 
@@ -202,8 +214,14 @@ One of these options is required:
 # Basic usage with 10kb windows
 clam stat -o results/ -w 10000 -c callable.zarr variants.vcf.gz
 
+# Populations auto-read from callable zarr (no -s or -p needed)
+clam stat -o results/ -w 10000 -c callable.zarr variants.vcf.gz
+
 # With population file for dxy and Fst
 clam stat -o results/ -w 10000 -c callable.zarr -p populations.tsv variants.vcf.gz
+
+# Override populations with --samples
+clam stat -o results/ -w 10000 -c callable.zarr -s samples.tsv variants.vcf.gz
 
 # Using custom regions from BED file
 clam stat -o results/ --regions-file genes.bed -c callable.zarr variants.vcf.gz
@@ -294,7 +312,7 @@ These options are available across multiple commands:
 | Option | Description | Commands |
 |--------|-------------|----------|
 | `-t, --threads` | Number of threads for parallel processing | all |
-| `-s, --samples` | Samples TSV file with sample names and file paths | `loci`, `collect` |
+| `-s, --samples` | Samples TSV file with sample names, file paths, and populations | `loci`, `collect`, `stat` |
 | `-p, --population-file` | Population definitions file (deprecated, use `--samples`) | `loci`, `stat` |
 | `-x, --exclude` | Chromosomes to exclude (comma-separated) | all |
 | `--exclude-file` | File with chromosomes to exclude | all |

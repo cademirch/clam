@@ -128,8 +128,9 @@ pub fn run_loci_zarr(
     let chunk_size = input_zarr.chunk_size();
 
     spinner.set_message("Validating population map...");
-    let pop_map =
-        pop_map.unwrap_or_else(|| PopulationMap::default_from_samples(input_zarr_samples.to_vec()));
+    let pop_map = pop_map
+        .or_else(|| input_zarr.to_population_map())
+        .unwrap_or_else(|| PopulationMap::default_from_samples(input_zarr_samples.to_vec()));
     pop_map.validate_exact_match(input_zarr_samples, false)?;
     spinner.finish_with_message(format!(
         "Loaded {} samples from zarr",
@@ -475,6 +476,82 @@ mod tests {
                 assert!(chunk_data.iter().all(|&x| x == expected));
             }
         }
+    }
+
+    /// Test that run_loci_zarr auto-reads populations from input zarr metadata
+    /// when pop_map is None.
+    ///
+    /// Expected behavior (after fix): output callable zarr should have population
+    /// columns matching what was stored in the input depth zarr.
+    ///
+    /// Current behavior (before fix): run_loci_zarr defaults to
+    /// PopulationMap::default_from_samples() which groups everything into "default".
+    #[test]
+    fn test_loci_zarr_input_uses_stored_populations() {
+        use crate::collect::run_collect;
+        use crate::core::zarr::DepthArrays;
+        use std::io::Write;
+
+        let dir = TempDir::new().unwrap();
+
+        // Step 1: Create a depth zarr that stores population metadata.
+        // We do this by writing a samples TSV with population column and running collect.
+        let samples_tsv = dir.path().join("samples.tsv");
+        {
+            let mut f = std::fs::File::create(&samples_tsv).unwrap();
+            writeln!(f, "sample_name\tfile_path\tpopulation").unwrap();
+            writeln!(f, "sample1\ttests/data/depth/all20/sample1.d4\tpop1").unwrap();
+            writeln!(f, "sample2\ttests/data/depth/all20/sample2.d4\tpop2").unwrap();
+        }
+
+        let collect_output = dir.path().join("depth.zarr");
+        let config = SamplesConfig::from_file(&samples_tsv, true).unwrap();
+        run_collect(&config, collect_output.clone(), 100, None).unwrap();
+
+        // Verify the depth zarr has populations stored
+        let depth_zarr = DepthArrays::open(&collect_output).unwrap();
+        assert!(
+            depth_zarr.populations().is_some(),
+            "Depth zarr should have populations stored"
+        );
+
+        // Step 2: Run loci from zarr with pop_map = None
+        // After fix: should auto-read populations from input zarr
+        // Before fix: will use default_from_samples → "default" population
+        let loci_output = dir.path().join("callable.zarr");
+
+        let thresholds = ThresholdConfig {
+            min_depth: 0.0,
+            max_depth: f64::INFINITY,
+            min_proportion: 0.0,
+            mean_depth_range: (0.0, f64::INFINITY),
+            per_contig: None,
+        };
+
+        run_loci_zarr(
+            collect_output,
+            loci_output.clone(),
+            None, // <-- key: no pop_map provided
+            thresholds,
+            false,
+        )
+        .unwrap();
+
+        // Step 3: Verify output callable zarr has population columns, not "default"
+        let callable = CallableArrays::open(&loci_output).unwrap();
+        assert_eq!(
+            callable.column_names(),
+            &["pop1", "pop2"],
+            "Output should use populations from input zarr, not 'default'"
+        );
+
+        // Also verify populations metadata is carried through
+        let pops = callable
+            .populations()
+            .expect("callable zarr should have population metadata");
+        assert_eq!(pops.len(), 2);
+        assert_eq!(pops[0].name, "pop1");
+        assert_eq!(pops[1].name, "pop2");
     }
 
     /// A/B test: verify that SamplesConfig::from_file() produces same output as from_paths()

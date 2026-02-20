@@ -122,6 +122,20 @@ clam loci -o callable_d50.zarr -m 10 -d 0.5 depths.zarr
 clam loci -o callable_d80.zarr -m 10 -d 0.8 depths.zarr
 ```
 
+!!! tip "Population Flow"
+    If you specified populations during `collect` (via `--samples`), they are stored in the Zarr metadata. `clam loci` reads them automatically, so you don't need to re-specify `-p` or `--samples`:
+    
+    ```bash
+    # Populations were defined during collect
+    clam collect -o depths.zarr --samples samples.tsv
+    
+    # loci reads populations from zarr metadata — no -p needed
+    clam loci -o callable.zarr -m 10 depths.zarr
+    
+    # Override with different populations if needed
+    clam loci -o callable.zarr -m 10 depths.zarr --samples different_pops.tsv
+    ```
+
 ### Step 4: Compare Results
 
 ```bash
@@ -139,7 +153,7 @@ The Zarr format with Zstd compression typically achieves better compression than
 The output is a Zarr store containing:
 
 - Raw depth values (uint32) for each sample at each position
-- Metadata including sample names, chromosome lengths, and chunk size
+- Metadata including sample names, chromosome lengths, chunk size, and population assignments (when specified)
 
 See [Output Formats](../reference/output-formats.md#depth-zarr-store) for details on the Zarr structure.
 
