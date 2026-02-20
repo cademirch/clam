@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.3](https://github.com/cademirch/clam/compare/v1.1.2...v1.1.3) (2026-02-20)
+
+
+### Bug Fixes
+
+* population handling 41 ([#45](https://github.com/cademirch/clam/issues/45)) ([4c2f792](https://github.com/cademirch/clam/commit/4c2f792084731a7c98ff0ce26348edc72d814ace))
+
 ## [1.1.2](https://github.com/cademirch/clam/compare/v1.1.1...v1.1.2) (2026-02-16)
 
 
