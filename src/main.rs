@@ -40,7 +40,7 @@ pub struct SharedOptions {
     pub population_file: Option<PathBuf>,
 
     /// Comma separated list of chromosomes to exclude
-    #[arg(short = 'x', long = "exclude", value_delimiter = ',', num_args = 1.., conflicts_with = "exclude_file")]
+    #[arg(short = 'x', long = "exclude", value_delimiter = ',', conflicts_with = "exclude_file")]
     pub exclude: Option<Vec<String>>,
 
     /// Path to file with chromosomes to exclude, one per line
@@ -48,7 +48,7 @@ pub struct SharedOptions {
     pub exclude_file: Option<PathBuf>,
 
     /// Comma separated list of chromosomes to include (restrict analysis to)
-    #[arg(short = 'i', long = "include", value_delimiter = ',', num_args = 1.., conflicts_with = "include_file")]
+    #[arg(short = 'i', long = "include", value_delimiter = ',', conflicts_with = "include_file")]
     pub include: Option<Vec<String>>,
 
     /// Path to file with chromosomes to include, one per line
@@ -447,5 +447,89 @@ pub fn main() -> Result<()> {
         Commands::Loci(args) => args.run(),
         Commands::Stat(args) => args.run(),
         Commands::Collect(args) => args.run(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_exclude_does_not_consume_positional() {
+        let args = Cli::parse_from([
+            "clam",
+            "stat",
+            "-o",
+            "/tmp/out",
+            "-w",
+            "10000",
+            "-x",
+            "chrX",
+            "/path/to/file.vcf.gz",
+        ]);
+        match args.command {
+            Commands::Stat(stat) => {
+                assert_eq!(stat.vcf, PathBuf::from("/path/to/file.vcf.gz"));
+                assert_eq!(stat.shared.exclude, Some(vec!["chrX".to_string()]));
+            }
+            _ => panic!("expected Stat command"),
+        }
+    }
+
+    #[test]
+    fn test_exclude_comma_delimited() {
+        let args = Cli::parse_from([
+            "clam",
+            "stat",
+            "-o",
+            "/tmp/out",
+            "-w",
+            "10000",
+            "-x",
+            "chrX,chrY,chrM",
+            "/path/to/file.vcf.gz",
+        ]);
+        match args.command {
+            Commands::Stat(stat) => {
+                assert_eq!(stat.vcf, PathBuf::from("/path/to/file.vcf.gz"));
+                assert_eq!(
+                    stat.shared.exclude,
+                    Some(vec![
+                        "chrX".to_string(),
+                        "chrY".to_string(),
+                        "chrM".to_string()
+                    ])
+                );
+            }
+            _ => panic!("expected Stat command"),
+        }
+    }
+
+    #[test]
+    fn test_exclude_repeated_flags() {
+        let args = Cli::parse_from([
+            "clam",
+            "stat",
+            "-o",
+            "/tmp/out",
+            "-w",
+            "10000",
+            "-x",
+            "chrX",
+            "-x",
+            "chrY",
+            "/path/to/file.vcf.gz",
+        ]);
+        match args.command {
+            Commands::Stat(stat) => {
+                assert_eq!(stat.vcf, PathBuf::from("/path/to/file.vcf.gz"));
+                assert_eq!(
+                    stat.shared.exclude,
+                    Some(vec!["chrX".to_string(), "chrY".to_string()])
+                );
+            }
+            _ => panic!("expected Stat command"),
+        }
     }
 }
