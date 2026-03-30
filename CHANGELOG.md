@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.4](https://github.com/cademirch/clam/compare/v1.1.3...v1.1.4) (2026-03-30)
+
+
+### Bug Fixes
+
+* exclude greedy positional ([#50](https://github.com/cademirch/clam/issues/50)) ([14928ad](https://github.com/cademirch/clam/commit/14928ad54687f84edda8dc0301fda8930e376a0d))
+
 ## [1.1.3](https://github.com/cademirch/clam/compare/v1.1.2...v1.1.3) (2026-02-20)
 
 
