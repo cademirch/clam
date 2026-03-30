@@ -76,14 +76,14 @@ Usage: clam loci [OPTIONS] --output <OUTPUT> [INPUT]...
 
 ### Chromosome Filtering
 
-`-x, --exclude <EXCLUDE>...`
-:   Comma-separated list of chromosomes to exclude. Example: `-x chrM,chrY`
+`-x, --exclude <EXCLUDE>`
+:   Chromosomes to exclude. Comma-separated (`-x chrM,chrY`) or repeated (`-x chrM -x chrY`).
 
 `--exclude-file <EXCLUDE_FILE>`
 :   Path to file with chromosomes to exclude, one per line.
 
-`-i, --include <INCLUDE>...`
-:   Comma-separated list of chromosomes to include (restrict analysis to). Example: `-i chr1,chr2,chr3`
+`-i, --include <INCLUDE>`
+:   Chromosomes to include (restrict analysis to). Comma-separated (`-i chr1,chr2,chr3`) or repeated (`-i chr1 -i chr2`).
 
 `--include-file <INCLUDE_FILE>`
 :   Path to file with chromosomes to include, one per line.
@@ -174,14 +174,14 @@ One of these options is required:
 
 ### Chromosome Filtering
 
-`-x, --exclude <EXCLUDE>...`
-:   Comma-separated list of chromosomes to exclude.
+`-x, --exclude <EXCLUDE>`
+:   Chromosomes to exclude. Comma-separated (`-x chrM,chrY`) or repeated (`-x chrM -x chrY`).
 
 `--exclude-file <EXCLUDE_FILE>`
 :   Path to file with chromosomes to exclude, one per line.
 
-`-i, --include <INCLUDE>...`
-:   Comma-separated list of chromosomes to include.
+`-i, --include <INCLUDE>`
+:   Chromosomes to include. Comma-separated (`-i chr1,chr2,chr3`) or repeated (`-i chr1 -i chr2`).
 
 `--include-file <INCLUDE_FILE>`
 :   Path to file with chromosomes to include, one per line.
@@ -231,6 +231,9 @@ clam stat -o results/ -w 10000 -c callable.zarr -r roh.bed.gz variants.vcf.gz
 
 # Exclude mitochondria
 clam stat -o results/ -w 10000 -c callable.zarr -x chrM variants.vcf.gz
+
+# Exclude multiple chromosomes
+clam stat -o results/ -w 10000 -c callable.zarr -x chrM,chrY variants.vcf.gz
 ```
 
 ---
@@ -265,14 +268,14 @@ Usage: clam collect [OPTIONS] --output <OUTPUT> [INPUT]...
 
 ### Chromosome Filtering
 
-`-x, --exclude <EXCLUDE>...`
-:   Comma-separated list of chromosomes to exclude.
+`-x, --exclude <EXCLUDE>`
+:   Chromosomes to exclude. Comma-separated (`-x chrM,chrY`) or repeated (`-x chrM -x chrY`).
 
 `--exclude-file <EXCLUDE_FILE>`
 :   Path to file with chromosomes to exclude, one per line.
 
-`-i, --include <INCLUDE>...`
-:   Comma-separated list of chromosomes to include.
+`-i, --include <INCLUDE>`
+:   Chromosomes to include. Comma-separated (`-i chr1,chr2,chr3`) or repeated (`-i chr1 -i chr2`).
 
 `--include-file <INCLUDE_FILE>`
 :   Path to file with chromosomes to include, one per line.
