@@ -115,7 +115,7 @@ If you have runs of homozygosity (ROH) calls, clam can calculate non-ROH heteroz
 clam stat -o results/ -w 10000 -c callable.zarr -r roh.bed.gz variants.vcf.gz
 ```
 
-Non-ROH heterozygosity can serve as a proxy for the inbreeding load in a population ([Kardos et al. 2025](https://www.sciencedirect.com/science/article/pii/S016953472500182X)).
+Non-ROH heterozygosity can serve as a proxy for the inbreeding load in a population ([Kyriazis et al. 2025](https://www.sciencedirect.com/science/article/pii/S016953472500182X)).
 
 The ROH file must be:
 
