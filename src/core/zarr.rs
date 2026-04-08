@@ -8,12 +8,11 @@ use std::marker::PhantomData;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use zarrs::array::codec::{
-    BloscCodec, BloscCompressionLevel, BloscCompressor, BloscShuffleMode, PackBitsCodec,
+use zarrs::array::codec::array_to_bytes::packbits::PackBitsCodec;
+use zarrs::array::codec::bytes_to_bytes::blosc::{
+    BloscCodec, BloscCompressionLevel, BloscCompressor, BloscShuffleMode,
 };
-
-use zarrs::array::ElementOwned;
-use zarrs::array::{Array, ArrayBuilder, DataType, FillValue};
+use zarrs::array::{data_type, Array, ArrayBuilder, DataType, ElementOwned, FillValue};
 use zarrs::filesystem::FilesystemStore;
 use zarrs::group::{Group, GroupBuilder};
 use zarrs::storage::{ReadableWritableListableStorage, ReadableWritableListableStorageTraits};
@@ -105,16 +104,10 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
                 fill_value.clone(),
             );
 
-            let builder = if matches!(data_type, DataType::Bool) {
+            let builder = if data_type == data_type::bool() {
                 builder.array_to_bytes_codec(Arc::new(PackBitsCodec::default()))
             } else {
-                let typesize = match &data_type {
-                    DataType::UInt8 | DataType::Int8 => 1,
-                    DataType::UInt16 | DataType::Int16 => 2,
-                    DataType::UInt32 | DataType::Int32 | DataType::Float32 => 4,
-                    DataType::UInt64 | DataType::Int64 | DataType::Float64 => 8,
-                    _ => 4,
-                };
+                let typesize = data_type.fixed_size().unwrap_or(4);
                 builder.bytes_to_bytes_codecs(vec![Arc::new(BloscCodec::new(
                     BloscCompressor::Zstd,
                     BloscCompressionLevel::try_from(5).unwrap(),
@@ -224,7 +217,7 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
                 &owned_array
             }
         };
-        let data = array.retrieve_chunk_ndarray(&[chunk_idx, 0])?;
+        let data = array.retrieve_chunk::<ndarray::ArrayD<T>>(&[chunk_idx, 0])?;
         Ok(data.into_dimensionality()?)
     }
     pub fn open_array(&self, chrom: &str) -> Result<OpenArray> {
@@ -263,9 +256,13 @@ impl<T: ElementOwned + Default> ChromosomeArrays<T> {
         }
 
         if data.shape()[0] == self.chunk_size as usize {
-            array.store_chunk_ndarray(&[chunk_idx, 0], data)?;
+            array.store_chunk(&[chunk_idx, 0], data)?;
         } else if self.is_last_chunk(chrom, chunk_idx)? {
-            array.store_chunk_subset_ndarray(&[chunk_idx, 0], &[0, 0], data)?;
+            let subset = [
+                0..data.shape()[0] as u64,
+                0..data.shape()[1] as u64,
+            ];
+            array.store_chunk_subset(&[chunk_idx, 0], &subset, data)?;
         } else {
             return Err(eyre!(
                 "Partial chunk at non-terminal position: chunk {} has {} rows but expected {}",
@@ -353,7 +350,7 @@ impl DepthArrays {
             contigs,
             sample_names,
             chunk_size,
-            DataType::UInt32,
+            data_type::uint32(),
             FillValue::from(0u32),
             None, // Not a callable loci file
             populations,
@@ -374,7 +371,7 @@ impl CallableArrays {
             contigs,
             population_names,
             chunk_size,
-            DataType::UInt16,
+            data_type::uint16(),
             FillValue::from(0u16),
             Some(CallableLociType::PopulationCounts),
             populations,
@@ -397,7 +394,7 @@ impl SampleMaskArrays {
             contigs,
             sample_names,
             chunk_size,
-            DataType::Bool,
+            data_type::bool(),
             FillValue::from(false),
             Some(CallableLociType::SampleMasks),
             populations,

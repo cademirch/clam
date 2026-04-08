@@ -122,6 +122,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-trait"
+version = "0.1.89"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "auto_impl"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -182,6 +193,19 @@ dependencies = [
  "lz4-sys",
  "snappy_src",
  "zstd-sys",
+]
+
+[[package]]
+name = "blusc"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4e0c17eaa785d2673fe58c22fc817946c2330ed47f3d9f79835d65950d32a45"
+dependencies = [
+ "flate2",
+ "lz4_flex",
+ "pkg-config",
+ "snap",
+ "zstd",
 ]
 
 [[package]]
@@ -1004,6 +1028,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4_flex"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98c23545df7ecf1b16c303910a69b079e8e251d60f7dd2cc9b4177f2afaf1746"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
 name = "matrixmultiply"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1058,19 +1091,20 @@ dependencies = [
 
 [[package]]
 name = "monostate"
-version = "0.1.14"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aafe1be9d0c75642e3e50fedc7ecadf1ef1cbce6eb66462153fc44245343fbee"
+checksum = "bb4cc965c89dd0615a9e822ff8002f7633d2466143d51bd58693e4b2c75aabad"
 dependencies = [
  "monostate-impl",
  "serde",
+ "serde_core",
 ]
 
 [[package]]
 name = "monostate-impl"
-version = "0.1.14"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c402a4092d5e204f32c9e155431046831fa712637043c58cb73bc6bc6c9663b5"
+checksum = "23f5b99488110875b5904839d396c2cdfaf241ff6622638acb879cc7effad5de"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1079,9 +1113,9 @@ dependencies = [
 
 [[package]]
 name = "ndarray"
-version = "0.16.1"
+version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "882ed72dce9365842bf196bdeedf5055305f11fc8c03dee7bb0194a6cad34841"
+checksum = "520080814a7a6b4a6e9070823bb24b4531daac8c4627e08ba5de8c5ef2f2752d"
 dependencies = [
  "matrixmultiply",
  "num-complex",
@@ -1328,6 +1362,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
 name = "pathdiff"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1370,6 +1410,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8a2f0d8d040d7848a709caf78912debcc3f33ee4b3cac47d73d1e1069e83507"
 dependencies = [
  "portable-atomic",
+]
+
+[[package]]
+name = "positioned-io"
+version = "0.3.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4ec4b80060f033312b99b6874025d9503d2af87aef2dd4c516e253fbfcdada7"
+dependencies = [
+ "byteorder",
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -1493,9 +1544,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.11.1"
+version = "1.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b544ef1b4eac5dc2db33ea63606ae9ffcfac26c1416a2806ae0bf5f56b201191"
+checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -1505,9 +1556,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.8"
+version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "368758f23274712b504848e9d5a6f010445cc8b87a7cdb4d7cbee666c1288da3"
+checksum = "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -1628,18 +1679,28 @@ checksum = "3cb6eb87a131f756572d7fb904f6e7b68633f09cca868c5df1c4b8d1a694bbba"
 
 [[package]]
 name = "serde"
-version = "1.0.214"
+version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f55c3193aca71c12ad7890f1785d2b73e1b9f63a0bbc353c08ef26fe03fc56b5"
+checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
+dependencies = [
+ "serde_core",
+ "serde_derive",
+]
+
+[[package]]
+name = "serde_core"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad"
 dependencies = [
  "serde_derive",
 ]
 
 [[package]]
 name = "serde_derive"
-version = "1.0.214"
+version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de523f781f095e28fa605cdce0f8307e451cc0fd14e2eb4cd2e98a355b147766"
+checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1690,6 +1751,12 @@ name = "smallvec"
 version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
+
+[[package]]
+name = "snap"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
 
 [[package]]
 name = "snappy_src"
@@ -1779,6 +1846,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyvec"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e61e67053d25a4e82c844e8424039d9745781b3fc4f32b8d55ed50f5f667ef3"
+dependencies = [
+ "tinyvec_macros",
+]
+
+[[package]]
+name = "tinyvec_macros"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+
+[[package]]
 name = "toml_datetime"
 version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1794,6 +1876,12 @@ dependencies = [
  "toml_datetime",
  "winnow",
 ]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
 
 [[package]]
 name = "unicode-ident"
@@ -2078,13 +2166,14 @@ checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
 
 [[package]]
 name = "zarrs"
-version = "0.22.8"
+version = "0.23.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b90364ad641fc2256a1442fe472eda3286ae467780b4132b170fed316c0b06a4"
+checksum = "a799f740c5d04f5b56f033e91bb47f8b3a7429cd3961b743700b5e40449cedc2"
 dependencies = [
  "async-lock",
  "base64",
  "blosc-src",
+ "blusc",
  "bytemuck",
  "bytes",
  "crc32c",
@@ -2095,12 +2184,14 @@ dependencies = [
  "inventory",
  "itertools",
  "itoa",
+ "libz-sys",
  "log",
  "lru",
  "moka",
  "ndarray",
  "num",
  "num-complex",
+ "paste",
  "quick_cache",
  "rayon",
  "rayon_iter_concurrent_limit",
@@ -2110,26 +2201,82 @@ dependencies = [
  "thread_local",
  "unsafe_cell_slice",
  "uuid",
+ "zarrs_chunk_grid",
+ "zarrs_chunk_key_encoding",
+ "zarrs_codec",
  "zarrs_data_type",
  "zarrs_filesystem",
  "zarrs_metadata",
  "zarrs_metadata_ext",
  "zarrs_plugin",
- "zarrs_registry",
  "zarrs_storage",
  "zstd",
 ]
 
 [[package]]
-name = "zarrs_data_type"
-version = "0.4.2"
+name = "zarrs_chunk_grid"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff78d0d99d9a9ab702460adf5f95f4a0538d0c100bbe34bddd238211e30ae3f4"
+checksum = "1cf67386fd96a0336cd3e5ab5ca6cb14e0e05aee80f1acae8c4d3cf562a8bb65"
+dependencies = [
+ "derive_more",
+ "inventory",
+ "itertools",
+ "rayon",
+ "thiserror",
+ "tinyvec",
+ "zarrs_metadata",
+ "zarrs_plugin",
+]
+
+[[package]]
+name = "zarrs_chunk_key_encoding"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9040e7feaa92d1904d492acd0cd91b97214f1791c5b5738e6c05b2ca4145a382"
+dependencies = [
+ "derive_more",
+ "inventory",
+ "zarrs_metadata",
+ "zarrs_plugin",
+ "zarrs_storage",
+]
+
+[[package]]
+name = "zarrs_codec"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "383a129a6a0cbb2c80cdba23809e5cab85159756464b7d0f112468a495c128da"
+dependencies = [
+ "async-trait",
+ "bytemuck",
+ "derive_more",
+ "futures",
+ "inventory",
+ "itertools",
+ "rayon",
+ "thiserror",
+ "unsafe_cell_slice",
+ "zarrs_chunk_grid",
+ "zarrs_data_type",
+ "zarrs_metadata",
+ "zarrs_plugin",
+ "zarrs_storage",
+]
+
+[[package]]
+name = "zarrs_data_type"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bc7c594c9363278fcd9db4c205514f009944206eb093ea7ad40b85f50009f31"
 dependencies = [
  "derive_more",
  "half",
  "inventory",
  "num",
+ "paste",
+ "serde",
+ "serde_json",
  "thiserror",
  "zarrs_metadata",
  "zarrs_plugin",
@@ -2137,17 +2284,17 @@ dependencies = [
 
 [[package]]
 name = "zarrs_filesystem"
-version = "0.3.5"
+version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e251768defd77f964191fe9ab3eda887dd4801eefb2d0360a25a5c4bda21ce2c"
+checksum = "270efeb0181651aee5460b3232f2fc83e91bd646cefe75001d1c8f9a4f3abf81"
 dependencies = [
  "bytes",
  "derive_more",
  "itertools",
  "libc",
  "page_size",
- "parking_lot",
  "pathdiff",
+ "positioned-io",
  "thiserror",
  "walkdir",
  "zarrs_storage",
@@ -2155,9 +2302,9 @@ dependencies = [
 
 [[package]]
 name = "zarrs_metadata"
-version = "0.6.2"
+version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "579803c6537c827b366fcd6cb0d78469f6a2978e6ab9768ce67526fdb85d7205"
+checksum = "5048bb16f093f9fa78ade440144e7709e0802bfc73bfb70c52f85d38bff3b03a"
 dependencies = [
  "derive_more",
  "half",
@@ -2169,13 +2316,11 @@ dependencies = [
 
 [[package]]
 name = "zarrs_metadata_ext"
-version = "0.2.2"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5522075a04b3a6ea09c0fb1c98e34a1be7385e91d3d0ffe4fc621f8329f9cd79"
+checksum = "a96819f29a4fbd489be05184e28201b7d95c3c6de01c663abb7b7d694be48c6e"
 dependencies = [
  "derive_more",
- "half",
- "log",
  "monostate",
  "num",
  "serde",
@@ -2183,38 +2328,30 @@ dependencies = [
  "serde_repr",
  "thiserror",
  "zarrs_metadata",
- "zarrs_registry",
 ]
 
 [[package]]
 name = "zarrs_plugin"
-version = "0.2.2"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3c9e0514d4c50f44d11285d5df70e4e586486a39826579c9d87ddc3f3dac561"
+checksum = "5cbe0ed432aee86856f70ca33be36eaf4a0dae21ab730750d9280a7ca1e95046"
 dependencies = [
+ "paste",
+ "regex",
+ "serde_json",
  "thiserror",
 ]
 
 [[package]]
-name = "zarrs_registry"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32cc7ec59554801e271f8c704c17e849b82c0102cd37125e80184c5178479ea5"
-dependencies = [
- "regex",
-]
-
-[[package]]
 name = "zarrs_storage"
-version = "0.4.0"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bc1037a8fa8c44ccb8f5c6c85753a63ddf296fb43280f28150f0f29fda8d301"
+checksum = "7d098796d2ed4cf94896569615101e0432e870a7665396da5cc32300fb68f7c1"
 dependencies = [
  "auto_impl",
  "bytes",
  "derive_more",
  "itertools",
- "parking_lot",
  "thiserror",
  "unsafe_cell_slice",
 ]
