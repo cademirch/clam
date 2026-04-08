@@ -31,8 +31,8 @@ indicatif = "0.17.9"
 rust-lapper = "1.2.0"
 color-eyre = { version = "0.6", default-features = false }
 serde_json = "1.0"
-zarrs = "0.22.8"
-ndarray = "0.16"
+zarrs = { version = "0.23", features = ["ndarray"] }
+ndarray = "0.17"
 
 
 [dev-dependencies]
