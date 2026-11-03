@@ -2,7 +2,7 @@ use color_eyre::{eyre::WrapErr, Result};
 use log::{debug, trace, warn};
 use noodles::bgzf;
 use noodles::core::Region;
-use noodles::tabix;
+use noodles::csi::BinningIndex;
 use noodles::vcf;
 use noodles::vcf::variant::record::info::field::Value::Integer as info_int;
 use noodles::vcf::variant::record::samples::series::Value::Integer as samples_int;
@@ -12,11 +12,12 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use super::DepthSource;
+use crate::core::utils::read_tabix_or_csi_index;
 use crate::core::contig::{Contig, ContigSet};
 
 pub struct GvcfReader {
     inner: vcf::io::Reader<bgzf::Reader<File>>,
-    index: tabix::Index,
+    index: Box<dyn BinningIndex + Send + Sync>,
     header: Header,
     src: PathBuf,
     sample_name: String,
@@ -27,8 +28,12 @@ impl GvcfReader {
     pub fn new<P: AsRef<Path>>(src: P, sample_name: &str, min_gq: Option<isize>) -> Result<Self> {
         let src_path = src.as_ref().to_path_buf();
 
-        let index = tabix::fs::read(format!("{}.tbi", src_path.display()))
-            .wrap_err_with(|| format!("Failed to read tabix index for: {}", src_path.display()))?;
+        let index = read_tabix_or_csi_index(&src_path).wrap_err_with(|| {
+            format!(
+                "Failed to read index (.tbi or .csi) for: {}",
+                src_path.display()
+            )
+        })?;
 
         let file = File::open(&src_path)
             .wrap_err_with(|| format!("Failed to open GVCF file: {}", src_path.display()))?;
