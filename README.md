@@ -1,5 +1,15 @@
+<img src="docs/logo/clam-hex-final.png" alt="clam logo" width="180" align="right">
+
 # clam
+
 ---
+
+[![Install with conda](https://img.shields.io/badge/install%20with-conda-brightgreen.svg?style=flat)](https://anaconda.org/bioconda/clam)
+[![Anaconda.org](https://anaconda.org/bioconda/clam/badges/version.svg)](https://anaconda.org/bioconda/clam)
+[![Last updated](https://anaconda.org/bioconda/clam/badges/latest_release_date.svg)](https://anaconda.org/bioconda/clam)
+[![Platforms](https://anaconda.org/bioconda/clam/badges/platforms.svg)](https://anaconda.org/bioconda/clam)
+[![License](https://anaconda.org/bioconda/clam/badges/license.svg)](https://anaconda.org/bioconda/clam)
+
 clam identifies genomic regions with sufficient sequencing depth to be considered "callable" and uses this information to calculate population genetic statistics from VCFs. It eliminates the need to generate an all-sites VCF files while still producing accurate diversity estimates. clam was designed specifically for large population genomics datasets.
 
 ## Installation
