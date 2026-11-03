@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.5](https://github.com/cademirch/clam/compare/v1.1.4...v1.1.5) (2026-11-03)
+
+
+### Bug Fixes
+
+* read .csi indexes for GVCFs and ROH BEDs (contigs &gt; 512 Mb) ([#64](https://github.com/cademirch/clam/issues/64)) ([45d2777](https://github.com/cademirch/clam/commit/45d2777d88bd950d1cadf8261ece88717bafc279))
+
 ## [1.1.4](https://github.com/cademirch/clam/compare/v1.1.3...v1.1.4) (2026-03-30)
 
 
