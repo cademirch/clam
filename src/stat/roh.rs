@@ -5,12 +5,14 @@ use color_eyre::{
 use log::debug;
 
 use noodles::core::Region;
-use noodles::tabix::io::indexed_reader::Builder as TabixReaderBuilder;
+use noodles::csi::io::IndexedReader;
 use rust_lapper::{Interval, Lapper};
 use std::collections::HashMap;
+use std::fs::File;
 use std::path::Path;
 
 use crate::core::population::PopulationMap;
+use crate::core::utils::read_tabix_or_csi_index;
 
 pub struct RohIndex {
     lapper: Lapper<u32, usize>,  
@@ -26,9 +28,15 @@ impl RohIndex {
         analysis_samples: &[String],
         pop_map: PopulationMap,
     ) -> Result<Self> {
-        let mut reader = TabixReaderBuilder::default()
-            .build_from_path(bed_path)
+        let index = read_tabix_or_csi_index(bed_path).wrap_err_with(|| {
+            format!(
+                "Failed to read ROH BED index (.tbi or .csi): {}",
+                bed_path.display()
+            )
+        })?;
+        let file = File::open(bed_path)
             .wrap_err_with(|| format!("Failed to open ROH BED file: {}", bed_path.display()))?;
+        let mut reader = IndexedReader::new(file, index);
         
         let sample_names: Vec<String> = analysis_samples.to_vec();
         

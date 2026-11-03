@@ -1,8 +1,34 @@
 use color_eyre::Result;
 use indicatif::{ProgressBar, ProgressStyle};
+use noodles::csi::{self, BinningIndex};
+use noodles::tabix;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::Path;
+use std::ffi::OsString;
+use std::io;
+use std::path::{Path, PathBuf};
+
+/// Read the index of a bgzipped, coordinate-sorted file: `<src>.tbi` if
+/// present, otherwise `<src>.csi`. CSI is needed for references with
+/// sequences longer than 2^29 bp, which tabix cannot index. Mirrors how
+/// noodles' VCF indexed reader finds its index.
+pub fn read_tabix_or_csi_index(src: &Path) -> io::Result<Box<dyn BinningIndex + Send + Sync>> {
+    match tabix::fs::read(index_path(src, "tbi")) {
+        Ok(index) => Ok(Box::new(index)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let index = csi::fs::read(index_path(src, "csi"))?;
+            Ok(Box::new(index))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn index_path(src: &Path, ext: &str) -> PathBuf {
+    let mut s = OsString::from(src);
+    s.push(".");
+    s.push(ext);
+    PathBuf::from(s)
+}
 
 // Helper to create a consistent spinner
 pub fn create_spinner(message: &str) -> ProgressBar {
